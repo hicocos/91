@@ -3,6 +3,7 @@ package preview
 import (
 	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -109,5 +110,36 @@ func TestFFmpegCommandErrorRedactsSignedURLs(t *testing.T) {
 	}
 	if !strings.Contains(got, "https://<redacted>.") {
 		t.Fatalf("error = %q, want redacted URL with punctuation preserved", got)
+	}
+}
+
+func TestFFmpegHTTPInputOptionsUsesDedicatedUserAgent(t *testing.T) {
+	link := &drives.StreamLink{
+		URL: "https://download.example/video.mp4",
+		Headers: http.Header{
+			"User-Agent": {"Mozilla/5.0 115Browser/27.0.5.7"},
+			"Cookie":     {"UID=redacted"},
+		},
+	}
+
+	args := ffmpegHTTPInputOptions(link)
+	joined := strings.Join(args, "\n")
+	if !strings.Contains(joined, "-user_agent\nMozilla/5.0 115Browser/27.0.5.7") {
+		t.Fatalf("args = %#v, want dedicated ffmpeg user_agent option", args)
+	}
+	if strings.Contains(joined, "User-Agent:") {
+		t.Fatalf("args = %#v, user agent should not be duplicated in raw headers", args)
+	}
+	if !strings.Contains(joined, "Cookie: UID=redacted") {
+		t.Fatalf("args = %#v, want cookie preserved in raw headers", args)
+	}
+}
+
+func TestShouldProxy115FFmpegLinks(t *testing.T) {
+	if !shouldProxyFFmpegLink(&drives.StreamLink{URL: "https://cdnfhnfile.115cdn.net/file.mp4"}) {
+		t.Fatal("115 CDN link should use local ffmpeg proxy")
+	}
+	if shouldProxyFFmpegLink(&drives.StreamLink{URL: "https://download.example/file.mp4"}) {
+		t.Fatal("generic link should not use local ffmpeg proxy")
 	}
 }

@@ -216,6 +216,52 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	}
 }
 
+func TestPreviewWorkerP115TransientErrorKeepsVideoPending(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "preview-p115-transient")
+
+	gen := &fakeTeaserGenerator{
+		generateErr: errors.New("ffmpeg: exit status 1, stderr: Server returned 403 Forbidden"),
+	}
+	drv := &previewFakeDrive{kind: "p115"}
+	worker := NewWorker(gen, cat, drv, "")
+
+	worker.process(ctx, video)
+
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.PreviewStatus != "pending" {
+		t.Fatalf("preview status = %q, want pending for transient 115 media error", got.PreviewStatus)
+	}
+	if gen.generateCalls != 1 {
+		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
+	}
+}
+
+func TestPreviewWorkerRefreshesP115LinksPerTeaserInput(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "preview-p115-refresh")
+	video.DurationSeconds = 81
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatalf("update video: %v", err)
+	}
+
+	gen := &fakeTeaserGenerator{}
+	drv := &previewFakeDrive{kind: "p115"}
+	worker := NewWorker(gen, cat, drv, "")
+
+	worker.process(ctx, video)
+
+	if gen.refreshCalls != 3 {
+		t.Fatalf("refresh calls = %d, want 3 extra links for a four-input p115 teaser", gen.refreshCalls)
+	}
+	if drv.streamCalls != 4 {
+		t.Fatalf("stream calls = %d, want initial link plus 3 refreshed links", drv.streamCalls)
+	}
+}
+
 func seedPreviewTestVideo(t *testing.T, id string) (*catalog.Catalog, *catalog.Video) {
 	t.Helper()
 	ctx := context.Background()
@@ -268,6 +314,7 @@ type fakeTeaserGenerator struct {
 	localPath     string
 	generateErr   error
 	generateCalls int
+	refreshCalls  int
 }
 
 func (g *fakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
@@ -282,6 +329,16 @@ func (g *fakeTeaserGenerator) Generate(context.Context, *drives.StreamLink, floa
 	return "/tmp/source-teaser.mp4", nil
 }
 
+func (g *fakeTeaserGenerator) GenerateWithLinkProvider(ctx context.Context, first *drives.StreamLink, duration float64, refresh func(context.Context) (*drives.StreamLink, error)) (string, error) {
+	for i := 0; i < 3; i++ {
+		if _, err := refresh(ctx); err != nil {
+			return "", err
+		}
+		g.refreshCalls++
+	}
+	return g.Generate(ctx, first, duration)
+}
+
 func (g *fakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
 	if g.localPath != "" {
 		return g.localPath, nil
@@ -290,14 +347,21 @@ func (g *fakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, err
 }
 
 type previewFakeDrive struct {
+	kind           string
 	streamFileID   string
+	streamCalls    int
 	streamErr      error
 	ensureDirCalls int
 	uploadCalls    int
 }
 
-func (d *previewFakeDrive) Kind() string { return "fake" }
-func (d *previewFakeDrive) ID() string   { return "drive-id" }
+func (d *previewFakeDrive) Kind() string {
+	if d.kind != "" {
+		return d.kind
+	}
+	return "fake"
+}
+func (d *previewFakeDrive) ID() string { return "drive-id" }
 func (d *previewFakeDrive) Init(context.Context) error {
 	return nil
 }
@@ -308,6 +372,7 @@ func (d *previewFakeDrive) Stat(context.Context, string) (*drives.Entry, error) 
 	return nil, drives.ErrNotSupported
 }
 func (d *previewFakeDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {
+	d.streamCalls++
 	d.streamFileID = fileID
 	if d.streamErr != nil {
 		return nil, d.streamErr

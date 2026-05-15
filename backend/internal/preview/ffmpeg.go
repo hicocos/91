@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +44,10 @@ type TeaserGenerator interface {
 	Probe(ctx context.Context, link *drives.StreamLink) (float64, error)
 	Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error)
 	MoveToLocal(tmpPath, videoID string) (string, error)
+}
+
+type refreshingTeaserGenerator interface {
+	GenerateWithLinkProvider(ctx context.Context, first *drives.StreamLink, duration float64, refresh func(context.Context) (*drives.StreamLink, error)) (string, error)
 }
 
 func New(cfg Config) *Generator {
@@ -209,17 +215,20 @@ func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLi
 
 	ctx2, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	ffmpegLink, cleanup, err := prepareFFmpegLink(ctx2, link)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
 
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
 		"-ss", fmt.Sprintf("%.2f", offset),
 	}
-	if h := buildHeaders(link.Headers); h != "" {
-		args = append(args, "-headers", h)
-	}
+	args = append(args, ffmpegHTTPInputOptions(ffmpegLink)...)
 	args = append(args,
-		"-i", link.URL,
+		"-i", ffmpegLink.URL,
 		"-frames:v", "1",
 		"-vf", fmt.Sprintf("scale=%d:-2", g.cfg.Width),
 		"-q:v", "3",
@@ -245,6 +254,11 @@ func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLi
 func (g *Generator) Probe(ctx context.Context, link *drives.StreamLink) (float64, error) {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	ffmpegLink, cleanup, err := prepareFFmpegLink(ctx2, link)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
 
 	args := []string{
 		"-hide_banner",
@@ -252,10 +266,8 @@ func (g *Generator) Probe(ctx context.Context, link *drives.StreamLink) (float64
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
 	}
-	if h := buildHeaders(link.Headers); h != "" {
-		args = append(args, "-headers", h)
-	}
-	args = append(args, link.URL)
+	args = append(args, ffmpegHTTPInputOptions(ffmpegLink)...)
+	args = append(args, ffmpegLink.URL)
 
 	cmd := exec.CommandContext(ctx2, g.cfg.FFprobePath, args...)
 	out, err := cmd.CombinedOutput()
@@ -274,6 +286,21 @@ func (g *Generator) Probe(ctx context.Context, link *drives.StreamLink) (float64
 // Generate 拉取 teaser 到本地临时文件，返回路径。
 // 根据 Config.Segments 和视频时长决定是单段还是多段拼接。
 func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error) {
+	return g.generate(ctx, duration, func(int) (*drives.StreamLink, error) {
+		return link, nil
+	})
+}
+
+func (g *Generator) GenerateWithLinkProvider(ctx context.Context, first *drives.StreamLink, duration float64, refresh func(context.Context) (*drives.StreamLink, error)) (string, error) {
+	return g.generateSequential(ctx, duration, func(index int) (*drives.StreamLink, error) {
+		if index == 0 || refresh == nil {
+			return first, nil
+		}
+		return refresh(ctx)
+	})
+}
+
+func (g *Generator) generate(ctx context.Context, duration float64, linkForInput func(int) (*drives.StreamLink, error)) (string, error) {
 	if err := os.MkdirAll(g.cfg.LocalDir, 0o755); err != nil {
 		return "", err
 	}
@@ -300,17 +327,31 @@ func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, durat
 		"-hide_banner",
 		"-loglevel", "error",
 	}
-	headers := buildHeaders(link.Headers)
 
 	// 每段独立 -ss + -i，精确 seek 重新解码保证拼接帧准
-	for _, s := range starts {
-		if headers != "" {
-			args = append(args, "-headers", headers)
+	var cleanups []func()
+	defer func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
 		}
+	}()
+	for i, s := range starts {
+		link, err := linkForInput(i)
+		if err != nil {
+			os.Remove(tmpPath)
+			return "", err
+		}
+		ffmpegLink, cleanup, err := prepareFFmpegLink(ctx2, link)
+		if err != nil {
+			os.Remove(tmpPath)
+			return "", err
+		}
+		cleanups = append(cleanups, cleanup)
+		args = append(args, ffmpegHTTPInputOptions(ffmpegLink)...)
 		args = append(args,
 			"-ss", fmt.Sprintf("%.2f", s),
 			"-t", fmt.Sprintf("%.2f", eachSec),
-			"-i", link.URL,
+			"-i", ffmpegLink.URL,
 		)
 	}
 
@@ -318,7 +359,7 @@ func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, durat
 		// 单段：无需 concat，直接缩放 + 无音
 		args = append(args,
 			"-an",
-			"-vf", fmt.Sprintf("scale=%d:-2", g.cfg.Width),
+			"-vf", fmt.Sprintf("scale=%d:-2,setsar=1", g.cfg.Width),
 			"-c:v", "libx264",
 			"-preset", "veryfast",
 			"-crf", "28",
@@ -339,7 +380,7 @@ func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, durat
 				filter.WriteString(";")
 			}
 			fmt.Fprintf(&filter,
-				"[%d:v]scale=%d:-2,fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=0.2[v%d]",
+				"[%d:v]scale=%d:-2,setsar=1,fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=0.2[v%d]",
 				i, g.cfg.Width, fadeIn, fadeOutStart, i)
 		}
 		filter.WriteString(";")
@@ -372,6 +413,273 @@ func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, durat
 		return "", fmt.Errorf("ffmpeg produced empty file, stderr: %s", string(out))
 	}
 	return tmpPath, nil
+}
+
+func (g *Generator) generateSequential(ctx context.Context, duration float64, linkForInput func(int) (*drives.StreamLink, error)) (string, error) {
+	if err := os.MkdirAll(g.cfg.LocalDir, 0o755); err != nil {
+		return "", err
+	}
+
+	plan := buildTeaserPlan(g.cfg, duration)
+	starts := plan.starts
+	eachSec := plan.eachSec
+	if len(starts) == 0 {
+		return "", fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
+	}
+
+	ctx2, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+
+	segmentPaths := make([]string, 0, len(starts))
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		for _, p := range segmentPaths {
+			_ = os.Remove(p)
+		}
+	}()
+
+	for i, start := range starts {
+		seg, err := g.generateSingleSegment(ctx2, i, start, eachSec, linkForInput)
+		if err != nil {
+			return "", err
+		}
+		segmentPaths = append(segmentPaths, seg)
+	}
+
+	if len(segmentPaths) == 1 {
+		success = true
+		return segmentPaths[0], nil
+	}
+
+	tmp, err := os.CreateTemp(g.cfg.LocalDir, "teaser-*.mp4")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	_ = os.Remove(tmpPath)
+
+	list, err := os.CreateTemp(g.cfg.LocalDir, "teaser-concat-*.txt")
+	if err != nil {
+		return "", err
+	}
+	listPath := list.Name()
+	for _, p := range segmentPaths {
+		if _, err := fmt.Fprintf(list, "file '%s'\n", escapeConcatPath(p)); err != nil {
+			list.Close()
+			_ = os.Remove(listPath)
+			return "", err
+		}
+	}
+	if err := list.Close(); err != nil {
+		_ = os.Remove(listPath)
+		return "", err
+	}
+	defer os.Remove(listPath)
+
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listPath,
+		"-c", "copy",
+		"-movflags", "+faststart",
+		"-y", tmpPath,
+	}
+	out, err := exec.CommandContext(ctx2, g.cfg.FFmpegPath, args...).CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return "", ffmpegCommandError("ffmpeg concat", err, out)
+	}
+	if info, statErr := os.Stat(tmpPath); statErr != nil || info.Size() == 0 {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
+	}
+
+	for _, p := range segmentPaths {
+		_ = os.Remove(p)
+	}
+	success = true
+	return tmpPath, nil
+}
+
+func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, linkForInput func(int) (*drives.StreamLink, error)) (string, error) {
+	link, err := linkForInput(index)
+	if err != nil {
+		return "", err
+	}
+	ffmpegLink, cleanup, err := prepareFFmpegLink(ctx, link)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	seg, err := os.CreateTemp(g.cfg.LocalDir, fmt.Sprintf("teaser-seg-%d-*.mp4", index))
+	if err != nil {
+		return "", err
+	}
+	segPath := seg.Name()
+	seg.Close()
+
+	fadeIn := 0.2
+	fadeOutStart := eachSec - 0.2
+	if fadeOutStart < 0 {
+		fadeOutStart = 0
+	}
+	filter := fmt.Sprintf("scale=%d:-2,setsar=1,fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=0.2", g.cfg.Width, fadeIn, fadeOutStart)
+
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+	}
+	args = append(args, ffmpegHTTPInputOptions(ffmpegLink)...)
+	args = append(args,
+		"-ss", fmt.Sprintf("%.2f", start),
+		"-t", fmt.Sprintf("%.2f", eachSec),
+		"-i", ffmpegLink.URL,
+		"-an",
+		"-vf", filter,
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "28",
+		"-movflags", "+faststart",
+		"-y", segPath,
+	)
+	out, err := exec.CommandContext(ctx, g.cfg.FFmpegPath, args...).CombinedOutput()
+	if err != nil {
+		_ = os.Remove(segPath)
+		return "", ffmpegCommandError("ffmpeg segment", err, out)
+	}
+	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
+		_ = os.Remove(segPath)
+		return "", fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out))
+	}
+	return segPath, nil
+}
+
+func escapeConcatPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return strings.ReplaceAll(path, "'", "'\\''")
+}
+
+func prepareFFmpegLink(ctx context.Context, link *drives.StreamLink) (*drives.StreamLink, func(), error) {
+	if link == nil {
+		return nil, func() {}, errors.New("missing stream link")
+	}
+	if !shouldProxyFFmpegLink(link) {
+		return link, func() {}, nil
+	}
+	return startLocalFFmpegProxy(ctx, link)
+}
+
+func shouldProxyFFmpegLink(link *drives.StreamLink) bool {
+	if link == nil {
+		return false
+	}
+	raw := strings.ToLower(link.URL)
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return false
+	}
+	if strings.Contains(raw, "115cdn") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(link.Headers.Get("User-Agent")), "115")
+}
+
+func startLocalFFmpegProxy(ctx context.Context, link *drives.StreamLink) (*drives.StreamLink, func(), error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+	client := &http.Client{Timeout: 0}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/stream" {
+				http.NotFound(w, r)
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			req, err := http.NewRequestWithContext(r.Context(), r.Method, link.URL, nil)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			for k, vs := range link.Headers {
+				for _, v := range vs {
+					req.Header.Add(k, v)
+				}
+			}
+			if rng := r.Header.Get("Range"); rng != "" {
+				req.Header.Set("Range", rng)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+
+			for _, k := range []string{
+				"Content-Type", "Content-Length", "Content-Range",
+				"Accept-Ranges", "Last-Modified", "Etag",
+			} {
+				if v := resp.Header.Get(k); v != "" {
+					w.Header().Set(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			if r.Method != http.MethodHead {
+				_, _ = io.Copy(w, resp.Body)
+			}
+		}),
+	}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[preview] local ffmpeg proxy: %v", err)
+		}
+	}()
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		})
+	}
+	go func() {
+		<-ctx.Done()
+		cleanup()
+	}()
+
+	proxied := *link
+	proxied.URL = "http://" + ln.Addr().String() + "/stream"
+	proxied.Headers = nil
+	return &proxied, cleanup, nil
+}
+
+func ffmpegHTTPInputOptions(link *drives.StreamLink) []string {
+	if link == nil {
+		return nil
+	}
+	var args []string
+	if ua := strings.TrimSpace(link.Headers.Get("User-Agent")); ua != "" {
+		args = append(args, "-user_agent", ua)
+	}
+	if h := buildHeaders(link.Headers); h != "" {
+		args = append(args, "-headers", h)
+	}
+	return args
 }
 
 func ffmpegCommandError(tool string, err error, output []byte) error {
@@ -629,6 +937,18 @@ func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
 	return true
 }
 
+func (w *Worker) pauseForRecoverableError(err error, step, title string) bool {
+	if w.pauseForRateLimit(err, step, title) {
+		return true
+	}
+	if !driveErrorShouldCooldown(w.Drive, err) {
+		return false
+	}
+	until := w.rateLimit.pause(time.Now(), w.RateLimitCooldown)
+	log.Printf("[preview] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
+	return true
+}
+
 func (w *ThumbWorker) skipIfRateLimited(v *catalog.Video) bool {
 	until, ok, shouldLog := w.rateLimit.active(time.Now())
 	if !ok {
@@ -653,6 +973,34 @@ func (w *ThumbWorker) pauseForRateLimit(err error, step, title string) bool {
 	return true
 }
 
+func (w *ThumbWorker) pauseForRecoverableError(err error, step, title string) bool {
+	if w.pauseForRateLimit(err, step, title) {
+		return true
+	}
+	if !driveErrorShouldCooldown(w.Drive, err) {
+		return false
+	}
+	until := w.rateLimit.pause(time.Now(), w.RateLimitCooldown)
+	log.Printf("[thumb] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
+	return true
+}
+
+func driveErrorShouldCooldown(d drives.Drive, err error) bool {
+	if d == nil || err == nil || d.Kind() != "p115" {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "server returned 403") ||
+		strings.Contains(text, "403 forbidden") ||
+		strings.Contains(text, "server returned 405") ||
+		strings.Contains(text, "405 method") ||
+		strings.Contains(text, "access denied") ||
+		strings.Contains(text, "moov atom not found") ||
+		strings.Contains(text, "partial file") ||
+		strings.Contains(text, "request has been blocked") ||
+		strings.Contains(text, "访问被阻断")
+}
+
 func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 	if w.skipIfRateLimited(v) {
 		return
@@ -662,7 +1010,7 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 		if localLink, ok := localPreviewLink(v); ok {
 			link = localLink
 		} else {
-			if w.pauseForRateLimit(err, "streamURL", v.Title) {
+			if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 				return
 			}
 			log.Printf("[thumb] streamURL %s: %v", v.Title, err)
@@ -676,7 +1024,7 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 				return
 			}
 		}
-		if w.pauseForRateLimit(err, "generate", v.Title) {
+		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return
 		}
 		log.Printf("[thumb] generate %s: %v", v.Title, err)
@@ -732,7 +1080,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 	}
 	link, err := w.Drive.StreamURL(ctx, v.FileID)
 	if err != nil {
-		if w.pauseForRateLimit(err, "streamURL", v.Title) {
+		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 			return
 		}
 		log.Printf("[preview] streamURL %s: %v", v.Title, err)
@@ -748,15 +1096,15 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 			_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
 				DurationSeconds: int(dur),
 			})
-		} else if err != nil && w.pauseForRateLimit(err, "probe", v.Title) {
+		} else if err != nil && w.pauseForRecoverableError(err, "probe", v.Title) {
 			return
 		}
 	}
 
 	// 2) teaser
-	tmp, err := w.Gen.Generate(ctx, link, duration)
+	tmp, err := w.generateTeaser(ctx, v, link, duration)
 	if err != nil {
-		if w.pauseForRateLimit(err, "generate", v.Title) {
+		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return
 		}
 		log.Printf("[preview] generate %s: %v", v.Title, err)
@@ -773,6 +1121,16 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 	removePreviousLocalTeaser(v.PreviewLocal, local)
 	w.Catalog.UpdatePreview(ctx, v.ID, "", local, "ready")
 	log.Printf("[preview] ready %s (duration=%.1fs)", v.Title, duration)
+}
+
+func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) (string, error) {
+	gen, ok := w.Gen.(refreshingTeaserGenerator)
+	if !ok || w.Drive == nil || w.Drive.Kind() != "p115" {
+		return w.Gen.Generate(ctx, link, duration)
+	}
+	return gen.GenerateWithLinkProvider(ctx, link, duration, func(ctx context.Context) (*drives.StreamLink, error) {
+		return w.Drive.StreamURL(ctx, v.FileID)
+	})
 }
 
 func removePreviousLocalTeaser(previous, current string) {
@@ -795,6 +1153,9 @@ func buildHeaders(h map[string][]string) string {
 	}
 	var sb strings.Builder
 	for k, vs := range h {
+		if strings.EqualFold(k, "User-Agent") {
+			continue
+		}
 		for _, v := range vs {
 			sb.WriteString(k)
 			sb.WriteString(": ")

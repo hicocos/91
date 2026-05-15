@@ -92,7 +92,7 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	if err != nil {
 		return nil, fmt.Errorf("115 get file: %w", err)
 	}
-	info, err := d.client.DownloadWithUA(f.PickCode, d.ua)
+	info, ua, err := d.downloadInfo(f.PickCode)
 	if err != nil {
 		return nil, fmt.Errorf("115 download url: %w", err)
 	}
@@ -101,12 +101,14 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	}
 
 	headers := http.Header{}
-	headers.Set("User-Agent", d.ua)
 	// 115 直链会返回一组 Cookie / Referer，info.Header 里带了
 	for k, vs := range info.Header {
 		for _, v := range vs {
 			headers.Add(k, v)
 		}
+	}
+	if headers.Get("User-Agent") == "" {
+		headers.Set("User-Agent", ua)
 	}
 
 	return &drives.StreamLink{
@@ -114,6 +116,27 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 		Headers: headers,
 		Expires: time.Now().Add(25 * time.Minute), // 115 直链 30 分钟过期，留余量
 	}, nil
+}
+
+func (d *Driver) downloadInfo(pickCode string) (*sdk.DownloadInfo, string, error) {
+	mobileUA := sdk.UAIosApp
+	if info, err := d.client.DownloadWithUAByAndroidAPI(pickCode, mobileUA); err == nil {
+		if info != nil && info.Url.Url != "" {
+			return info, mobileUA, nil
+		}
+	} else {
+		webInfo, webErr := d.client.DownloadWithUA(pickCode, d.ua)
+		if webErr != nil {
+			return nil, "", fmt.Errorf("android api: %v; chrome api: %w", err, webErr)
+		}
+		return webInfo, d.ua, nil
+	}
+
+	info, err := d.client.DownloadWithUA(pickCode, d.ua)
+	if err != nil {
+		return nil, "", err
+	}
+	return info, d.ua, nil
 }
 
 func (d *Driver) Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error) {
