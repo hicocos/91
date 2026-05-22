@@ -246,24 +246,23 @@ func (c *Crawler) RunOnce(ctx context.Context, targetNew int) (*CrawlResult, err
 }
 
 // writeSeenViewkeys 把当前 drive 下已入库的 viewkey 写到 path，供 Python 脚本读取。
-// file_id 在 spider91 中形如 "<viewkey>.mp4" / "<viewkey>.flv"，剥掉扩展名就是 viewkey。
+//
+// 注意：不能用 ListVideoFileIDsByDrive（按 drive_id 查），因为 spider91
+// 视频被 spider91migrate 迁移到 PikPak 后 drive_id 已经不再是这个 drive。
+// 改用 ListSpider91Viewkeys：它按 video.id 前缀（"spider91-<driveID>-"）查，
+// 不受迁移影响——id 永远是 spider91-<driveID>-<viewkey>。
 func (c *Crawler) writeSeenViewkeys(ctx context.Context, path string) (int, error) {
-	fileIDs, err := c.cfg.Catalog.ListVideoFileIDsByDrive(ctx, c.cfg.Driver.ID())
+	viewkeys, err := c.cfg.Catalog.ListSpider91Viewkeys(ctx, c.cfg.Driver.ID())
 	if err != nil {
 		return 0, err
 	}
-	seen := make(map[string]struct{}, len(fileIDs))
-	for _, fid := range fileIDs {
-		fid = strings.TrimSpace(fid)
-		if fid == "" {
+	seen := make(map[string]struct{}, len(viewkeys))
+	for _, vk := range viewkeys {
+		vk = strings.TrimSpace(vk)
+		if vk == "" {
 			continue
 		}
-		// 剥掉扩展名得到 viewkey；同一个 viewkey 不应该重复出现，map 顺手去重
-		viewkey := strings.TrimSuffix(fid, filepath.Ext(fid))
-		if viewkey == "" {
-			continue
-		}
-		seen[viewkey] = struct{}{}
+		seen[vk] = struct{}{}
 	}
 
 	tmp := path + ".part"

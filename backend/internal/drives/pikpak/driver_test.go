@@ -95,13 +95,11 @@ func TestFolderToEntry(t *testing.T) {
 	}
 }
 
-func TestUnsupportedUploadOperations(t *testing.T) {
+func TestEnsureDirStillUnsupported(t *testing.T) {
 	d := New(Config{ID: "pikpak-main"})
 
 	if _, err := d.EnsureDir(nil, "/previews"); err != drives.ErrNotSupported {
 		t.Fatalf("EnsureDir error = %v, want ErrNotSupported", err)
 	}
-	if _, err := d.Upload(nil, "", "preview.mp4", nil, 0); err != drives.ErrNotSupported {
-		t.Fatalf("Upload error = %v, want ErrNotSupported", err)
-	}
+	// Upload 的真实实现见 upload_test.go。
 }

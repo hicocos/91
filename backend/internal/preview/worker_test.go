@@ -90,7 +90,7 @@ func TestPreviewWorkerGeneratesTeaserWithoutReplacingExistingThumbnail(t *testin
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -115,7 +115,7 @@ func TestPreviewWorkerDeduplicatesQueuedVideos(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	if !worker.EnqueueBlocking(ctx, video) {
 		t.Fatal("first enqueue returned false, want true")
@@ -194,7 +194,7 @@ func TestPreviewWorkerRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing
 		localPath: filepath.Join(t.TempDir(), "new-teaser.mp4"),
 	}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -210,13 +210,13 @@ func TestPreviewWorkerRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing
 	}
 }
 
-func TestPreviewWorkerDoesNotUploadTeaserWhenRemoteDirIsConfigured(t *testing.T) {
+func TestPreviewWorkerNeverCallsDriveUploadOrEnsureDir(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-local-only-video")
 	localPath := filepath.Join(t.TempDir(), "local-only-teaser.mp4")
 	gen := &fakeTeaserGenerator{localPath: localPath}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "/previews")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -234,10 +234,10 @@ func TestPreviewWorkerDoesNotUploadTeaserWhenRemoteDirIsConfigured(t *testing.T)
 		t.Fatalf("preview file id = %q, want empty for local-only teaser", got.PreviewFileID)
 	}
 	if drv.ensureDirCalls != 0 {
-		t.Fatalf("ensure dir calls = %d, want 0", drv.ensureDirCalls)
+		t.Fatalf("ensure dir calls = %d, want 0 (teaser/cover must not write back to drive)", drv.ensureDirCalls)
 	}
 	if drv.uploadCalls != 0 {
-		t.Fatalf("upload calls = %d, want 0", drv.uploadCalls)
+		t.Fatalf("upload calls = %d, want 0 (teaser/cover must not write back to drive)", drv.uploadCalls)
 	}
 }
 
@@ -251,7 +251,7 @@ func TestPreviewWorkerSkipsTeaserForVideoLargerThanFiveGiB(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -283,7 +283,7 @@ func TestPreviewWorkerGeneratesTeaserAtFiveGiBBoundary(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -320,7 +320,7 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 		},
 	}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	before := time.Now()
 	worker.process(ctx, first)
@@ -385,7 +385,7 @@ func TestPreviewWorkerP115TransientErrorKeepsVideoPending(t *testing.T) {
 		generateErr: errors.New("ffmpeg: exit status 1, stderr: Server returned 403 Forbidden"),
 	}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 
@@ -423,7 +423,7 @@ func TestPreviewWorkerRefreshesP115LinksPerTeaserInput(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewWorker(gen, cat, drv, "")
+	worker := NewWorker(gen, cat, drv)
 
 	worker.process(ctx, video)
 

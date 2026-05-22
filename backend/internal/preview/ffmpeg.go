@@ -29,7 +29,6 @@ type Config struct {
 	Width           int
 	Segments        int    // 兼容旧配置；当前 30 秒及以上视频固定使用 4 段
 	LocalDir        string // 本地 teaser 和封面目录
-	RemoteDir       string // Deprecated: 保留配置兼容性；teaser 不再回写网盘
 }
 
 type Generator struct {
@@ -974,7 +973,7 @@ type Worker struct {
 	activity          taskActivity
 }
 
-func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive, _ string) *Worker {
+func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Worker {
 	return &Worker{
 		Gen:     gen,
 		Catalog: cat,
@@ -1478,7 +1477,7 @@ func localPreviewLink(v *catalog.Video) (*drives.StreamLink, bool) {
 func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 	if shouldSkipTeaser(v) {
 		removePreviousLocalTeaser(v.PreviewLocal, "")
-		if err := w.Catalog.UpdatePreview(ctx, v.ID, "", "", previewStatusSkipped); err != nil {
+		if err := w.Catalog.UpdatePreview(ctx, v.ID, "", previewStatusSkipped); err != nil {
 			log.Printf("[preview] skip %s: update status: %v", v.Title, err)
 			return
 		}
@@ -1494,7 +1493,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 			return
 		}
 		log.Printf("[preview] streamURL %s: %v", v.Title, err)
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "", "failed")
+		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
 		return
 	}
 
@@ -1518,18 +1517,18 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) {
 			return
 		}
 		log.Printf("[preview] generate %s: %v", v.Title, err)
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "", "failed")
+		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
 		return
 	}
 	local, err := w.Gen.MoveToLocal(tmp, v.ID)
 	if err != nil {
 		log.Printf("[preview] move %s: %v", v.Title, err)
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "", "failed")
+		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
 		return
 	}
 
 	removePreviousLocalTeaser(v.PreviewLocal, local)
-	w.Catalog.UpdatePreview(ctx, v.ID, "", local, "ready")
+	w.Catalog.UpdatePreview(ctx, v.ID, local, "ready")
 	log.Printf("[preview] ready %s (duration=%.1fs)", v.Title, duration)
 }
 

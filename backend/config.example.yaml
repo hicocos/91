@@ -35,8 +35,6 @@ preview:
   segments: 3
   # teaser 视频宽度
   width: 480
-  # 已废弃：teaser 和封面始终只写本地，不再回写网盘
-  remote_dir: ""
 
 # 盘列表。上线后请通过管理后台添加，本文件可留空。
 # kind 支持 quark / p115 / pikpak / wopan / onedrive。

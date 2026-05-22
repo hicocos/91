@@ -107,3 +107,88 @@ func (d *proxyFakeDrive) EnsureDir(context.Context, string) (string, error) {
 	return "", drives.ErrNotSupported
 }
 func (d *proxyFakeDrive) RootID() string { return "0" }
+
+func TestServeStreamRedirectsPikPakWithoutUserAgentScopedCache(t *testing.T) {
+	reg := NewRegistry()
+	drv := &proxyFakePikPakDrive{}
+	reg.Set("pikpak", drv)
+
+	p := New(reg)
+
+	// 三次请求，两个不同 UA。pikpak 取链不依赖 UA，所以缓存 key 只看 driveID/fileID，
+	// 30 秒内只会真正调用 driver 一次。
+	requestPikPak(t, p, "pikpak", "file-1", "Browser-A")
+	requestPikPak(t, p, "pikpak", "file-1", "Browser-B")
+	requestPikPak(t, p, "pikpak", "file-1", "Browser-A")
+
+	if drv.calls != 1 {
+		t.Fatalf("link calls = %d, want 1 (cache must not be UA-scoped for pikpak)", drv.calls)
+	}
+}
+
+func TestServeStreamPikPakSetsRedirectHeaders(t *testing.T) {
+	reg := NewRegistry()
+	drv := &proxyFakePikPakDrive{}
+	reg.Set("pikpak", drv)
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/pikpak/file-1", nil)
+	req.Header.Set("User-Agent", "Browser-A")
+	rr := httptest.NewRecorder()
+
+	p.ServeStream(rr, req, "pikpak", "file-1")
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+	}
+	if got := rr.Header().Get("Location"); got != "https://cdn.pikpak.example/file-1" {
+		t.Fatalf("Location = %q", got)
+	}
+	if got := rr.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q", got)
+	}
+}
+
+func requestPikPak(t *testing.T, p *Proxy, driveID, fileID, ua string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/"+driveID+"/"+fileID, nil)
+	req.Header.Set("User-Agent", ua)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, driveID, fileID)
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+	}
+}
+
+// proxyFakePikPakDrive 故意不实现 streamURLWithHeader，
+// 用来回归 pikpak 取链不带 UA 作用域、且走 302 的不变量。
+type proxyFakePikPakDrive struct {
+	calls int
+}
+
+func (d *proxyFakePikPakDrive) Kind() string { return "pikpak" }
+func (d *proxyFakePikPakDrive) ID() string   { return "pikpak" }
+func (d *proxyFakePikPakDrive) Init(context.Context) error {
+	return nil
+}
+func (d *proxyFakePikPakDrive) List(context.Context, string) ([]drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyFakePikPakDrive) Stat(context.Context, string) (*drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyFakePikPakDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {
+	d.calls++
+	return &drives.StreamLink{
+		URL:     "https://cdn.pikpak.example/" + fileID,
+		Headers: http.Header{},
+		Expires: time.Now().Add(10 * time.Minute),
+	}, nil
+}
+func (d *proxyFakePikPakDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyFakePikPakDrive) EnsureDir(context.Context, string) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyFakePikPakDrive) RootID() string { return "0" }

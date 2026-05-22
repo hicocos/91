@@ -142,10 +142,10 @@ func nullableStatus(s string) string {
 	return s
 }
 
-func (c *Catalog) UpdatePreview(ctx context.Context, id, previewFileID, previewLocal, status string) error {
+func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status string) error {
 	_, err := c.db.ExecContext(ctx,
-		`UPDATE videos SET preview_file_id = ?, preview_local = ?, preview_status = ?, updated_at = ? WHERE id = ?`,
-		previewFileID, previewLocal, status, time.Now().UnixMilli(), id)
+		`UPDATE videos SET preview_file_id = '', preview_local = ?, preview_status = ?, updated_at = ? WHERE id = ?`,
+		previewLocal, status, time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -160,6 +160,65 @@ func (c *Catalog) HideVideo(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// MigrateVideoToDrive 把 catalog 里 id=videoID 这条视频迁移到另一个 drive。
+// 用于 spider91 → PikPak 的迁移：上传成功后改写 drive_id / file_id /
+// content_hash，保留视频自身的 id（spider91-<driveID>-<viewkey>），这样
+// 关联表 (video_tags / 收藏 / 点赞) 都不需要动。
+//
+// scanner 后续看到 PikPak 目录下相同 hash / file_name 的文件时，会通过
+// findDuplicate 命中本行，不会再插入重复行。
+func (c *Catalog) MigrateVideoToDrive(ctx context.Context, videoID, newDriveID, newFileID, newContentHash string) error {
+	if videoID == "" || newDriveID == "" || newFileID == "" {
+		return fmt.Errorf("catalog: migrate video: empty id/drive/file")
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE videos
+		   SET drive_id     = ?,
+		       file_id      = ?,
+		       content_hash = CASE WHEN ? != '' THEN ? ELSE content_hash END,
+		       updated_at   = ?
+		 WHERE id = ?`,
+		newDriveID, newFileID, newContentHash, newContentHash, time.Now().UnixMilli(), videoID)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ListVideosByDriveID 列出指定 drive 下所有未隐藏的视频，按 published_at 倒序。
+// 给 spider91 → PikPak 迁移 worker 用：扫描 spider91 drive 下所有视频，
+// 检查哪些还有本地文件，依次上传到 PikPak。
+func (c *Catalog) ListVideosByDriveID(ctx context.Context, driveID string, limit int) ([]*Video, error) {
+	if driveID == "" {
+		return nil, fmt.Errorf("catalog: list videos by drive: empty drive id")
+	}
+	if limit <= 0 {
+		limit = 10000
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos
+		 WHERE drive_id = ? AND COALESCE(hidden, 0) = 0
+		 ORDER BY published_at DESC
+		 LIMIT ?`,
+		driveID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Video
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // IncrementLike 原子 +1，返回最新点赞数
@@ -463,6 +522,38 @@ func (c *Catalog) ListVideoFileIDsByDrive(ctx context.Context, driveID string) (
 			return nil, err
 		}
 		out = append(out, fid)
+	}
+	return out, rows.Err()
+}
+
+// ListSpider91Viewkeys 列出某个 spider91 drive 历史上爬过的所有 viewkey。
+//
+// 不能再用 ListVideoFileIDsByDrive：那个只看 drive_id，但 spider91 视频
+// 一旦被 spider91migrate 迁移到 PikPak，drive_id 就变成 PikPak 了。
+//
+// 这里按 video.id 前缀 "spider91-<driveID>-" 查，即使迁移后视频也仍能被
+// 找到——id 本身永远是 "spider91-<driveID>-<viewkey>"。
+//
+// 用途：crawler 把这个集合写到 seen 文件，让 Python 跳过已爬过的 viewkey
+// 详情页，配合 --target-new 真正凑出 N 个未爬过的视频。
+func (c *Catalog) ListSpider91Viewkeys(ctx context.Context, driveID string) ([]string, error) {
+	prefix := "spider91-" + driveID + "-"
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT SUBSTR(id, ?) FROM videos WHERE id LIKE ? || '%'`,
+		len(prefix)+1, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var vk string
+		if err := rows.Scan(&vk); err != nil {
+			return nil, err
+		}
+		if vk = strings.TrimSpace(vk); vk != "" {
+			out = append(out, vk)
+		}
 	}
 	return out, rows.Err()
 }

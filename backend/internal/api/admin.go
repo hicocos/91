@@ -31,6 +31,9 @@ type AdminServer struct {
 	// Theme 读写（"dark" | "pink"）
 	GetTheme func() string
 	SetTheme func(theme string) error
+	// Spider91 → PikPak 上传目标 drive ID 读写
+	GetSpider91UploadDriveID func() string
+	SetSpider91UploadDriveID func(driveID string) error
 }
 
 type GenerationStatus struct {
@@ -433,8 +436,9 @@ func (a *AdminServer) handleRegenFailedPreviews(w http.ResponseWriter, r *http.R
 // ---------- Settings ----------
 
 type settingsDTO struct {
-	PreviewEnabled bool   `json:"previewEnabled"`
-	Theme          string `json:"theme"`
+	PreviewEnabled        bool   `json:"previewEnabled"`
+	Theme                 string `json:"theme"`
+	Spider91UploadDriveID string `json:"spider91UploadDriveId"`
 }
 
 func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -448,33 +452,74 @@ func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) 
 			theme = v
 		}
 	}
-	writeJSON(w, http.StatusOK, settingsDTO{PreviewEnabled: enabled, Theme: theme})
+	spider91UploadID := ""
+	if a.GetSpider91UploadDriveID != nil {
+		spider91UploadID = a.GetSpider91UploadDriveID()
+	}
+	writeJSON(w, http.StatusOK, settingsDTO{
+		PreviewEnabled:        enabled,
+		Theme:                 theme,
+		Spider91UploadDriveID: spider91UploadID,
+	})
 }
 
 func (a *AdminServer) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	var body settingsDTO
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// 用 map 区分"没传"和"传了空字符串"两种语义；空 PikPak 上传 ID 表示
+	// 清除显式设置（回退到自动模式）。
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if a.SetPreviewEnabled != nil {
-		if err := a.SetPreviewEnabled(body.PreviewEnabled); err != nil {
+
+	if v, ok := raw["previewEnabled"]; ok && a.SetPreviewEnabled != nil {
+		var enabled bool
+		if err := json.Unmarshal(v, &enabled); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := a.SetPreviewEnabled(enabled); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
-	if a.SetTheme != nil && body.Theme != "" {
-		if err := a.SetTheme(body.Theme); err != nil {
+
+	if v, ok := raw["theme"]; ok && a.SetTheme != nil {
+		var theme string
+		if err := json.Unmarshal(v, &theme); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if theme != "" {
+			if err := a.SetTheme(theme); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+	}
+
+	if v, ok := raw["spider91UploadDriveId"]; ok && a.SetSpider91UploadDriveID != nil {
+		var driveID string
+		if err := json.Unmarshal(v, &driveID); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := a.SetSpider91UploadDriveID(driveID); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 	}
-	// 回显最新值，避免前端再 GET 一次
-	resp := settingsDTO{PreviewEnabled: body.PreviewEnabled, Theme: body.Theme}
+
+	// 回显当前值
+	resp := settingsDTO{}
+	if a.GetPreviewEnabled != nil {
+		resp.PreviewEnabled = a.GetPreviewEnabled()
+	}
 	if a.GetTheme != nil {
-		if v := a.GetTheme(); v != "" {
-			resp.Theme = v
-		}
+		resp.Theme = a.GetTheme()
+	}
+	if a.GetSpider91UploadDriveID != nil {
+		resp.Spider91UploadDriveID = a.GetSpider91UploadDriveID()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -45,7 +45,6 @@ type Preview struct {
 	DurationSeconds int    `yaml:"duration_seconds"`
 	Width           int    `yaml:"width"`
 	Segments        int    `yaml:"segments"`
-	RemoteDir       string `yaml:"remote_dir"` // Deprecated: teaser 和封面始终只写本地
 }
 
 // Drive 配置项中的敏感字段（Cookie / RefreshToken 等）最终由管理后台写入 DB

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"path"
 	"strconv"
@@ -190,8 +189,26 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	}, nil
 }
 
-func (d *Driver) Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error) {
-	return "", drives.ErrNotSupported
+// Upload 的真正实现见 upload.go。
+
+// Rename 把 fileID 这个文件改名为 newName（不能是空字符串）。
+// PikPak API：PATCH /drive/v1/files/<id> 带 body {"name": newName}。
+// 与 OpenList drivers/pikpak/driver.go 的 Rename 行为一致。
+func (d *Driver) Rename(ctx context.Context, fileID, newName string) error {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return errors.New("pikpak rename: empty file id")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("pikpak rename: empty new name")
+	}
+	if err := d.request(ctx, filesURL+"/"+fileID, http.MethodPatch, func(req *resty.Request) {
+		req.SetBody(map[string]any{"name": newName})
+	}, nil); err != nil {
+		return fmt.Errorf("pikpak rename: %w", err)
+	}
+	return nil
 }
 
 func (d *Driver) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {

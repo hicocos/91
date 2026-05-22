@@ -50,7 +50,7 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenPreviewEnabled(t *testing.T) {
 		thumbWorkers:   make(map[string]*preview.ThumbWorker),
 		previewEnabled: true,
 	}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{}, "")
+	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
 	go worker.Run(ctx)
 
 	app.registerPreviewWorkers(ctx, "drive-id", worker, nil, func() {})
@@ -112,7 +112,7 @@ func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
 	}
 	gen := &serverFakeTeaserGenerator{}
 	drv := &serverFakeDrive{}
-	worker := preview.NewWorker(gen, cat, drv, "")
+	worker := preview.NewWorker(gen, cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
 	go worker.Run(ctx)
 	go thumbWorker.Run(ctx)
@@ -200,7 +200,7 @@ func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
 	}
 	gen := &serverFakeTeaserGenerator{}
 	drv := &serverFakeDrive{}
-	worker := preview.NewWorker(gen, cat, drv, "")
+	worker := preview.NewWorker(gen, cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
 	go worker.Run(ctx)
 	go thumbWorker.Run(ctx)
@@ -264,7 +264,7 @@ func TestRegenFailedPreviewsQueuesOnlyFailedVideosForDrive(t *testing.T) {
 		thumbWorkers:   make(map[string]*preview.ThumbWorker),
 		previewEnabled: true,
 	}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{}, "")
+	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
 	go worker.Run(ctx)
 	app.mu.Lock()
 	app.workers["drive-id"] = worker
@@ -344,7 +344,7 @@ func TestEnqueueUploadedVideoQueuesLocalPreviewWorker(t *testing.T) {
 		thumbWorkers:   make(map[string]*preview.ThumbWorker),
 		previewEnabled: true,
 	}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverLocalUploadFakeDrive{}, "")
+	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverLocalUploadFakeDrive{})
 	go worker.Run(ctx)
 	app.mu.Lock()
 	app.workers["local-upload"] = worker

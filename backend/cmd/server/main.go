@@ -32,6 +32,7 @@ import (
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/proxy"
 	"github.com/video-site/backend/internal/scanner"
+	"github.com/video-site/backend/internal/spider91migrate"
 )
 
 func main() {
@@ -66,6 +67,11 @@ func main() {
 		spider91Crawlers: make(map[string]*spider91.Crawler),
 	}
 	app.proxy = proxy.New(app.registry)
+	app.spider91Migrator = spider91migrate.New(spider91migrate.Config{
+		Catalog:          cat,
+		Registry:         app.registry,
+		GetTargetDriveID: func() string { return app.Spider91UploadDriveID() },
+	})
 
 	// 初始化现有 drives
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,6 +79,7 @@ func main() {
 
 	app.loadPreviewEnabled(ctx)
 	app.loadTheme(ctx)
+	app.loadSpider91UploadDriveID(ctx)
 	if err := app.attachLocalUpload(ctx); err != nil {
 		log.Printf("[local-upload] attach failed: %v", err)
 	}
@@ -149,6 +156,10 @@ func main() {
 		SetTheme: func(theme string) error {
 			return app.SetTheme(ctx, theme)
 		},
+		GetSpider91UploadDriveID: func() string { return app.Spider91UploadDriveID() },
+		SetSpider91UploadDriveID: func(id string) error {
+			return app.SetSpider91UploadDriveID(ctx, id)
+		},
 	}
 
 	r := chi.NewRouter()
@@ -163,6 +174,8 @@ func main() {
 	go app.scanLoop(ctx)
 	// spider91 爬虫专用的凌晨任务（默认 00:30 触发，避开网盘扫描窗口）
 	go app.crawlerLoop(ctx)
+	// spider91 → PikPak 上传 worker
+	go app.spider91Migrator.Run(ctx)
 
 	srv := &http.Server{
 		Addr:    cfg.Server.Listen,
@@ -204,6 +217,12 @@ type App struct {
 	previewEnabled bool
 	// 全站主题（"dark" | "pink"），从 DB 读
 	theme string
+	// 显式指定的 spider91 → PikPak 上传目标 drive ID；
+	// 未设置时由 Spider91UploadDriveID() 自动挑唯一的 PikPak drive。
+	spider91UploadDriveID string
+
+	// spider91Migrator 周期把 spider91 视频上传到 PikPak。
+	spider91Migrator *spider91migrate.Migrator
 }
 
 // PreviewEnabled 线程安全读
@@ -297,6 +316,65 @@ func (a *App) loadTheme(ctx context.Context) {
 	}
 	a.mu.Lock()
 	a.theme = v
+	a.mu.Unlock()
+}
+
+// Spider91UploadDriveID 返回当前生效的 PikPak 上传目标 drive ID。
+// 优先返回管理员显式设置的值；未设置时，如果系统中只有一个 pikpak drive，
+// 返回它；多个或没有则返回空串（迁移 worker 跳过）。
+func (a *App) Spider91UploadDriveID() string {
+	a.mu.Lock()
+	explicit := a.spider91UploadDriveID
+	a.mu.Unlock()
+	if explicit != "" {
+		// 验证显式设置的 drive 仍然存在且是 pikpak 类型；不在则降级到自动选取
+		if d, ok := a.registry.Get(explicit); ok && d.Kind() == "pikpak" {
+			return explicit
+		}
+	}
+	var found string
+	for _, d := range a.registry.All() {
+		if d.Kind() != "pikpak" {
+			continue
+		}
+		if found != "" {
+			// 多个 PikPak drive 时不自动选；管理员必须显式指定
+			return ""
+		}
+		found = d.ID()
+	}
+	return found
+}
+
+// SetSpider91UploadDriveID 设置 PikPak 上传目标 drive ID 并持久化。
+// 接受空字符串（清除显式设置，回退到自动模式）。
+// 设置一个不存在或不是 pikpak 类型的 drive 会返回错误。
+func (a *App) SetSpider91UploadDriveID(ctx context.Context, driveID string) error {
+	driveID = strings.TrimSpace(driveID)
+	if driveID != "" {
+		d, ok := a.registry.Get(driveID)
+		if !ok {
+			return fmt.Errorf("drive %q not found", driveID)
+		}
+		if d.Kind() != "pikpak" {
+			return fmt.Errorf("drive %q kind=%s, only pikpak can be spider91 upload target", driveID, d.Kind())
+		}
+	}
+	a.mu.Lock()
+	a.spider91UploadDriveID = driveID
+	a.mu.Unlock()
+	return a.cat.SetSetting(ctx, "spider91.upload_drive_id", driveID)
+}
+
+// loadSpider91UploadDriveID 从 DB 读上传目标 drive ID 设置；不存在时使用空串。
+func (a *App) loadSpider91UploadDriveID(ctx context.Context) {
+	v, err := a.cat.GetSetting(ctx, "spider91.upload_drive_id", "")
+	if err != nil {
+		log.Printf("[spider91] load upload drive setting: %v", err)
+		return
+	}
+	a.mu.Lock()
+	a.spider91UploadDriveID = strings.TrimSpace(v)
 	a.mu.Unlock()
 }
 
@@ -452,9 +530,8 @@ func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 		Width:           a.cfg.Preview.Width,
 		Segments:        a.cfg.Preview.Segments,
 		LocalDir:        a.cfg.Storage.LocalPreviewDir,
-		RemoteDir:       "",
 	})
-	worker := preview.NewWorker(gen, a.cat, drv, "")
+	worker := preview.NewWorker(gen, a.cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
 
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -485,9 +562,8 @@ func (a *App) attachLocalUpload(ctx context.Context) error {
 		Width:           a.cfg.Preview.Width,
 		Segments:        a.cfg.Preview.Segments,
 		LocalDir:        a.cfg.Storage.LocalPreviewDir,
-		RemoteDir:       "",
 	})
-	worker := preview.NewWorker(gen, a.cat, drv, "")
+	worker := preview.NewWorker(gen, a.cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
 
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -982,7 +1058,7 @@ func (a *App) regenFailedPreviews(ctx context.Context, driveID string) {
 			log.Printf("[preview] enqueue failed canceled drive=%s queued=%d: %v", driveID, queued, err)
 			return
 		}
-		if err := a.cat.UpdatePreview(ctx, v.ID, "", "", "pending"); err != nil {
+		if err := a.cat.UpdatePreview(ctx, v.ID, "", "pending"); err != nil {
 			log.Printf("[preview] reset failed video %s drive=%s: %v", v.ID, driveID, err)
 			continue
 		}
@@ -1179,6 +1255,11 @@ func (a *App) runSpider91Crawl(ctx context.Context, driveID string) {
 	}
 	if err := a.cat.UpsertDrive(ctx, d); err != nil {
 		log.Printf("[spider91] drive=%s update last_crawl_at: %v", driveID, err)
+	}
+
+	// 爬完立刻 ping 一次迁移 worker，不等下一个周期。
+	if a.spider91Migrator != nil {
+		a.spider91Migrator.Trigger()
 	}
 }
 

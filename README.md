@@ -141,11 +141,23 @@ git add vendor/      # 入库
 
 管理后台的"重生失败 teaser"会把 `failed` 重置为 `pending` 并入队。一次性重生大量 115 视频仍可能触发上游风控；建议点一次后观察日志，如果出现 `transient media source error until=...`，等待冷却结束再继续，不要反复点击。
 
-### PikPak 速度说明
+### PikPak 说明
 
-PikPak 的 `disable_media_link` 默认按 `true` 处理，会使用 `web_content_link` 原始下载链接；在当前服务器实测，单连接通常只有约 2.8-3 MiB/s。把该字段设置为 `false` 后，后端会改用 `usage=CACHE` 返回的 media/cache 链接，当前服务器实测 `/p/stream` 64 MiB Range 可到约 8.9 MiB/s。
+PikPak 视频流采用 **302 重定向直连**（和 OpenList 一致）：浏览器请求 `/p/stream/<driveID>/<fileID>` 时，backend 调用 PikPak API 拿到签名直链，直接 `302 Location: <PikPak CDN URL>` 出去，视频字节走浏览器 ↔ CDN 直连，**不经过 backend**。
 
-当前服务器同时存在 sing-box TUN 透明代理，PikPak 默认出站会被 `tun0` 接管；但强制直连物理网卡并没有更快，慢速的主要差异来自 PikPak 取链方式。media/cache CDN 节点仍有波动，偶尔可能遇到慢节点；如果播放变慢，可重新获取直链或重新挂载 PikPak 后再测。
+带来的影响：
+
+- 服务器带宽不消耗在视频字节上，单纯做"取链"中介。
+- 网盘所在 CDN 节点的可用性 / 速度直接决定播放体验：能直连 PikPak CDN 的客户端走得很快，反之则慢。这一点对国内访问尤其敏感。
+- 客户端 IP 暴露给 PikPak CDN（与 OpenList 行为一致）。
+- 签名链接在客户端缓存，大概 10 分钟左右过期；超长暂停后 Range 续传 403 时刷新页面会自动重新取链。
+
+`disable_media_link` 字段的取舍仍然有效：
+
+- 默认 `true`：用 `web_content_link` 原始下载链接，CDN 节点偏慢，但稳定。
+- `false`：改用 `usage=CACHE` 返回的 media/cache 链接，通常更快（当前服务器实测原 `/p/stream` 反代模式下约 8.9 MiB/s vs `true` 模式 ~3 MiB/s），但 media/cache 节点偶尔有波动。改成 302 直连后，浏览器侧的下载速度只看本地到 PikPak CDN 的网络，与 backend 出站策略（如 sing-box TUN）无关。
+
+teaser / 封面生成走的是 backend 内部取流路径，不受 302 重定向影响（仍由 backend 拉数据后喂给 ffmpeg）。
 
 ### OneDrive 说明
 
@@ -212,7 +224,24 @@ backend/data/spider91/<driveID>/
 - 91porn 有 Cloudflare 防护，连续访问可能触发 403；脚本内置 3-6 秒列表页延时和 2-5 秒详情页延时
 - `target_new=15` 配合 page 上下文，单次任务大概要请求 15-30 个详情页（部分页面会是已爬过的 viewkey，会跳过详情页请求）；Python 阶段约 1 分钟，下载阶段在代理畅通时约 1.5 分钟
 - 单条视频平均 100 MB，每天 15 个新视频约占 1.5 GB；运行一段时间后注意磁盘容量
-- 当前不会自动清理旧视频；磁盘吃紧时手动删除 `backend/data/spider91/<driveID>/videos/` 下的文件并删除 catalog 中对应的视频（或者删除整个 drive）
+
+### Spider91 → PikPak 自动迁移
+
+只要管理后台同时挂着 spider91 drive 和 PikPak drive，spider91 爬下来的视频会按"**本地保留最近一次爬取的 15 个，更旧的上传到 PikPak**"的策略由独立 worker 处理；上传完后回放自动走 PikPak 302 直连，本地副本被删除。
+
+- **保留策略**：每个 spider91 drive 的 `videos/` 目录按 mtime 降序，**最新 N=15 个文件被保留在本地不上传**（默认值，可通过 Migrator Config 调）；只有超过这 15 个之外的更旧文件才会被传到 PikPak。
+  - 第一次爬完：本地 15 个，全部留下，PikPak 不增。
+  - 第二次爬完：本地 30 个，最旧 15 个传到 PikPak + 删本地，本地剩最新 15 个。
+  - 稳态：本地恒为 ≤15 个最新视频，PikPak 累积所有历史。
+- **目标 PikPak drive 选择**：`spider91_upload_drive_id` 全局设置；admin 可通过 `PUT /admin/api/settings` 显式指定。**未设置时会自动选取唯一的 PikPak drive**；如果有多个 PikPak drive，必须在管理后台显式选定其中一个，否则迁移不会发生。
+- **PikPak 目录**：用该 PikPak drive 的 `rootId` 作为上传父目录。建议在 PikPak Web 端预先建一个空的子目录（比如 `/91Spider/`），把这个目录的 file ID 填到 PikPak drive 的 `rootId`，这样既能让自动迁移落到这个子目录，也能让该 PikPak drive 的扫描根只看这个子目录，不会和 115 等其它网盘内容重叠。
+- **PikPak 文件名**：上传时使用 `<视频标题>-<viewkey后8位>.<ext>` 格式（方案 B）。标题被 sanitize 过：去控制字符、非法字符 `/ \ : * ? " < > |` 替成空格、折叠空白、首尾去点号、按 unicode 截断 80 字符。catalog 的 `file_name` 同步更新成上传名，下次 PikPak 扫盘时按 `(file_name, size)` 也能匹配上。
+- **触发节奏**：迁移 worker 每 60 秒轮询一次；每次 spider91 爬虫完成后立刻额外触发一次（不必等周期）。但触发不等于上传 —— 是否上传由"本地是否超过 15 个"决定。
+- **catalog 改写**：上传成功后事务性地把视频行的 `drive_id` / `file_id` / `file_name` / `content_hash` 改成 PikPak 的；视频自身的 `id`（`spider91-<driveID>-<viewkey>`）保持不变，所以 `video_tags`、`views`、`likes`、`91porn` 标签等关联数据全部保留。改写后再次扫盘时，scanner 通过 `(content_hash)` 或 `(file_name, size)` 现成的 `findDuplicate` 兜底逻辑认出来，不会重复入库。
+- **本地清理**：迁移成功立即删本地 mp4 + thumb（封面已复制到 `backend/data/previews/thumbs/`，前端展示不受影响）。每轮 worker 末尾还有一道防御性兜底 —— 扫所有本地文件，对 catalog 中 `drive_id` 已迁走但本地仍有残留的孤儿做清理（正常路径不会触发）。
+- **去重 seen 文件**：crawler 每次跑前会写一份 "已知 viewkey" 文件喂给 Python 脚本，让它跳过已爬过的详情页。这个列表按 `id LIKE 'spider91-<driveID>-%'` 查（不依赖 `drive_id`），所以 spider91 视频被迁到 PikPak 后还能被认出来，**不会重复爬**。
+- **失败处理**：上传失败时本地文件保留、catalog 行保持原样；下次轮询会重试。账户超额或永久错误目前没有特殊标记，watch 日志（`[spider91migrate]`）即可。
+- **不开 PikPak？** 不指定 `spider91_upload_drive_id` 也不挂 PikPak drive 时，spider91 视频继续从本地服务（`/p/spider91/<videoID>`），跟以前一样工作；磁盘会持续增长，需要手动管理。
 
 ## Teaser 和封面生成策略
 

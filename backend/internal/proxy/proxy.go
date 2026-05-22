@@ -136,8 +136,24 @@ func (p *Proxy) ServeStream(w http.ResponseWriter, r *http.Request, driveID, fil
 	p.serve(w, r, link)
 }
 
+// shouldRedirect 返回 true 时，/p/stream 不再反代视频字节，
+// 而是用 302 让浏览器直连网盘 CDN。
+//
+// 只把"自己签名 URL 即可下载、不需要持久 Header 鉴权"的网盘放进来：
+//   - p115：CDN 签名链接，UA 通过 streamURLWithHeader 在取链时使用，
+//     302 之后浏览器用自己的 UA 直连，CDN 仍然认签名
+//   - pikpak：与 OpenList 一致，WebContentLink / media link 都是自签 URL，
+//     CDN 不校验请求头，直连可获得最佳带宽并避免占用 backend 出站
+//
+// 其余网盘（如 OneDrive / 沃盘 / 夸克等）仍走反代，因为它们的下载
+// 链接通常需要随请求带上后端持有的 Cookie / Authorization / Range
+// 的特殊处理，浏览器拿不到这些上下文。
 func shouldRedirect(d drives.Drive) bool {
-	return d.Kind() == "p115"
+	switch d.Kind() {
+	case "p115", "pikpak":
+		return true
+	}
+	return false
 }
 
 func redirect(w http.ResponseWriter, r *http.Request, link *drives.StreamLink) {
