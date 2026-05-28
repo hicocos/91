@@ -82,10 +82,14 @@ test("admin modals and action footers adapt on mobile", () => {
 test("mobile admin top navigation stays compact", () => {
   const css = mobileCss();
 
+  assert.match(ruleBody(css, ".admin-shell"), /display\s*:\s*flex/);
+  assert.match(ruleBody(css, ".admin-shell"), /flex-direction\s*:\s*column/);
   assert.match(ruleBody(css, ".admin-sidebar"), /height\s*:\s*48px/);
   assert.match(ruleBody(css, ".admin-sidebar"), /min-height\s*:\s*48px/);
   assert.match(ruleBody(css, ".admin-nav"), /align-items\s*:\s*center/);
   assert.match(ruleBody(css, ".admin-nav__link"), /height\s*:\s*34px/);
   assert.match(ruleBody(css, ".admin-nav__link"), /line-height\s*:\s*1/);
   assert.match(ruleBody(css, ".admin-nav__link"), /flex\s*:\s*0\s+0\s+auto/);
+  assert.match(ruleBody(css, ".admin-main"), /padding\s*:\s*var\(--space-2\)\s+var\(--space-3\)\s+var\(--space-4\)/);
+  assert.match(ruleBody(css, ".admin-page__header"), /margin-bottom\s*:\s*var\(--space-3\)/);
 });
