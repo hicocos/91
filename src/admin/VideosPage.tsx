@@ -302,7 +302,6 @@ export function VideosPage() {
                 </th>
                 <th>标题</th>
                 <th>作者</th>
-                <th>标签</th>
                 <th>时长</th>
                 <th>预览视频</th>
                 <th>来源</th>
@@ -323,24 +322,33 @@ export function VideosPage() {
                     </button>
                   </td>
                   <td data-label="标题">
-                    <div className="admin-video-title">{v.title}</div>
-                    {fileMeta(v) && (
-                      <div className="admin-video-filemeta">
-                        {fileMeta(v)}
+                    <div className="admin-video-title-cell">
+                      <div className="admin-video-thumb-wrap" aria-hidden="true">
+                        {v.thumbnailUrl ? (
+                          <img className="admin-video-thumb" src={v.thumbnailUrl} alt="" />
+                        ) : (
+                          <div className="admin-video-thumb-placeholder">
+                            <Image size={14} />
+                          </div>
+                        )}
                       </div>
-                    )}
-                    <VideoFileMetaPills video={v} />
-                  </td>
-                  <td data-label="作者">{v.author || <span className="admin-text-faint">—</span>}</td>
-                  <td data-label="标签">
-                    <div className="admin-pills">
-                      {(v.tags ?? []).map((t) => (
-                        <span key={t} className="admin-pill">
-                          {t}
-                        </span>
-                      ))}
+                      <div className="admin-video-title-body">
+                        <div className="admin-video-title">{v.title}</div>
+                        {fileMeta(v) && (
+                          <div className="admin-video-filemeta">{fileMeta(v)}</div>
+                        )}
+                        {(v.tags ?? []).length > 0 && (
+                          <div className="admin-pills admin-video-title-tags">
+                            {(v.tags ?? []).map((t) => (
+                              <span key={t} className="admin-pill">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                        <VideoFileMetaPills video={v} />
+                      </div>
                     </div>
                   </td>
+                  <td data-label="作者">{v.author || <span className="admin-text-faint">—</span>}</td>
                   <td data-label="时长">{formatDur(v.durationSeconds)}</td>
                   <td data-label="预览视频">
                     <PreviewStatus s={v.previewStatus} />
@@ -349,8 +357,8 @@ export function VideosPage() {
                     {driveNameMap.get(v.driveId) ?? v.driveId}
                   </td>
                   <td className="is-actions" data-label="操作">
-                    <button type="button" className="admin-btn" onClick={() => setEditing(v)}>
-                      <Edit size={13} /> 编辑
+                    <button type="button" className="admin-btn" onClick={() => setEditing(v)} title="编辑视频">
+                      <Edit size={13} />
                     </button>{" "}
                     <button type="button" className="admin-btn" onClick={() => handleRegen(v)} title="重生预览视频">
                       <RefreshCw size={13} />

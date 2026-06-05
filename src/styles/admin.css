@@ -1650,6 +1650,8 @@
   .admin-table.is-selectable:not(.admin-drives-table) tr,
   .admin-table.is-selectable:not(.admin-drives-table) td,
   .admin-table.is-selectable:not(.admin-drives-table) td::before,
+  .admin-table.is-selectable:not(.admin-drives-table) .admin-video-title-cell,
+  .admin-table.is-selectable:not(.admin-drives-table) .admin-video-title-body,
   .admin-table.is-selectable:not(.admin-drives-table) .admin-video-title,
   .admin-table.is-selectable:not(.admin-drives-table) .admin-video-filemeta,
   .admin-table.is-selectable:not(.admin-drives-table) .admin-pills,
@@ -1713,7 +1715,9 @@
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", monospace;
   font-size: var(--font-xs);
   color: var(--text-muted);
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .admin-video-title {
@@ -1730,6 +1734,48 @@
 
 .admin-video-filemeta-pills {
   display: none;
+}
+
+.admin-video-title-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.admin-video-thumb-wrap {
+  flex: 0 0 68px;
+  width: 68px;
+  height: 42px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.admin-video-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.admin-video-thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-faint);
+}
+
+.admin-video-title-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-video-title-tags {
+  margin-top: 4px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 768px) {
@@ -1856,6 +1902,17 @@
     align-content: center;
   }
 
+  .admin-videos-table:not(.admin-drives-table) .admin-video-title-cell {
+    gap: 8px;
+  }
+
+  .admin-videos-table:not(.admin-drives-table) .admin-video-thumb-wrap {
+    flex: 0 0 54px;
+    width: 54px;
+    height: 34px;
+    border-radius: 4px;
+  }
+
   .admin-videos-table:not(.admin-drives-table) .admin-video-title {
     color: var(--admin-video-card-main);
     font-size: 14px;
@@ -1872,6 +1929,10 @@
     flex-wrap: wrap;
     gap: 4px;
     min-width: 0;
+  }
+
+  .admin-videos-table:not(.admin-drives-table) .admin-video-title-tags {
+    display: none;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-video-filemeta-pill {
@@ -1892,10 +1953,6 @@
     border-color: var(--admin-video-card-category-border);
     background: var(--admin-video-card-category-bg);
     color: var(--admin-video-card-category-text);
-  }
-
-  .admin-videos-table:not(.admin-drives-table) td[data-label="标签"] {
-    display: none;
   }
 
   .admin-videos-table:not(.admin-drives-table) td[data-label="作者"],
@@ -2241,6 +2298,17 @@
 /* =========================================================
  * Drive Type Picker (新建网盘 - 类型选择卡片)
  * ========================================================= */
+.admin-drive-type-picker {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.admin-drive-type-picker__hint {
+  margin: 0;
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
 .admin-drive-type-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2251,24 +2319,22 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: var(--space-4) var(--space-3);
+  gap: 6px;
+  padding: var(--space-4) var(--space-3) var(--space-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  color: var(--text-default);
+  background: var(--bg-elevated);
   cursor: pointer;
   text-align: center;
-  transition: border-color var(--transition-fast),
+  transition:
+    border-color var(--transition-fast),
     background var(--transition-fast),
     box-shadow var(--transition-fast),
     transform var(--transition-fast);
 }
 
 .admin-drive-type-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-elevated);
-  box-shadow: 0 4px 16px var(--accent-glow);
+  background: var(--bg-surface);
   transform: translateY(-2px);
 }
 
@@ -2281,23 +2347,53 @@
   outline-offset: 2px;
 }
 
+/* 悬停时用各自品牌色描边 + 光晕 */
+.admin-drive-type-card[data-kind="p115"]:hover    { border-color: var(--drive-p115);       box-shadow: 0 4px 18px rgba(245,107,118,.22); }
+.admin-drive-type-card[data-kind="p123"]:hover    { border-color: var(--drive-p123);       box-shadow: 0 4px 18px rgba(34,184,200,.2); }
+.admin-drive-type-card[data-kind="pikpak"]:hover  { border-color: var(--drive-pikpak);     box-shadow: 0 4px 18px rgba(138,109,255,.22); }
+.admin-drive-type-card[data-kind="onedrive"]:hover { border-color: var(--drive-onedrive); box-shadow: 0 4px 18px rgba(76,171,234,.2); }
+.admin-drive-type-card[data-kind="googledrive"]:hover { border-color: #4285f4;            box-shadow: 0 4px 18px rgba(66,133,244,.2); }
+.admin-drive-type-card[data-kind="localstorage"]:hover { border-color: var(--drive-localstorage); box-shadow: 0 4px 18px rgba(53,184,143,.2); }
+.admin-drive-type-card[data-kind="spider91"]:hover { border-color: var(--accent);         box-shadow: 0 4px 18px var(--accent-glow); }
+.admin-drive-type-card[data-kind="quark"]:hover   { border-color: var(--drive-quark);     box-shadow: 0 4px 18px rgba(91,141,239,.2); }
+.admin-drive-type-card[data-kind="wopan"]:hover   { border-color: var(--drive-wopan);     box-shadow: 0 4px 18px rgba(255,138,60,.2); }
+
 .admin-drive-type-card__icon {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: var(--radius-md);
-  background: var(--accent-soft);
-  color: var(--accent);
   font-size: 14px;
   font-weight: var(--weight-bold);
   letter-spacing: -0.02em;
+  /* 默认色，未匹配 data-kind 时的兜底 */
+  background: var(--accent-soft);
+  color: var(--accent);
 }
+
+/* 各网盘品牌色图标 */
+.admin-drive-type-card__icon[data-kind="p115"]        { background: rgba(245,107,118,.14); color: var(--drive-p115); }
+.admin-drive-type-card__icon[data-kind="p123"]        { background: rgba(34,184,200,.14);  color: var(--drive-p123); }
+.admin-drive-type-card__icon[data-kind="pikpak"]      { background: rgba(138,109,255,.14); color: var(--drive-pikpak); }
+.admin-drive-type-card__icon[data-kind="onedrive"]    { background: rgba(76,171,234,.14);  color: var(--drive-onedrive); }
+.admin-drive-type-card__icon[data-kind="googledrive"] { background: rgba(66,133,244,.14);  color: #4285f4; }
+.admin-drive-type-card__icon[data-kind="localstorage"]{ background: rgba(53,184,143,.14);  color: var(--drive-localstorage); }
+.admin-drive-type-card__icon[data-kind="spider91"]    { background: var(--accent-soft);    color: var(--accent); }
+.admin-drive-type-card__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
+.admin-drive-type-card__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
 
 .admin-drive-type-card__label {
   font-size: var(--font-sm);
   font-weight: var(--weight-semibold);
   color: var(--text-strong);
+  line-height: 1.2;
+}
+
+.admin-drive-type-card__desc {
+  font-size: var(--font-xs);
+  color: var(--text-faint);
+  line-height: var(--line-tight);
 }
 
 @media (max-width: 520px) {
@@ -2306,60 +2402,84 @@
   }
 }
 
-.admin-drive-step-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-
-.admin-drive-step-back:hover {
-  color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-:root[data-theme="pink"] .admin-drive-step-back:hover {
-  background: rgba(120, 50, 80, 0.06);
-}
-
-.admin-drive-step-header {
+/* =========================================================
+ * Drive Selected Bar (选完类型后在表单顶部显示的条)
+ * ========================================================= */
+.admin-drive-selected-bar {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  padding: 12px var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   margin-bottom: var(--space-4);
 }
 
-.admin-drive-step-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: var(--radius-md);
-  background: var(--accent-soft);
-  border: 1px solid var(--border-accent);
-}
-
-.admin-drive-step-badge__abbr {
+.admin-drive-selected-bar__icon {
+  flex-shrink: 0;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--text-on-accent);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  /* 兜底 */
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-.admin-drive-step-badge__label {
-  font-size: var(--font-sm);
+.admin-drive-selected-bar__icon[data-kind="p115"]        { background: rgba(245,107,118,.14); color: var(--drive-p115); }
+.admin-drive-selected-bar__icon[data-kind="p123"]        { background: rgba(34,184,200,.14);  color: var(--drive-p123); }
+.admin-drive-selected-bar__icon[data-kind="pikpak"]      { background: rgba(138,109,255,.14); color: var(--drive-pikpak); }
+.admin-drive-selected-bar__icon[data-kind="onedrive"]    { background: rgba(76,171,234,.14);  color: var(--drive-onedrive); }
+.admin-drive-selected-bar__icon[data-kind="googledrive"] { background: rgba(66,133,244,.14);  color: #4285f4; }
+.admin-drive-selected-bar__icon[data-kind="localstorage"]{ background: rgba(53,184,143,.14);  color: var(--drive-localstorage); }
+.admin-drive-selected-bar__icon[data-kind="spider91"]    { background: var(--accent-soft);    color: var(--accent); }
+.admin-drive-selected-bar__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
+.admin-drive-selected-bar__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
+
+.admin-drive-selected-bar__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-drive-selected-bar__name {
+  font-size: var(--font-md);
   font-weight: var(--weight-semibold);
   color: var(--text-strong);
+}
+
+.admin-drive-selected-bar__desc {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.admin-drive-selected-bar__back {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.admin-drive-selected-bar__back:hover {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
 }
 
 .admin-form__section {
@@ -2911,6 +3031,151 @@
 
 .admin-drive-card:hover .admin-drive-card__manage-link {
   color: var(--accent-hover);
+}
+
+/* =========================================================
+ * Drive Detail Header — right-side chips
+ * ========================================================= */
+.admin-drive-detail__id {
+  font-size: var(--font-xs);
+  color: var(--text-faint);
+  display: block;
+  margin-top: 3px;
+}
+
+.admin-drive-detail__header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.admin-drive-detail__kind-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* =========================================================
+ * Drive Detail — Error Banner & Local Storage Metrics
+ * ========================================================= */
+.admin-detail-error {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--danger-soft);
+  border: 1px solid rgba(241, 85, 108, 0.25);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
+  color: var(--danger);
+  line-height: var(--line-relaxed);
+  word-break: break-all;
+}
+
+.admin-local-storage-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.admin-local-storage-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-local-storage-metric span {
+  font-size: var(--font-xs);
+  color: var(--text-faint);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-local-storage-metric strong {
+  font-size: var(--font-lg);
+  font-weight: var(--weight-bold);
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================
+ * Drive Generation — 3-Column Layout
+ * ========================================================= */
+.admin-gen-columns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.admin-gen-col {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.admin-gen-col__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.admin-gen-col__label {
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-strong);
+}
+
+.admin-gen-col__detail {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  line-height: var(--line-tight);
+}
+
+.admin-gen-col__counts {
+  display: grid;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.admin-gen-col__count {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: var(--font-xs);
+}
+
+.admin-gen-col__count span {
+  color: var(--text-faint);
+}
+
+.admin-gen-col__count strong {
+  color: var(--text-strong);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .admin-gen-columns {
+    grid-template-columns: 1fr;
+  }
+  .admin-local-storage-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 /* --- Detail Layout --- */

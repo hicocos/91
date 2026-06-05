@@ -1,5 +1,17 @@
 export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
 
+export const kindAbbr: Record<string, string> = {
+  quark: "Qk",
+  p115: "115",
+  p123: "123",
+  pikpak: "Pk",
+  wopan: "Wo",
+  onedrive: "OD",
+  googledrive: "GD",
+  localstorage: "Lo",
+  spider91: "91",
+};
+
 export const kindLabel: Record<string, string> = {
   quark: "夸克网盘",
   p115: "115 网盘",

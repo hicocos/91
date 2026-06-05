@@ -16,18 +16,19 @@ type DriveOption = {
   kind: Kind;
   label: string;
   abbr: string;
+  desc: string;
 };
 
 const DRIVE_OPTIONS: DriveOption[] = [
-  { kind: "p115", label: "115 网盘", abbr: "115" },
-  { kind: "p123", label: "123 云盘", abbr: "123" },
-  { kind: "pikpak", label: "PikPak", abbr: "Pk" },
-  { kind: "onedrive", label: "OneDrive", abbr: "OD" },
-  { kind: "googledrive", label: "Google Drive", abbr: "GD" },
-  { kind: "localstorage", label: "本地存储", abbr: "Lo" },
-  { kind: "spider91", label: "91 爬虫", abbr: "91" },
-  { kind: "quark", label: "夸克网盘", abbr: "Qk" },
-  { kind: "wopan", label: "联通沃盘", abbr: "Wo" },
+  { kind: "p115", label: "115 网盘", abbr: "115", desc: "302直链，不占带宽" },
+  { kind: "p123", label: "123 云盘", abbr: "123", desc: "扫码登录，302直链" },
+  { kind: "pikpak", label: "PikPak", abbr: "Pk", desc: "302直链，稳定快速" },
+  { kind: "onedrive", label: "OneDrive", abbr: "OD", desc: "302直链，微软网盘" },
+  { kind: "googledrive", label: "Google Drive", abbr: "GD", desc: "服务器中转模式" },
+  { kind: "localstorage", label: "本地存储", abbr: "Lo", desc: "本机文件目录" },
+  { kind: "spider91", label: "91 爬虫", abbr: "91", desc: "自动抓取热门视频" },
+  { kind: "quark", label: "夸克网盘", abbr: "Qk", desc: "302直链" },
+  { kind: "wopan", label: "联通沃盘", abbr: "Wo", desc: "302直链" },
 ];
 
 export function DriveForm({
@@ -87,37 +88,41 @@ export function DriveForm({
 
   if (step === "type" && !isEdit) {
     return (
-      <div className="admin-drive-type-grid">
-        {DRIVE_OPTIONS.map((opt) => (
-          <button
-            key={opt.kind}
-            type="button"
-            className="admin-drive-type-card"
-            onClick={() => selectType(opt.kind)}
-          >
-            <span className="admin-drive-type-card__icon">
-              {opt.abbr}
-            </span>
-            <span className="admin-drive-type-card__label">{opt.label}</span>
-          </button>
-        ))}
+      <div className="admin-drive-type-picker">
+        <div className="admin-drive-type-grid">
+          {DRIVE_OPTIONS.map((opt) => (
+            <button
+              key={opt.kind}
+              type="button"
+              className="admin-drive-type-card"
+              data-kind={opt.kind}
+              onClick={() => selectType(opt.kind)}
+            >
+              <span className="admin-drive-type-card__icon" data-kind={opt.kind}>
+                {opt.abbr}
+              </span>
+              <span className="admin-drive-type-card__label">{opt.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="admin-form">
-      {!isEdit && (
-        <div className="admin-drive-step-header">
-          <button type="button" className="admin-drive-step-back" onClick={goBack}>
-            <ArrowLeft size={14} /> 重选类型
+      {!isEdit && selectedOption && (
+        <div className="admin-drive-selected-bar" data-kind={form.kind}>
+          <span className="admin-drive-selected-bar__icon" data-kind={form.kind}>
+            {selectedOption.abbr}
+          </span>
+          <div className="admin-drive-selected-bar__text">
+            <span className="admin-drive-selected-bar__name">{selectedOption.label}</span>
+            <span className="admin-drive-selected-bar__desc">{selectedOption.desc}</span>
+          </div>
+          <button type="button" className="admin-drive-selected-bar__back" onClick={goBack}>
+            <ArrowLeft size={12} /> 重选类型
           </button>
-          {selectedOption && (
-            <span className="admin-drive-step-badge">
-              <span className="admin-drive-step-badge__abbr">{selectedOption.abbr}</span>
-              <span className="admin-drive-step-badge__label">{selectedOption.label}</span>
-            </span>
-          )}
         </div>
       )}
 

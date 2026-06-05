@@ -459,9 +459,10 @@ export function DrivesPage() {
           </button>
           <div className="admin-drive-detail__title-wrap">
             <h1 className="admin-drive-detail__title">{d.name || d.id}</h1>
-            <span className="admin-mono-cell" style={{ fontSize: "14px", color: "var(--text-faint)" }}>
-              ({d.id})
-            </span>
+          </div>
+          <div className="admin-drive-detail__header-right">
+            <span className="admin-drive-detail__kind-chip">{kindLabel[d.kind] ?? d.kind}</span>
+            <StatusTag kind={d.kind} status={d.status} error={d.lastError} hasCred={d.hasCredential} />
           </div>
         </header>
 
@@ -471,16 +472,11 @@ export function DrivesPage() {
               <header className="admin-detail-card__title">
                 <div className="admin-detail-card__title-left">
                   <HardDrive size={16} />
-                  <span>基本信息与状态</span>
+                  <span>基本信息</span>
                 </div>
-                <StatusTag kind={d.kind} status={d.status} error={d.lastError} hasCred={d.hasCredential} />
               </header>
 
               <div className="admin-detail-grid">
-                <div className="admin-detail-row">
-                  <span className="admin-detail-label">网盘类型</span>
-                  <span className="admin-detail-value">{kindLabel[d.kind] ?? d.kind}</span>
-                </div>
                 <div className="admin-detail-row">
                   <span className="admin-detail-label">网盘 ID</span>
                   <span className="admin-detail-value admin-mono-cell">{d.id}</span>
@@ -499,15 +495,10 @@ export function DrivesPage() {
                     </span>
                   </div>
                 )}
-                {d.lastError && (
-                  <div className="admin-detail-row" style={{ alignItems: "start" }}>
-                    <span className="admin-detail-label">最后一次错误</span>
-                    <span className="admin-detail-value" style={{ color: "var(--danger)" }}>
-                      {d.lastError}
-                    </span>
-                  </div>
-                )}
               </div>
+              {d.lastError && (
+                <div className="admin-detail-error">{d.lastError}</div>
+              )}
 
               <div className="admin-detail-actions">
                 <div className="admin-task-controls" aria-label="当前网盘任务控制">
@@ -584,21 +575,18 @@ export function DrivesPage() {
                   <span>本地存储占用</span>
                 </div>
               </header>
-
-              <div className="admin-detail-grid">
-                <div className="admin-detail-row">
-                  <span className="admin-detail-label">封面占用</span>
-                  <span className="admin-detail-value">{formatBytes(driveStorage?.thumbnailBytes ?? 0)}</span>
+              <div className="admin-local-storage-metrics">
+                <div className="admin-local-storage-metric">
+                  <span>封面</span>
+                  <strong>{formatBytes(driveStorage?.thumbnailBytes ?? 0)}</strong>
                 </div>
-                <div className="admin-detail-row">
-                  <span className="admin-detail-label">预览视频占用</span>
-                  <span className="admin-detail-value">{formatBytes(driveStorage?.teaserBytes ?? 0)}</span>
+                <div className="admin-local-storage-metric">
+                  <span>预览视频</span>
+                  <strong>{formatBytes(driveStorage?.teaserBytes ?? 0)}</strong>
                 </div>
-                <div className="admin-detail-row">
-                  <span className="admin-detail-label">本地总占用</span>
-                  <span className="admin-detail-value" style={{ fontWeight: "bold" }}>
-                    {formatBytes(driveStorage?.totalBytes ?? 0)}
-                  </span>
+                <div className="admin-local-storage-metric">
+                  <span>合计</span>
+                  <strong>{formatBytes(driveStorage?.totalBytes ?? 0)}</strong>
                 </div>
               </div>
             </div>

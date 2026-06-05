@@ -198,61 +198,34 @@ export function DriveGenerationPanel({
             style={{ padding: "4px 10px", fontSize: "11px" }}
           >
             {d.teaserEnabled ? <Power size={11} /> : <PowerOff size={11} />}
-            <span>{d.teaserEnabled ? "预览视频生成：开" : "预览视频生成：关"}</span>
+            <span>{d.teaserEnabled ? "预览视频：开" : "预览视频：关"}</span>
           </button>
         </div>
       </header>
 
-      <div className="admin-detail-grid">
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">封面生成状态</span>
-          <div className="admin-detail-value">
-            <GenerationStatusLine label="封面" status={d.thumbnailGenerationStatus} />
-          </div>
-        </div>
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">封面数量</span>
-          <div className="admin-detail-value">
-            <GenerationCounts
-              ready={d.thumbnailReadyCount}
-              pending={d.thumbnailPendingCount}
-              failed={d.thumbnailFailedCount}
-              durationPending={d.thumbnailDurationPendingCount}
-            />
-          </div>
-        </div>
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">预览视频生成状态</span>
-          <div className="admin-detail-value">
-            <GenerationStatusLine label="预览" status={d.previewGenerationStatus} />
-          </div>
-        </div>
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">预览视频数量</span>
-          <div className="admin-detail-value">
-            <GenerationCounts
-              ready={d.teaserReadyCount}
-              pending={d.teaserPendingCount}
-              failed={d.teaserFailedCount}
-            />
-          </div>
-        </div>
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">视频指纹生成状态</span>
-          <div className="admin-detail-value">
-            <GenerationStatusLine label="指纹" status={d.fingerprintGenerationStatus} />
-          </div>
-        </div>
-        <div className="admin-detail-row">
-          <span className="admin-detail-label">视频指纹数量</span>
-          <div className="admin-detail-value">
-            <GenerationCounts
-              ready={d.fingerprintReadyCount}
-              pending={d.fingerprintPendingCount}
-              failed={d.fingerprintFailedCount}
-            />
-          </div>
-        </div>
+      <div className="admin-gen-columns">
+        <DriveGenCol
+          label="封面"
+          status={d.thumbnailGenerationStatus}
+          ready={d.thumbnailReadyCount}
+          pending={d.thumbnailPendingCount}
+          failed={d.thumbnailFailedCount}
+          extra={d.thumbnailDurationPendingCount}
+        />
+        <DriveGenCol
+          label="预览视频"
+          status={d.previewGenerationStatus}
+          ready={d.teaserReadyCount}
+          pending={d.teaserPendingCount}
+          failed={d.teaserFailedCount}
+        />
+        <DriveGenCol
+          label="视频指纹"
+          status={d.fingerprintGenerationStatus}
+          ready={d.fingerprintReadyCount}
+          pending={d.fingerprintPendingCount}
+          failed={d.fingerprintFailedCount}
+        />
       </div>
 
       <div className="admin-detail-actions">
@@ -270,7 +243,7 @@ export function DriveGenerationPanel({
           onClick={onRegenFailed}
         >
           <RotateCcw size={13} />
-          <span>{(d.teaserFailedCount ?? 0) > 0 ? "重试失败预览视频" : "继续生成预览视频"}</span>
+          <span>{(d.teaserFailedCount ?? 0) > 0 ? "重试失败预览" : "继续生成预览"}</span>
         </button>
         <button
           className="admin-btn"
@@ -280,6 +253,48 @@ export function DriveGenerationPanel({
           <RotateCcw size={13} />
           <span>{(d.fingerprintFailedCount ?? 0) > 0 ? "重试失败指纹" : "继续生成指纹"}</span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+function DriveGenCol({
+  label,
+  status,
+  ready,
+  pending,
+  failed,
+  extra,
+}: {
+  label: string;
+  status?: api.DriveGenerationStatus;
+  ready?: number;
+  pending?: number;
+  failed?: number;
+  extra?: number;
+}) {
+  const state = status?.state || "idle";
+  const detail = generationDetail(status);
+  const title = generationTitle(status, detail);
+  return (
+    <div className="admin-gen-col">
+      <div className="admin-gen-col__head">
+        <span className="admin-gen-col__label">{label}</span>
+        <span
+          className={`admin-status admin-generation-state is-${generationStateClass(state)}`}
+          title={title || undefined}
+        >
+          {generationStateLabel(state)}
+        </span>
+      </div>
+      {detail && <div className="admin-gen-col__detail">{detail}</div>}
+      <div className="admin-gen-col__counts">
+        <div className="admin-gen-col__count"><span>就绪</span><strong>{ready ?? 0}</strong></div>
+        <div className="admin-gen-col__count"><span>待生成</span><strong>{pending ?? 0}</strong></div>
+        <div className="admin-gen-col__count"><span>失败</span><strong>{failed ?? 0}</strong></div>
+        {(extra ?? 0) > 0 && (
+          <div className="admin-gen-col__count"><span>待补时长</span><strong>{extra}</strong></div>
+        )}
       </div>
     </div>
   );
