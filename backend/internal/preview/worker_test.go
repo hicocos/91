@@ -442,7 +442,7 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
 	}
-	assertCooldownAround(t, worker.Status().CooldownUntil, before, 5*time.Minute)
+	assertCooldownAround(t, worker.Status().CooldownUntil, before, 2*time.Hour)
 
 	gen.generateErr = nil
 	worker.process(ctx, &second)
@@ -458,7 +458,7 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	}
 }
 
-func TestThumbWorkerRateLimitCoolsDownFiveMinutes(t *testing.T) {
+func TestThumbWorkerRateLimitHonorsRetryAfter(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-rate-limit")
 
@@ -482,7 +482,7 @@ func TestThumbWorkerRateLimitCoolsDownFiveMinutes(t *testing.T) {
 	if got.ThumbnailURL != "" {
 		t.Fatalf("thumbnail = %q, want unchanged after rate limit", got.ThumbnailURL)
 	}
-	assertCooldownAround(t, worker.Status().CooldownUntil, before, 5*time.Minute)
+	assertCooldownAround(t, worker.Status().CooldownUntil, before, 2*time.Hour)
 }
 
 func TestThumbWorkerP115TransientErrorFailsAfterRetryLimit(t *testing.T) {
@@ -658,6 +658,24 @@ func TestP123TransientErrorsShouldCooldown(t *testing.T) {
 	}
 	if driveErrorShouldCooldown(drv, errors.New("invalid credential")) {
 		t.Fatal("invalid credential should not trigger p123 cooldown")
+	}
+}
+
+func TestGoogleDriveMediaErrorsShouldCooldown(t *testing.T) {
+	drv := &previewFakeDrive{kind: "googledrive"}
+	for _, err := range []error{
+		errors.New("google drive api error: usageLimits userRateLimitExceeded"),
+		errors.New("ffmpeg: Server returned 403 Forbidden"),
+		errors.New("downloadQuotaExceeded: The download quota for this file has been exceeded"),
+		errors.New("sharingRateLimitExceeded"),
+		errors.New("http 503 service unavailable"),
+	} {
+		if !driveErrorShouldCooldown(drv, err) {
+			t.Fatalf("driveErrorShouldCooldown(%v) = false, want true", err)
+		}
+	}
+	if driveErrorShouldCooldown(drv, errors.New("invalid credentials")) {
+		t.Fatal("invalid credentials should not trigger googledrive cooldown")
 	}
 }
 

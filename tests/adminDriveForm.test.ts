@@ -65,7 +65,7 @@ test("spider91 upload target uses explicit local-save option instead of auto tar
   assert.match(combinedSource, /本地保存，不上传/);
   assert.match(
     combinedSource,
-    /d\.kind === "pikpak" \|\| d\.kind === "p115" \|\| d\.kind === "p123" \|\| d\.kind === "onedrive"/
+    /d\.kind === "pikpak"[\s\S]*d\.kind === "p115"[\s\S]*d\.kind === "p123"[\s\S]*d\.kind === "onedrive"[\s\S]*d\.kind === "googledrive"/
   );
   assert.doesNotMatch(combinedSource, /自动：唯一/);
   assert.doesNotMatch(combinedSource, /自动模式/);

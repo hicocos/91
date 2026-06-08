@@ -317,7 +317,7 @@ type App struct {
 	// 空字符串表示本地保存不上传，不再自动挑选 pikpak/p115/p123/onedrive drive。
 	spider91UploadDriveID string
 
-	// spider91Migrator 把 spider91 视频上传到目标 drive（PikPak、115、123 或 OneDrive）。
+	// spider91Migrator 把 spider91 视频上传到目标 drive（PikPak、115、123、OneDrive 或 Google Drive）。
 	spider91Migrator spider91MigrationRunner
 
 	// nightlyRunner 是凌晨流水线调度器：每天 cron_hour 串行跑扫盘 → 91 爬虫 → 迁移。
@@ -415,7 +415,7 @@ func (a *App) loadTheme(ctx context.Context) {
 }
 
 // Spider91UploadDriveID 返回当前配置的 spider91 上传目标 drive ID。
-// 空字符串表示本地保存不上传；只有管理员显式选择 pikpak/p115/p123/onedrive drive 时才迁移上传。
+// 空字符串表示本地保存不上传；只有管理员显式选择 pikpak/p115/p123/onedrive/googledrive drive 时才迁移上传。
 func (a *App) Spider91UploadDriveID() string {
 	a.mu.Lock()
 	explicit := a.spider91UploadDriveID
@@ -432,7 +432,7 @@ func (a *App) Spider91UploadDriveID() string {
 
 // SetSpider91UploadDriveID 设置 spider91 上传目标 drive ID 并持久化。
 // 接受空字符串（本地保存不上传）。
-// 设置一个不存在或 kind 不是 pikpak / p115 / p123 / onedrive 的 drive 会返回错误。
+// 设置一个不存在或 kind 不是 pikpak / p115 / p123 / onedrive / googledrive 的 drive 会返回错误。
 func (a *App) SetSpider91UploadDriveID(ctx context.Context, driveID string) error {
 	driveID = strings.TrimSpace(driveID)
 	if driveID != "" {
@@ -441,7 +441,7 @@ func (a *App) SetSpider91UploadDriveID(ctx context.Context, driveID string) erro
 			return fmt.Errorf("drive %q not found", driveID)
 		}
 		if !isSpider91UploadKind(d.Kind()) {
-			return fmt.Errorf("drive %q kind=%s, only pikpak, p115, p123 or onedrive can be spider91 upload target", driveID, d.Kind())
+			return fmt.Errorf("drive %q kind=%s, only pikpak, p115, p123, onedrive or googledrive can be spider91 upload target", driveID, d.Kind())
 		}
 	}
 	a.mu.Lock()
@@ -474,7 +474,7 @@ func formatOptionalRFC3339(t time.Time) string {
 // isSpider91UploadKind 是 spider91 迁移目标盘的 allowlist。
 // 与 spider91migrate.adaptUploadTarget 的支持范围保持一致。
 func isSpider91UploadKind(kind string) bool {
-	return kind == "pikpak" || kind == "p115" || kind == "p123" || kind == "onedrive"
+	return kind == "pikpak" || kind == "p115" || kind == "p123" || kind == "onedrive" || kind == "googledrive"
 }
 
 // loadSpider91UploadDriveID 从 DB 读上传目标 drive ID 设置；不存在时使用空串。

@@ -327,9 +327,63 @@ func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink
 				return data, nil
 			}
 		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if remoteRangeResponseLooksRateLimited(link.URL, resp.StatusCode, body) {
+			return nil, &drives.RateLimitError{
+				Provider:   "fingerprint",
+				RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+				Err:        fmt.Errorf("remote sample rate limited: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))),
+			}
+		}
 		return nil, fmt.Errorf("fingerprint: range request got status=%d for bytes=%d-%d", resp.StatusCode, r.start, end)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, r.length))
+}
+
+func remoteRangeResponseLooksRateLimited(rawURL string, status int, body []byte) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(string(body)))
+	compact := compactRemoteRangeErrorText(text)
+	if strings.Contains(text, "too many request") ||
+		strings.Contains(text, "too many requests") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "quota exceeded") ||
+		strings.Contains(text, "download quota") ||
+		strings.Contains(text, "sharing rate") ||
+		strings.Contains(text, "daily limit") ||
+		strings.Contains(text, "user rate") ||
+		strings.Contains(text, "usage limit") ||
+		strings.Contains(compact, "ratelimitexceeded") ||
+		strings.Contains(compact, "userratelimitexceeded") ||
+		strings.Contains(compact, "dailylimitexceeded") ||
+		strings.Contains(compact, "downloadquotaexceeded") ||
+		strings.Contains(compact, "sharingratelimitexceeded") ||
+		strings.Contains(compact, "quotaexceeded") ||
+		strings.Contains(compact, "toomanyrequests") ||
+		strings.Contains(compact, "usagelimits") {
+		return true
+	}
+	if status == http.StatusForbidden && isGoogleDriveMediaURL(rawURL) {
+		return true
+	}
+	return false
+}
+
+func isGoogleDriveMediaURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	path := strings.ToLower(u.Path)
+	return strings.Contains(host, "googleapis.com") && strings.Contains(path, "/drive/")
+}
+
+func compactRemoteRangeErrorText(text string) string {
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "", ":", "")
+	return replacer.Replace(strings.ToLower(strings.TrimSpace(text)))
 }
 
 func parseRetryAfter(raw string) time.Duration {

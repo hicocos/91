@@ -2,11 +2,18 @@ package googledrive
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/video-site/backend/internal/drives"
 )
 
 func TestInitUsesOnlineRenewAPI(t *testing.T) {
@@ -131,6 +138,134 @@ func TestStreamURLReturnsAuthenticatedMediaLinkWithoutRedirectRequirement(t *tes
 	}
 }
 
+func TestUploadAndReportHashUsesResumableSession(t *testing.T) {
+	body := "hello google drive"
+	wantHash := md5.Sum([]byte(body))
+	var sawSession bool
+	var sawUpload bool
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload/drive/v3/files":
+			sawSession = true
+			if got := r.Header.Get("Authorization"); got != "Bearer access" {
+				t.Fatalf("session Authorization = %q", got)
+			}
+			if got := r.URL.Query().Get("uploadType"); got != "resumable" {
+				t.Fatalf("uploadType = %q", got)
+			}
+			if got := r.Header.Get("X-Upload-Content-Length"); got != "18" {
+				t.Fatalf("X-Upload-Content-Length = %q", got)
+			}
+			var meta struct {
+				Name    string   `json:"name"`
+				Parents []string `json:"parents"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
+				t.Fatalf("decode session metadata: %v", err)
+			}
+			if meta.Name != "clip.mp4" || len(meta.Parents) != 1 || meta.Parents[0] != "parent-1" {
+				t.Fatalf("metadata = %+v", meta)
+			}
+			w.Header().Set("Location", srv.URL+"/upload/session/1")
+			w.WriteHeader(http.StatusOK)
+		case "/upload/session/1":
+			sawUpload = true
+			if got := r.Header.Get("Authorization"); got != "Bearer access" {
+				t.Fatalf("upload Authorization = %q", got)
+			}
+			if got := r.Header.Get("Content-Range"); got != "bytes 0-17/18" {
+				t.Fatalf("Content-Range = %q", got)
+			}
+			gotBody, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read upload body: %v", err)
+			}
+			if string(gotBody) != body {
+				t.Fatalf("upload body = %q", string(gotBody))
+			}
+			writeTestJSONStatus(w, http.StatusCreated, driveFile{
+				ID:          "file-uploaded",
+				Name:        "clip.mp4",
+				Size:        "18",
+				MD5Checksum: hex.EncodeToString(wantHash[:]),
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := New(Config{ID: "g", APIBaseURL: srv.URL + "/drive/v3"})
+	d.accessToken = "access"
+	res, err := d.UploadAndReportHash(context.Background(), "parent-1", "clip.mp4", strings.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("UploadAndReportHash() error = %v", err)
+	}
+	if !sawSession || !sawUpload {
+		t.Fatalf("saw session/upload = %v/%v, want both", sawSession, sawUpload)
+	}
+	if res.FileID != "file-uploaded" || res.Size != int64(len(body)) || res.Hash != hex.EncodeToString(wantHash[:]) {
+		t.Fatalf("upload result = %+v", res)
+	}
+}
+
+func TestEnsureDirAndRenameUseGoogleDriveFileAPI(t *testing.T) {
+	var madeDir bool
+	var renamed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/drive/v3/files":
+			writeTestJSON(w, filesResp{})
+		case r.Method == http.MethodPost && r.URL.Path == "/drive/v3/files":
+			madeDir = true
+			var meta struct {
+				Name     string   `json:"name"`
+				Parents  []string `json:"parents"`
+				MimeType string   `json:"mimeType"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
+				t.Fatalf("decode mkdir body: %v", err)
+			}
+			if meta.Name != "91 Spider" || len(meta.Parents) != 1 || meta.Parents[0] != "root" || meta.MimeType != "application/vnd.google-apps.folder" {
+				t.Fatalf("mkdir body = %+v", meta)
+			}
+			writeTestJSON(w, driveFile{ID: "folder-91", Name: "91 Spider", MimeType: "application/vnd.google-apps.folder"})
+		case r.Method == http.MethodPatch && r.URL.Path == "/drive/v3/files/file-1":
+			renamed = true
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode rename body: %v", err)
+			}
+			if body["name"] != "new-name.mp4" {
+				t.Fatalf("rename body = %+v", body)
+			}
+			writeTestJSON(w, driveFile{ID: "file-1", Name: "new-name.mp4"})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := New(Config{ID: "g", RootID: "root", APIBaseURL: srv.URL + "/drive/v3"})
+	d.accessToken = "access"
+	d.listInterval = -1
+
+	dirID, err := d.EnsureDir(context.Background(), "91 Spider")
+	if err != nil {
+		t.Fatalf("EnsureDir() error = %v", err)
+	}
+	if dirID != "folder-91" || !madeDir {
+		t.Fatalf("dirID/madeDir = %q/%v, want folder-91/true", dirID, madeDir)
+	}
+	if err := d.Rename(context.Background(), "file-1", "new-name.mp4"); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	if !renamed {
+		t.Fatal("rename endpoint was not called")
+	}
+}
+
 func TestRequestRefreshesOnUnauthorized(t *testing.T) {
 	var fileCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +311,88 @@ func TestRequestRefreshesOnUnauthorized(t *testing.T) {
 	}
 	if d.accessToken != "new-access" || d.refreshToken != "new-refresh" {
 		t.Fatalf("tokens not refreshed: access=%q refresh=%q", d.accessToken, d.refreshToken)
+	}
+}
+
+func TestRateLimitReasonsFollowGoogleDriveErrorShape(t *testing.T) {
+	reasons := []string{
+		"rateLimitExceeded",
+		"userRateLimitExceeded",
+		"dailyLimitExceeded",
+		"dailyLimitExceededUnreg",
+		"downloadQuotaExceeded",
+		"sharingRateLimitExceeded",
+		"quotaExceeded",
+	}
+	for _, reason := range reasons {
+		body := apiErrorBody{
+			Code:    http.StatusForbidden,
+			Message: "google drive quota or rate limited",
+			Errors: []struct {
+				Domain       string `json:"domain"`
+				Reason       string `json:"reason"`
+				Message      string `json:"message"`
+				LocationType string `json:"location_type"`
+				Location     string `json:"location"`
+			}{
+				{Domain: "usageLimits", Reason: reason, Message: reason},
+			},
+		}
+		if !isGoogleRateLimit(nil, body) {
+			t.Fatalf("reason %q not treated as rate limit", reason)
+		}
+	}
+}
+
+func TestStreamURLRateLimitStartsSharedLinkCooldown(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "120")
+		writeTestJSONStatus(w, http.StatusForbidden, apiErrorResp{Error: apiErrorBody{
+			Code:    http.StatusForbidden,
+			Message: "User rate limit exceeded.",
+			Errors: []struct {
+				Domain       string `json:"domain"`
+				Reason       string `json:"reason"`
+				Message      string `json:"message"`
+				LocationType string `json:"location_type"`
+				Location     string `json:"location"`
+			}{
+				{Domain: "usageLimits", Reason: "userRateLimitExceeded", Message: "User rate limit exceeded."},
+			},
+		}})
+	}))
+	defer srv.Close()
+
+	d := New(Config{ID: "g", APIBaseURL: srv.URL})
+	d.accessToken = "access"
+	d.linkCooldownDuration = time.Hour
+
+	_, err := d.StreamURL(context.Background(), "file-1")
+	if err == nil {
+		t.Fatal("first StreamURL succeeded, want rate limit")
+	}
+	var rateLimit *drives.RateLimitError
+	if !errors.As(err, &rateLimit) {
+		t.Fatalf("first error = %T %[1]v, want RateLimitError", err)
+	}
+	if rateLimit.RetryAfter != 2*time.Minute {
+		t.Fatalf("retry after = %s, want 2m", rateLimit.RetryAfter)
+	}
+
+	_, err = d.StreamURL(context.Background(), "file-1")
+	if err == nil {
+		t.Fatal("second StreamURL succeeded during cooldown")
+	}
+	if !errors.As(err, &rateLimit) {
+		t.Fatalf("second error = %T %[1]v, want RateLimitError", err)
+	}
+	if calls != 1 {
+		t.Fatalf("remote calls = %d, want 1; second call should use shared cooldown", calls)
+	}
+	if rateLimit.RetryAfter <= 0 || rateLimit.RetryAfter > 2*time.Minute {
+		t.Fatalf("second retry after = %s, want remaining cooldown", rateLimit.RetryAfter)
 	}
 }
 

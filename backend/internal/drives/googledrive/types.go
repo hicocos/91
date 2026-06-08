@@ -42,8 +42,16 @@ type apiErrorBody struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Errors  []struct {
-		Domain  string `json:"domain"`
-		Reason  string `json:"reason"`
-		Message string `json:"message"`
+		Domain       string `json:"domain"`
+		Reason       string `json:"reason"`
+		Message      string `json:"message"`
+		LocationType string `json:"location_type"`
+		Location     string `json:"location"`
 	} `json:"errors"`
+}
+
+type UploadResult struct {
+	FileID string
+	Hash   string
+	Size   int64
 }
