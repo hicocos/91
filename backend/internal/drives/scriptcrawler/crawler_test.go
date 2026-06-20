@@ -39,7 +39,7 @@ func writeScriptCrawlerFFprobeStub(t *testing.T, dir string, ok bool) string {
 func writeScriptCrawlerFFmpegStub(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "ffmpeg-hls.sh")
-	body := "#!/bin/sh\nout=\"\"\nfor arg do out=\"$arg\"; done\nprintf 'hls-video-bytes' > \"$out\"\n"
+	body := "#!/bin/sh\nif [ -n \"$GO_SCRIPTCRAWLER_FFMPEG_ARGS_FILE\" ]; then printf '%s\\n' \"$@\" > \"$GO_SCRIPTCRAWLER_FFMPEG_ARGS_FILE\"; fi\nout=\"\"\nfor arg do out=\"$arg\"; done\nprintf 'hls-video-bytes' > \"$out\"\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write ffmpeg stub: %v", err)
 	}
@@ -622,6 +622,8 @@ func TestCrawlerRunOnceDownloadsHLSMediaURL(t *testing.T) {
 
 	t.Setenv("GO_WANT_SCRIPTCRAWLER_HELPER", "1")
 	t.Setenv("GO_WANT_SCRIPTCRAWLER_HLS", "1")
+	ffmpegArgsFile := filepath.Join(tmp, "ffmpeg-args.txt")
+	t.Setenv("GO_SCRIPTCRAWLER_FFMPEG_ARGS_FILE", ffmpegArgsFile)
 	c := NewCrawler(CrawlerConfig{
 		Driver:      drv,
 		Catalog:     cat,
@@ -651,6 +653,21 @@ func TestCrawlerRunOnceDownloadsHLSMediaURL(t *testing.T) {
 	}
 	if string(data) != "hls-video-bytes" {
 		t.Fatalf("hls output = %q", string(data))
+	}
+	argsData, err := os.ReadFile(ffmpegArgsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	argsText := "\n" + string(argsData) + "\n"
+	for _, want := range []string{
+		"\n-protocol_whitelist\nhttp,https,tcp,tls,crypto\n",
+		"\n-allowed_extensions\nALL\n",
+		"\n-allowed_segment_extensions\nALL\n",
+		"\n-extension_picky\n0\n",
+	} {
+		if !strings.Contains(argsText, want) {
+			t.Fatalf("ffmpeg args missing %q in:\n%s", strings.TrimSpace(want), string(argsData))
+		}
 	}
 }
 
