@@ -21,3 +21,12 @@ test("admin modal backdrop clicks do not close dialogs", () => {
   assert.doesNotMatch(modalSource, /onMouseDown=\{\(e\) =>/);
   assert.doesNotMatch(modalSource, /e\.target === e\.currentTarget/);
 });
+
+test("admin modal supports titleless dialogs with aria labels", () => {
+  assert.match(modalSource, /title\?: string;/);
+  assert.match(modalSource, /ariaLabel\?: string;/);
+  assert.match(modalSource, /aria-labelledby=\{title \? titleId : undefined\}/);
+  assert.match(modalSource, /aria-label=\{title \? undefined : ariaLabel \?\? "对话框"\}/);
+  assert.match(modalSource, /admin-modal__header\$\{title \? "" : " is-titleless"\}/);
+  assert.match(modalSource, /\{title && <span id=\{titleId\}>\{title\}<\/span>\}/);
+});

@@ -891,7 +891,7 @@ function VideoTitleCell({ video: v }: { video: api.AdminVideo }) {
     <div className="admin-video-title-cell">
       <div className="admin-video-thumb-wrap" aria-hidden="true">
         {v.thumbnailUrl ? (
-          <img className="admin-video-thumb" src={v.thumbnailUrl} alt="" />
+          <img className="admin-video-thumb" src={v.thumbnailUrl} alt="" loading="lazy" decoding="async" />
         ) : (
           <div className="admin-video-thumb-placeholder">
             <Image size={14} />
@@ -899,7 +899,7 @@ function VideoTitleCell({ video: v }: { video: api.AdminVideo }) {
         )}
       </div>
       <div className="admin-video-title-body">
-        <div className="admin-video-title">{v.title}</div>
+        <div className="admin-video-title" title={v.title}>{v.title}</div>
         {fileMeta(v) && <div className="admin-video-filemeta">{fileMeta(v)}</div>}
         {(v.tags ?? []).length > 0 && (
           <div className="admin-pills admin-video-title-tags">
@@ -927,8 +927,7 @@ function PreviewStatus({ s }: { s: string }) {
 
 function VideoFileMetaPills({ video }: { video: api.AdminVideo }) {
   const parts = fileMetaParts(video);
-  const category = (video.category ?? "").trim();
-  if (parts.length === 0 && !category) return null;
+  if (parts.length === 0) return null;
 
   return (
     <div className="admin-video-filemeta-pills" aria-label="视频文件信息">
@@ -937,7 +936,6 @@ function VideoFileMetaPills({ video }: { video: api.AdminVideo }) {
           {part}
         </span>
       ))}
-      {category && <span className="admin-video-filemeta-pill is-category">{category}</span>}
     </div>
   );
 }
@@ -997,10 +995,7 @@ function EditVideoModal({
   const [author, setAuthor] = useState(video.author ?? "");
   const [selectedTags, setSelectedTags] = useState(video.tags ?? []);
   const [category, setCategory] = useState(video.category ?? "");
-  const [badges, setBadges] = useState((video.badges ?? []).join(", "));
   const [description, setDescription] = useState(video.description ?? "");
-  const [thumbnail, setThumbnail] = useState(video.thumbnailUrl ?? "");
-  const [quality, setQuality] = useState(video.quality ?? "");
   const [durationSec, setDurationSec] = useState(String(video.durationSeconds || 0));
   const [saving, setSaving] = useState(false);
   const { show } = useToast();
@@ -1013,10 +1008,7 @@ function EditVideoModal({
         author: author.trim(),
         tags: selectedTags,
         category: category.trim(),
-        badges: splitList(badges),
         description,
-        thumbnail: thumbnail.trim(),
-        quality: quality.trim(),
         durationSeconds: Number(durationSec) || 0,
       });
       show("已保存", "success");
@@ -1031,7 +1023,7 @@ function EditVideoModal({
   return (
     <Modal
       open
-      title={`编辑视频 · ${video.title}`}
+      ariaLabel="编辑视频"
       onClose={onClose}
       footer={
         <>
@@ -1074,18 +1066,6 @@ function EditVideoModal({
           <input id={`${idPrefix}-video-category`} value={category} onChange={(e) => setCategory(e.target.value)} />
         </div>
         <div className="admin-form__row">
-          <label htmlFor={`${idPrefix}-video-badges`}>徽标（逗号分隔，例如 精选, 原创）</label>
-          <input id={`${idPrefix}-video-badges`} value={badges} onChange={(e) => setBadges(e.target.value)} />
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor={`${idPrefix}-video-quality`}>质量</label>
-          <select id={`${idPrefix}-video-quality`} value={quality} onChange={(e) => setQuality(e.target.value)}>
-            <option value="">未设置</option>
-            <option value="HD">HD</option>
-            <option value="SD">SD</option>
-          </select>
-        </div>
-        <div className="admin-form__row">
           <label htmlFor={`${idPrefix}-video-duration`}>时长（秒）</label>
           <input
             id={`${idPrefix}-video-duration`}
@@ -1093,21 +1073,6 @@ function EditVideoModal({
             onChange={(e) => setDurationSec(e.target.value)}
             inputMode="numeric"
           />
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor={`${idPrefix}-video-thumbnail`}>封面 URL</label>
-          <div className="admin-thumbnail-preview">
-            <input id={`${idPrefix}-video-thumbnail`} value={thumbnail} onChange={(e) => setThumbnail(e.target.value)} />
-            {thumbnail && (
-              <img
-                src={thumbnail}
-                alt="封面预览"
-                className="admin-thumbnail-img"
-                onError={(e) => (e.currentTarget.style.display = "none")}
-                onLoad={(e) => (e.currentTarget.style.display = "block")}
-              />
-            )}
-          </div>
         </div>
         <div className="admin-form__row">
           <label htmlFor={`${idPrefix}-video-description`}>描述</label>
@@ -1152,13 +1117,6 @@ function fileMetaParts(v: api.AdminVideo): string[] {
 function normalizeExt(ext: string): string {
   const value = (ext ?? "").replace(/^\./, "").trim();
   return value ? value.toUpperCase() : "";
-}
-
-function splitList(s: string): string[] {
-  return s
-    .split(/[,，、\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
 }
 
 function toggleTag(tags: string[], label: string): string[] {

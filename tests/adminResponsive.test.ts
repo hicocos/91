@@ -187,9 +187,22 @@ test("mobile video management uses compact theme-aware video cards", () => {
   const css = mobileCss();
   const card = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) tr");
   const title = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"标题\"]");
+  const checkbox = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-checkbox");
   const label = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td::before");
+  const titleCell = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-title-cell");
+  const thumb = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-thumb-wrap");
+  const titleText = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-title");
   const pills = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-filemeta-pills");
+  const authorColumn = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"作者\"]");
   const sourceColumn = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"来源\"]");
+  const durationColumn = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"时长\"]");
+  const previewColumn = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"预览视频\"]");
+  const actions = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions");
+  const actionsLabel = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions::before");
+  const checkboxLabel = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td.is-checkbox::before");
+  const checkboxButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-table-checkbox-btn");
+  const status = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-status");
+  const statusDot = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-status::before");
   const actionButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn");
   const dangerButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn.is-danger");
 
@@ -197,17 +210,73 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.match(card, /background\s*:\s*var\(--admin-video-card-bg\)/);
   assert.match(card, /border-radius\s*:\s*14px/);
   assert.match(card, /padding\s*:\s*12px\s+14px/);
+  assert.match(card, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(card, /gap\s*:\s*0\s+10px/);
   assert.match(css, /:root:not\(\[data-theme="pink"\]\)\s+\.admin-videos-table:not\(\.admin-drives-table\)\s+tr\s*\{[^}]*--admin-video-card-bg\s*:\s*#1e1e1e/s);
   assert.match(css, /:root\[data-theme="pink"\]\s+\.admin-videos-table:not\(\.admin-drives-table\)\s+tr\s*\{/);
-  assert.match(title, /padding-left\s*:\s*36px/);
+  assert.match(checkbox, /grid-column\s*:\s*1\s*\/\s*4/);
+  assert.match(checkbox, /grid-row\s*:\s*3/);
+  assert.match(checkbox, /display\s*:\s*flex/);
+  assert.match(checkboxLabel, /content\s*:\s*none/);
+  assert.match(checkboxButton, /width\s*:\s*100%/);
+  assert.match(checkboxButton, /height\s*:\s*32px/);
+  assert.match(title, /padding-left\s*:\s*0/);
+  assert.match(title, /min-height\s*:\s*72px/);
   assert.match(label, /font-size\s*:\s*10px/);
   assert.match(label, /letter-spacing\s*:\s*0\.06em/);
+  assert.match(titleCell, /grid-template-columns\s*:\s*clamp\(104px,\s*32vw,\s*156px\)\s+minmax\(0,\s*1fr\)/);
+  assert.match(thumb, /aspect-ratio\s*:\s*16\s*\/\s*9/);
+  assert.match(thumb, /border-radius\s*:\s*8px/);
+  assert.match(titleText, /-webkit-line-clamp\s*:\s*2/);
+  assert.match(titleText, /overflow-wrap\s*:\s*anywhere/);
+  assert.match(videosPageSource, /loading="lazy"\s+decoding="async"/);
+  assert.match(videosPageSource, /className="admin-video-title" title=\{v\.title\}/);
   assert.match(pills, /display\s*:\s*flex/);
+  assert.doesNotMatch(videosPageSource, /admin-video-filemeta-pill is-category/);
+  assert.doesNotMatch(css, /admin-video-card-category/);
+  assert.match(authorColumn, /display\s*:\s*none/);
+  assert.match(sourceColumn, /grid-row\s*:\s*2/);
+  assert.match(sourceColumn, /grid-column\s*:\s*1\s*\/\s*5/);
+  assert.match(sourceColumn, /justify-items\s*:\s*start/);
+  assert.match(sourceColumn, /text-overflow\s*:\s*ellipsis/);
+  assert.match(durationColumn, /grid-row\s*:\s*2/);
+  assert.match(durationColumn, /grid-column\s*:\s*5\s*\/\s*9/);
+  assert.match(durationColumn, /justify-items\s*:\s*center/);
+  assert.match(previewColumn, /grid-row\s*:\s*2/);
+  assert.match(previewColumn, /grid-column\s*:\s*9\s*\/\s*-1/);
+  assert.match(previewColumn, /justify-items\s*:\s*end/);
+  assert.match(actions, /grid-column\s*:\s*4\s*\/\s*-1/);
+  assert.match(actions, /grid-row\s*:\s*3/);
+  assert.match(actions, /display\s*:\s*grid/);
+  assert.match(actions, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(actions, /gap\s*:\s*10px/);
+  assert.match(actionsLabel, /content\s*:\s*none/);
+  assert.match(status, /gap\s*:\s*0/);
+  assert.match(statusDot, /content\s*:\s*none/);
   assert.doesNotMatch(sourceColumn, /border-left/);
-  assert.match(actionButton, /height\s*:\s*28px/);
+  assert.match(actionButton, /width\s*:\s*100%/);
+  assert.match(actionButton, /height\s*:\s*32px/);
+  assert.match(actionButton, /justify-content\s*:\s*center/);
   assert.match(actionButton, /border-radius\s*:\s*8px/);
   assert.match(dangerButton, /border-color\s*:\s*var\(--admin-video-card-danger-border\)/);
   assert.match(dangerButton, /color\s*:\s*var\(--admin-video-card-danger\)/);
+});
+
+test("video edit modal stays focused on common metadata", () => {
+  assert.match(videosPageSource, /ariaLabel="编辑视频"/);
+  assert.doesNotMatch(videosPageSource, /title=\{`编辑视频 ·/);
+  assert.doesNotMatch(videosPageSource, /const \[badges, setBadges\]/);
+  assert.doesNotMatch(videosPageSource, /const \[thumbnail, setThumbnail\]/);
+  assert.doesNotMatch(videosPageSource, /const \[quality, setQuality\]/);
+  assert.doesNotMatch(videosPageSource, /video-badges/);
+  assert.doesNotMatch(videosPageSource, /video-quality/);
+  assert.doesNotMatch(videosPageSource, /video-thumbnail/);
+  assert.doesNotMatch(videosPageSource, /徽标（/);
+  assert.doesNotMatch(videosPageSource, /封面 URL/);
+  assert.doesNotMatch(videosPageSource, /封面预览/);
+  assert.doesNotMatch(videosPageSource, /badges:\s*splitList\(badges\)/);
+  assert.doesNotMatch(videosPageSource, /thumbnail:\s*thumbnail\.trim\(\)/);
+  assert.doesNotMatch(videosPageSource, /quality:\s*quality\.trim\(\)/);
 });
 
 test("admin modals and action footers adapt on mobile", () => {
@@ -223,6 +292,7 @@ test("admin modals and action footers adapt on mobile", () => {
   const confirmModal = ruleBody(css, ".admin-modal--delete-confirm");
   assert.match(confirmModal, /align-self\s*:\s*center/);
   assert.match(confirmModal, /justify-self\s*:\s*center/);
+  assert.match(ruleBody(adminCss, ".admin-modal__header.is-titleless"), /justify-content\s*:\s*flex-end/);
   // 表单 input/select/textarea 在 mobile 下铺满。规则用逗号合并写法（多 selector
   // 共享 body），所以走 ruleBodyByContains 而不是简单正则。
   assert.match(ruleBodyByContains(css, ".admin-form__row input"), /width\s*:\s*100%/);

@@ -1913,6 +1913,13 @@
   background: var(--bg-elevated);
 }
 
+.admin-modal__header.is-titleless {
+  justify-content: flex-end;
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  border-bottom: 0;
+  background: var(--bg-surface);
+}
+
 .admin-modal__body {
   padding: var(--space-5);
 }
@@ -2903,17 +2910,14 @@
     --admin-video-card-pill-bg: var(--bg-elevated);
     --admin-video-card-pill-border: var(--border-subtle);
     --admin-video-card-pill-text: var(--text-muted);
-    --admin-video-card-category-bg: var(--accent-soft);
-    --admin-video-card-category-border: var(--border-accent);
-    --admin-video-card-category-text: var(--accent);
     --admin-video-card-button-bg: var(--bg-elevated);
     --admin-video-card-button-hover-bg: var(--bg-surface);
     --admin-video-card-button-text: var(--text-default);
     --admin-video-card-danger: var(--danger);
     --admin-video-card-danger-border: rgba(241, 85, 108, 0.4);
     position: relative;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 0 10px;
     padding: 12px 14px;
     background: var(--admin-video-card-bg);
     border: 1px solid var(--admin-video-card-border);
@@ -2937,9 +2941,6 @@
     --admin-video-card-pill-bg: rgba(255, 255, 255, 0.06);
     --admin-video-card-pill-border: rgba(255, 255, 255, 0.05);
     --admin-video-card-pill-text: rgba(255, 255, 255, 0.62);
-    --admin-video-card-category-bg: rgba(255, 255, 255, 0.11);
-    --admin-video-card-category-border: rgba(255, 255, 255, 0.14);
-    --admin-video-card-category-text: #f0f0f0;
     --admin-video-card-button-bg: rgba(255, 255, 255, 0.06);
     --admin-video-card-button-hover-bg: rgba(255, 255, 255, 0.1);
     --admin-video-card-button-text: #e0e0e0;
@@ -2974,13 +2975,14 @@
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-checkbox {
-    position: absolute;
-    top: 12px;
-    left: 14px;
-    z-index: 1;
+    grid-column: 1 / 4;
+    grid-row: 3;
     display: flex;
-    width: 28px;
-    height: 28px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--admin-video-card-line);
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-checkbox::before,
@@ -2990,7 +2992,14 @@
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-table-checkbox-btn {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    min-height: 32px;
+    border: 1px solid transparent;
     border-radius: 8px;
+    background: var(--admin-video-card-button-bg);
+    box-shadow: none;
     color: var(--admin-video-card-muted);
   }
 
@@ -3003,28 +3012,48 @@
   .admin-videos-table:not(.admin-drives-table) td[data-label="标题"] {
     grid-column: 1 / -1;
     grid-row: 1;
-    min-height: 28px;
-    padding-left: 36px;
-    gap: 6px;
-    align-content: center;
+    min-height: 72px;
+    padding-left: 0;
+    gap: 8px;
+    align-content: stretch;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-video-title-cell {
-    gap: 8px;
+    display: grid;
+    grid-template-columns: clamp(104px, 32vw, 156px) minmax(0, 1fr);
+    align-items: stretch;
+    gap: 10px;
+    min-width: 0;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-video-thumb-wrap {
-    flex: 0 0 54px;
-    width: 54px;
-    height: 34px;
-    border-radius: 4px;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--admin-video-card-line);
+    border-radius: 8px;
+    background: var(--bg-sunken);
+  }
+
+  .admin-videos-table:not(.admin-drives-table) .admin-video-title-body {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-video-title {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     color: var(--admin-video-card-main);
     font-size: 14px;
     font-weight: var(--weight-bold);
     line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-video-filemeta {
@@ -3056,48 +3085,48 @@
     line-height: 1;
   }
 
-  .admin-videos-table:not(.admin-drives-table) .admin-video-filemeta-pill.is-category {
-    border-color: var(--admin-video-card-category-border);
-    background: var(--admin-video-card-category-bg);
-    color: var(--admin-video-card-category-text);
-  }
-
-  .admin-videos-table:not(.admin-drives-table) td[data-label="作者"],
   .admin-videos-table:not(.admin-drives-table) td[data-label="来源"],
   .admin-videos-table:not(.admin-drives-table) td[data-label="时长"],
   .admin-videos-table:not(.admin-drives-table) td[data-label="预览视频"] {
+    grid-row: 2;
+    min-width: 0;
     margin-top: 8px;
     padding-top: 8px;
     border-top: 1px solid var(--admin-video-card-line);
   }
 
-  .admin-videos-table:not(.admin-drives-table) td[data-label="作者"],
-  .admin-videos-table:not(.admin-drives-table) td[data-label="时长"] {
-    grid-column: 1;
-    padding-right: 12px;
+  .admin-videos-table:not(.admin-drives-table) td[data-label="作者"] {
+    display: none;
   }
 
-  .admin-videos-table:not(.admin-drives-table) td[data-label="来源"],
-  .admin-videos-table:not(.admin-drives-table) td[data-label="预览视频"] {
-    grid-column: 2;
-    padding-left: 12px;
-  }
-
-  .admin-videos-table:not(.admin-drives-table) td[data-label="作者"],
   .admin-videos-table:not(.admin-drives-table) td[data-label="来源"] {
-    grid-row: 2;
+    grid-column: 1 / 5;
+    justify-items: start;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .admin-videos-table:not(.admin-drives-table) td[data-label="时长"],
+  .admin-videos-table:not(.admin-drives-table) td[data-label="时长"] {
+    grid-column: 5 / 9;
+    justify-items: center;
+    white-space: nowrap;
+  }
+
   .admin-videos-table:not(.admin-drives-table) td[data-label="预览视频"] {
-    grid-row: 3;
+    grid-column: 9 / -1;
+    justify-items: end;
+    white-space: nowrap;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-mono-cell {
     color: var(--admin-video-card-text);
     font-family: inherit;
     font-size: 12px;
-    word-break: break-word;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    word-break: normal;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-text-faint {
@@ -3107,10 +3136,16 @@
   .admin-videos-table:not(.admin-drives-table) .admin-status {
     width: max-content;
     min-height: 22px;
+    gap: 0;
     padding: 3px 8px;
     border-radius: var(--radius-pill);
     font-size: 11px;
     line-height: 1;
+  }
+
+  .admin-videos-table:not(.admin-drives-table) .admin-status::before {
+    content: none;
+    display: none;
   }
 
   .admin-videos-table:not(.admin-drives-table) .admin-status.is-ok {
@@ -3124,28 +3159,29 @@
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-actions {
-    grid-column: 1 / -1;
-    grid-row: 4;
-    display: flex;
-    flex-wrap: nowrap;
+    grid-column: 4 / -1;
+    grid-row: 3;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
+    gap: 10px;
     margin-top: 8px;
     padding-top: 8px;
     border-top: 1px solid var(--admin-video-card-line);
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-actions::before {
-    flex: 0 0 auto;
-    margin-right: auto;
+    content: none;
+    display: none;
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn {
-    min-width: 28px;
-    height: 28px;
-    min-height: 28px;
-    padding: 0 9px;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
     border-color: transparent;
     border-radius: 8px;
     background: var(--admin-video-card-button-bg);
@@ -3157,11 +3193,6 @@
 
   .admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn + .admin-btn {
     margin-left: 0;
-  }
-
-  .admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn:not(:first-of-type) {
-    width: 28px;
-    padding: 0;
   }
 
   .admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn:hover:not(:disabled) {
@@ -5001,8 +5032,6 @@
 .admin-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 64px 16px; color: var(--text-faint); text-align: center; border: 1px dashed var(--border-default); border-radius: 8px; }
 .admin-empty-state__icon { color: var(--border-default); margin-bottom: 16px; }
 .admin-empty-state h3 { margin: 0 0 8px 0; color: var(--text-strong); font-size: 16px; }
-.admin-thumbnail-preview { display: flex; flex-direction: column; gap: 8px; }
-.admin-thumbnail-img { max-width: 200px; max-height: 120px; object-fit: contain; border-radius: 4px; border: 1px solid var(--border-default); background: var(--bg-sunken); }
 .admin-table { overflow: visible !important; border-collapse: separate !important; border-spacing: 0 !important; }
 .admin-table th { position: sticky; top: 0; background: var(--bg-elevated) !important; z-index: 10; }
 @media (hover: hover) and (pointer: fine) {
