@@ -2,22 +2,36 @@ import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   Film,
+  LogOut,
   Menu,
   Settings,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
+import { useAuth } from "@/admin/AuthContext";
 
 const navItems = [
   { to: "/shorts", label: "短视频", icon: Sparkles },
   { to: "/upload", label: "上传", icon: Upload },
   { to: "/list", label: "视频", icon: Film },
-  { to: "/admin", label: "后台", icon: Settings },
 ];
+
+const adminNavItem = { to: "/admin", label: "后台", icon: Settings };
 
 export function MainNav() {
   const [open, setOpen] = useState(false);
+  const { status, isAdmin, logout } = useAuth();
+
+  const items = isAdmin ? [...navItems, adminNavItem] : navItems;
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // ignore
+    }
+  };
 
   return (
     <nav className={`main-nav ${open ? "is-open" : ""}`}>
@@ -29,7 +43,7 @@ export function MainNav() {
         </NavLink>
 
         <ul className="main-nav__list" role="menubar">
-          {navItems.map(({ to, label, icon: Icon }) => (
+          {items.map(({ to, label, icon: Icon }) => (
             <li key={to} role="none">
               <NavLink
                 to={to}
@@ -61,6 +75,18 @@ export function MainNav() {
               </NavLink>
             </li>
           ))}
+          {status === "authed" && (
+            <li role="none">
+              <button
+                className="main-nav__link"
+                role="menuitem"
+                onClick={handleLogout}
+              >
+                <LogOut size={16} />
+                退出
+              </button>
+            </li>
+          )}
         </ul>
 
         <button

@@ -208,6 +208,7 @@ func isValidIP(ip string) bool {
 }
 
 // UserLogin authenticates a user (admin or regular) from the users table.
+// Falls back to config-based credentials for backward compatibility.
 // Returns the role on success, empty string on failure.
 func (a *Authenticator) UserLogin(w http.ResponseWriter, r *http.Request, user, pass string) (string, error) {
 	ip := clientIP(r)
@@ -222,7 +223,31 @@ func (a *Authenticator) UserLogin(w http.ResponseWriter, r *http.Request, user, 
 	}
 
 	u, err := a.Catalog.GetUserByUsername(r.Context(), user)
-	if err != nil {
+	if err != nil || u == nil {
+		expectedUser, expectedPass := a.Credentials()
+		if expectedUser != "" && expectedPass != "" &&
+			subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) == 1 {
+			if ip != "" {
+				a.clearFailures(ip)
+			}
+			token, err := randomToken()
+			if err != nil {
+				return "", err
+			}
+			if err := a.Catalog.CreateSession(r.Context(), token, sessionTTL, 0); err != nil {
+				return "", err
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:     sessionCookie,
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				Expires:  time.Now().Add(sessionTTL),
+			})
+			return "admin", nil
+		}
 		if ip != "" {
 			_ = a.recordFailure(r, ip)
 		}

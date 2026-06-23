@@ -340,7 +340,7 @@ func (a *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if role == "" {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		http.Error(w, "invalid credentials", http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": role})

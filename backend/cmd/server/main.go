@@ -162,6 +162,13 @@ func main() {
 			if err := config.WriteAdminCredentials(cfgPath, username, password); err != nil {
 				return err
 			}
+			hashed, err := auth.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			if _, err := cat.CreateUser(ctx, username, hashed, "admin"); err != nil {
+				return err
+			}
 			cfg.Server.Admin.Username = username
 			cfg.Server.Admin.Password = password
 			authr.SetCredentials(username, password)

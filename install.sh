@@ -45,7 +45,7 @@ usage() {
   cat <<EOF
 Usage:
   sudo bash install.sh [install]
-  91 [update|restart|stop|status|logs|uninstall]
+  91 [update|restart|stop|status|logs|uninstall|reset-password]
 
 Default action:
   install.sh with no args downloads the prebuilt release package and starts the service.
@@ -59,6 +59,7 @@ Actions:
   status     Show service status
   logs       Follow service logs
   uninstall  Remove service and optionally delete installed files
+  reset-password  Reset a user's password
 
 Options via environment:
   GITHUB_REPO=$GITHUB_REPO
@@ -765,6 +766,72 @@ uninstall_app() {
   warn_remaining_listeners "${ports[@]}"
 }
 
+reset_password() {
+  local db_path="$INSTALL_PATH/data/video-site.db"
+  if [[ ! -f "$db_path" ]]; then
+    die "数据库文件不存在: $db_path"
+  fi
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    die "需要 sqlite3 命令，请先安装: apt install sqlite3"
+  fi
+
+  echo "当前用户列表："
+  echo "---"
+  sqlite3 -separator ' | ' "$db_path" \
+    "SELECT id, username, role, CASE WHEN banned THEN '已封禁' ELSE '正常' END AS status FROM users ORDER BY id;"
+  echo "---"
+  echo
+
+  read -r -p "请输入要重置密码的用户 ID: " user_id
+  if [[ -z "$user_id" ]] || ! [[ "$user_id" =~ ^[0-9]+$ ]]; then
+    die "无效的用户 ID"
+  fi
+
+  local existing
+  existing=$(sqlite3 "$db_path" "SELECT username FROM users WHERE id = $user_id;" 2>/dev/null)
+  if [[ -z "$existing" ]]; then
+    die "用户 ID $user_id 不存在"
+  fi
+
+  echo "目标用户: $existing (ID: $user_id)"
+  read -r -s -p "请输入新密码 (至少6位): " new_pass
+  echo
+  if [[ -z "$new_pass" ]] || [[ ${#new_pass} -lt 6 ]]; then
+    die "密码至少需要 6 个字符"
+  fi
+
+  read -r -s -p "请再次输入新密码: " new_pass2
+  echo
+  if [[ "$new_pass" != "$new_pass2" ]]; then
+    die "两次输入的密码不一致"
+  fi
+
+  local hashed
+  hashed=$(NEW_PASS="$new_pass" python3 -c "
+import bcrypt, os
+print(bcrypt.hashpw(os.environ['NEW_PASS'].encode(), bcrypt.gensalt()).decode())
+" 2>/dev/null) \
+    || hashed=$(NEW_PASS="$new_pass" python3 -c "
+import hashlib, base64, os
+h = hashlib.sha256(os.environ['NEW_PASS'].encode()).digest()
+print(base64.b64encode(h).decode())
+" 2>/dev/null)
+
+  if [[ -z "$hashed" ]]; then
+    die "密码哈希生成失败，请确认 python3 已安装"
+  fi
+
+  NEW_HASH="$hashed" USER_ID="$user_id" DB_PATH="$db_path" python3 -c "
+import sqlite3, os
+conn = sqlite3.connect(os.environ['DB_PATH'])
+conn.execute('UPDATE users SET password = ? WHERE id = ?',
+             (os.environ['NEW_HASH'], int(os.environ['USER_ID'])))
+conn.commit()
+conn.close()
+"
+  echo "用户 $existing (ID: $user_id) 的密码已重置"
+}
+
 show_menu() {
   if [[ ! -t 0 ]]; then
     usage
@@ -781,10 +848,11 @@ show_menu() {
     echo "3、更新 91"
     echo "4、重启 91"
     echo "5、停止 91"
-    echo "6、卸载 91"
+    echo "6、重置用户密码"
+    echo "7、卸载 91"
     echo "0、退出"
     echo
-    read -r -p "请输入选项 [0-6]: " choice
+    read -r -p "请输入选项 [0-7]: " choice
 
     case "$choice" in
       1) main status ;;
@@ -792,7 +860,8 @@ show_menu() {
       3) main update ;;
       4) main restart ;;
       5) main stop ;;
-      6)
+      6) main reset-password ;;
+      7)
         if main uninstall; then
           exit 0
         fi
@@ -838,6 +907,10 @@ main() {
       ;;
     logs)
       journalctl -u "${SERVICE_NAME}.service" -f
+      ;;
+    reset-password)
+      need_root "$@"
+      reset_password
       ;;
     menu)
       show_menu
