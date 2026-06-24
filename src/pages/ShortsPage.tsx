@@ -17,6 +17,7 @@ import {
   hideVideo,
   type ShortsItem,
 } from "@/data/videos";
+import { useAuth } from "@/admin/AuthContext";
 import "@/styles/shorts.css";
 
 // 短视频"已看过"列表存在 localStorage，与普通详情页历史完全独立。
@@ -66,6 +67,7 @@ function saveSeenIds(ids: string[]) {
 }
 
 export default function ShortsPage() {
+  const { isAdmin } = useAuth();
   // 已加入页面的视频队列（按出现顺序）
   const [items, setItems] = useState<ShortsItem[]>([]);
   // 当前在视口里的视频索引
@@ -814,6 +816,7 @@ export default function ShortsPage() {
               videoRef={setVideoRef(index)}
               onLikeToggle={handleLikeToggle}
               hasLiked={hasLiked}
+              canHide={isAdmin}
               onHideSuccess={handleHideSuccess}
               onActiveReadyForPreload={handleActiveReadyForPreload}
               onActiveNeedsPriority={handleActiveNeedsPriority}
@@ -848,6 +851,7 @@ type SlideProps = {
   onLikeToggle: (videoId: string, liked: boolean) => Promise<number | null>;
   /** 父组件查询某 id 是否已经在本次会话内点过赞 */
   hasLiked: (videoId: string) => boolean;
+  canHide: boolean;
   onHideSuccess: (index: number) => void;
   onActiveReadyForPreload: (index: number) => void;
   onActiveNeedsPriority: (index: number) => void;
@@ -879,6 +883,7 @@ function ShortsSlide({
   videoRef,
   onLikeToggle,
   hasLiked,
+  canHide,
   onHideSuccess,
   onActiveReadyForPreload,
   onActiveNeedsPriority,
@@ -1509,16 +1514,17 @@ function ShortsSlide({
 
 
 
-        {/* 不再展示 */}
-        <button
-          type="button"
-          className="shorts-slide__action"
-          aria-label="不再展示"
-          onClick={handleHideClick}
-        >
-          <EyeOff size={22} />
-          <span className="shorts-slide__action-count">隐藏</span>
-        </button>
+        {canHide && (
+          <button
+            type="button"
+            className="shorts-slide__action"
+            aria-label="不再展示"
+            onClick={handleHideClick}
+          >
+            <EyeOff size={22} />
+            <span className="shorts-slide__action-count">隐藏</span>
+          </button>
+        )}
       </aside>
 
       {/* 双击点赞时弹起的心形动画 */}

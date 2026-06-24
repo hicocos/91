@@ -4,9 +4,6 @@ server:
   listen: "127.0.0.1:9192"
   # 管理后台用户。保留默认值时，首次访问登录页会要求设置新用户名和密码，
   # 并写回 backend/config.yaml。
-  admin:
-    username: "admin"
-    password: "admin123"
   # 用于签发 admin session cookie，生产请改成随机字符串
   session_secret: "change-me-to-a-random-string"
   # CORS 白名单：允许跨源访问的前端 Origin 列表。默认空 = 不允许任何跨源请求。

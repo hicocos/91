@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/video-site/backend/internal/catalog"
 )
@@ -23,6 +26,7 @@ const (
 )
 
 var ErrLoginIPBanned = errors.New("login ip banned")
+var ErrUserBanned = errors.New("user is banned")
 
 type Authenticator struct {
 	Username string
@@ -68,7 +72,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request, user, pass
 	if err != nil {
 		return false, err
 	}
-	if err := a.Catalog.CreateSession(r.Context(), token, sessionTTL); err != nil {
+	if err := a.Catalog.CreateSession(r.Context(), token, sessionTTL, 0); err != nil {
 		return false, err
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -107,7 +111,7 @@ func (a *Authenticator) recordFailure(r *http.Request, ip string) error {
 	}
 	f.Count++
 	a.failures[ip] = f
-	shouldBan := f.Count > loginFailThreshold
+	shouldBan := f.Count >= loginFailThreshold
 	a.mu.Unlock()
 
 	if !shouldBan {
@@ -151,10 +155,25 @@ func (a *Authenticator) Required(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		ok, err := a.Catalog.ValidateSession(r.Context(), c.Value)
+		ok, userID, err := a.Catalog.ValidateSession(r.Context(), c.Value)
 		if err != nil || !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if userID > 0 {
+			u, err := a.Catalog.GetUserByID(r.Context(), userID)
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if u.Banned {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -169,22 +188,55 @@ func randomToken() (string, error) {
 }
 
 func clientIP(r *http.Request) string {
-	for _, candidate := range forwardedIPs(r.Header.Get("X-Forwarded-For")) {
-		if isValidIP(candidate) {
-			return candidate
+	remote := remoteIP(r.RemoteAddr)
+	if remote.IsValid() && isTrustedProxy(remote) {
+		if ip := forwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
+			return ip
+		}
+		if ip := parseIPHeader(r.Header.Get("X-Real-IP")); ip != "" {
+			return ip
 		}
 	}
-	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); isValidIP(ip) {
-		return ip
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && isValidIP(host) {
-		return host
-	}
-	if isValidIP(r.RemoteAddr) {
-		return strings.TrimSpace(r.RemoteAddr)
+	if remote.IsValid() {
+		return remote.String()
 	}
 	return ""
+}
+
+func remoteIP(remoteAddr string) netip.Addr {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		if ip, err := netip.ParseAddr(strings.TrimSpace(host)); err == nil {
+			return ip.Unmap()
+		}
+	}
+	ip, err := netip.ParseAddr(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		return netip.Addr{}
+	}
+	return ip.Unmap()
+}
+
+func isTrustedProxy(ip netip.Addr) bool {
+	return ip.Unmap().IsLoopback()
+}
+
+func forwardedClientIP(header string) string {
+	parts := forwardedIPs(header)
+	for i := len(parts) - 1; i >= 0; i-- {
+		if ip := parseIPHeader(parts[i]); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func parseIPHeader(value string) string {
+	ip, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	return ip.Unmap().String()
 }
 
 func forwardedIPs(header string) []string {
@@ -201,5 +253,140 @@ func forwardedIPs(header string) []string {
 
 func isValidIP(ip string) bool {
 	_, err := netip.ParseAddr(strings.TrimSpace(ip))
+	return err == nil
+}
+
+// UserLogin authenticates a user (admin or regular) from the users table.
+// Falls back to config-based credentials for backward compatibility.
+// Returns the role on success, empty string on failure.
+func (a *Authenticator) UserLogin(w http.ResponseWriter, r *http.Request, user, pass string) (string, error) {
+	ip := clientIP(r)
+	if ip != "" {
+		banned, err := a.Catalog.IsLoginIPBanned(r.Context(), ip)
+		if err != nil {
+			return "", err
+		}
+		if banned {
+			return "", ErrLoginIPBanned
+		}
+	}
+
+	u, err := a.Catalog.GetUserByUsername(r.Context(), user)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		expectedUser, expectedPass := a.Credentials()
+		userCount, countErr := a.Catalog.CountUsers(r.Context())
+		if countErr != nil {
+			return "", countErr
+		}
+		if userCount == 0 && expectedUser != "" && expectedPass != "" &&
+			subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) == 1 {
+			if ip != "" {
+				a.clearFailures(ip)
+			}
+			token, err := randomToken()
+			if err != nil {
+				return "", err
+			}
+			if err := a.Catalog.CreateSession(r.Context(), token, sessionTTL, 0); err != nil {
+				return "", err
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:     sessionCookie,
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				Expires:  time.Now().Add(sessionTTL),
+			})
+			return "admin", nil
+		}
+		if ip != "" {
+			if err := a.recordFailure(r, ip); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+
+	if u.Banned {
+		return "", ErrUserBanned
+	}
+
+	if !checkPassword(pass, u.Password) {
+		if ip != "" {
+			if err := a.recordFailure(r, ip); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+
+	if ip != "" {
+		a.clearFailures(ip)
+	}
+
+	token, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	if err := a.Catalog.CreateSession(r.Context(), token, sessionTTL, u.ID); err != nil {
+		return "", err
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(sessionTTL),
+	})
+	return u.Role, nil
+}
+
+// AdminRequired is like Required but additionally checks that the session
+// belongs to a user with role="admin". Regular users get 403.
+func (a *Authenticator) AdminRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ok, userID, err := a.Catalog.ValidateSession(r.Context(), c.Value)
+		if err != nil || !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if userID > 0 {
+			u, err := a.Catalog.GetUserByID(r.Context(), userID)
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if u.Banned || u.Role != "admin" {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
+func checkPassword(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
 }

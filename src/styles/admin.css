@@ -1780,6 +1780,46 @@
   margin-left: 6px;
 }
 
+.admin-users-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: var(--space-4);
+}
+
+.admin-users-table__username-value {
+  color: var(--text-strong);
+  font-weight: var(--weight-semibold);
+}
+
+.admin-users-table__id-value {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-users-table__role,
+.admin-users-table__state {
+  text-align: center;
+}
+
+.admin-users-table__action-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.admin-banned-ips-table__ip code {
+  color: var(--text-strong);
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", monospace;
+  font-size: var(--font-sm);
+}
+
+.admin-empty-cell {
+  padding: 24px !important;
+  text-align: center !important;
+  color: var(--text-faint) !important;
+}
+
 /* =========================================================
  * Status badges
  * ========================================================= */
@@ -1808,6 +1848,15 @@
 .admin-status.is-error { background: var(--danger-soft); color: var(--danger); }
 .admin-status.is-pending { background: var(--warning-soft); color: var(--warning); }
 .admin-status.is-generating { background: var(--info-soft); color: var(--info); }
+
+.admin-users-table .admin-status {
+  gap: 0;
+}
+
+.admin-users-table .admin-status::before {
+  content: none;
+  display: none;
+}
 
 .admin-generation-state.is-generating { background: var(--info-soft); color: var(--info); }
 .admin-generation-state.is-cooling { background: var(--warning-soft); color: var(--warning); }
@@ -2832,6 +2881,240 @@
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
+  }
+
+  .admin-users-tabs {
+    margin-bottom: var(--space-3);
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .admin-users-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .admin-users-tabs .admin-btn {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 0 var(--space-3);
+  }
+
+  .admin-users-table:not(.admin-drives-table) tbody,
+  .admin-banned-ips-table:not(.admin-drives-table) tbody {
+    gap: 10px;
+  }
+
+  .admin-users-table:not(.admin-drives-table) tr,
+  .admin-banned-ips-table:not(.admin-drives-table) tr {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 0 10px;
+    padding: 12px;
+    border-color: var(--border-default);
+    border-radius: var(--radius-sm);
+  }
+
+  .admin-users-table:not(.admin-drives-table) td,
+  .admin-banned-ips-table:not(.admin-drives-table) td {
+    gap: 5px;
+    color: var(--text-default);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .admin-users-table:not(.admin-drives-table) td::before,
+  .admin-banned-ips-table:not(.admin-drives-table) td::before {
+    color: var(--text-faint);
+    font-size: 10px;
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.06em;
+    line-height: 1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-empty-row,
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-empty-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-empty-cell,
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-empty-cell {
+    display: block;
+    grid-column: 1 / -1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-empty-cell::before,
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-empty-cell::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__username {
+    grid-column: 1 / 9;
+    grid-row: 1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__id {
+    grid-column: 9 / -1;
+    grid-row: 1;
+    justify-items: end;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__username::before,
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__id::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-users-table__username-value {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-strong);
+    font-size: 15px;
+    font-weight: var(--weight-bold);
+    line-height: 1.35;
+  }
+
+  .admin-users-table__id-value {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 2px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-pill);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__role,
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__state {
+    grid-row: 2;
+    justify-items: center;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    text-align: center;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__role {
+    grid-column: 1 / 7;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__state {
+    grid-column: 7 / -1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__time {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: block;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-users-table__actions::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-users-table__action-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .admin-users-table__action-row .admin-btn {
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-status {
+    width: max-content;
+    min-height: 22px;
+    gap: 0;
+    padding: 3px 8px;
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .admin-users-table:not(.admin-drives-table) .admin-status::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__ip {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__ip::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-banned-ips-table__ip code {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-strong);
+    font-size: 15px;
+    font-weight: var(--weight-bold);
+    line-height: 1.35;
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__reason,
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__time {
+    grid-column: 1 / -1;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__reason {
+    grid-row: 2;
+    color: var(--text-default);
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__time {
+    grid-row: 3;
+    color: var(--text-muted);
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: block;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions::before {
+    content: none;
+    display: none;
+  }
+
+  .admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions .admin-btn {
+    justify-content: center;
+    width: 100%;
+    min-height: 34px;
   }
 
   .admin-modal-backdrop {

@@ -10,6 +10,10 @@ const videosPageSource = readFileSync(
   new URL("../src/admin/VideosPage.tsx", import.meta.url),
   "utf8"
 );
+const usersPageSource = readFileSync(
+  new URL("../src/admin/UsersPage.tsx", import.meta.url),
+  "utf8"
+);
 const apiSource = readFileSync(
   new URL("../src/admin/api.ts", import.meta.url),
   "utf8"
@@ -72,6 +76,50 @@ test("admin tables scroll inside the mobile viewport", () => {
   const body = ruleBody(css, ".admin-table:not(.admin-drives-table)");
 
   assert.match(body, /display\s*:\s*block/);
+});
+
+test("mobile user management cards keep identity, metadata, and actions separated", () => {
+  const css = mobileCss();
+  const userCard = ruleBodyByContains(css, ".admin-users-table:not(.admin-drives-table) tr");
+  const ipCard = ruleBodyByContains(css, ".admin-banned-ips-table:not(.admin-drives-table) tr");
+  const username = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-users-table__username");
+  const userId = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-users-table__id");
+  const userRole = ruleBodyByContains(css, ".admin-users-table:not(.admin-drives-table) .admin-users-table__role");
+  const userTime = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-users-table__time");
+  const userActions = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-users-table__actions");
+  const userStatus = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-status");
+  const userStatusDot = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-status::before");
+  const actionRow = ruleBody(css, ".admin-users-table__action-row");
+  const ipIdentity = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__ip");
+  const ipReason = ruleBodyByContains(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__reason");
+  const ipActions = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions");
+
+  assert.match(usersPageSource, /className="admin-table admin-users-table"/);
+  assert.match(usersPageSource, /className="admin-table admin-banned-ips-table"/);
+  assert.match(usersPageSource, /data-label="用户名"/);
+  assert.match(usersPageSource, /data-label="IP 地址"/);
+  assert.match(usersPageSource, /className="admin-btn admin-btn--small is-danger"/);
+  assert.match(userCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(userCard, /border-radius\s*:\s*var\(--radius-sm\)/);
+  assert.match(ipCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(username, /grid-column\s*:\s*1\s*\/\s*9/);
+  assert.match(userId, /grid-column\s*:\s*9\s*\/\s*-1/);
+  assert.match(userRole, /grid-row\s*:\s*2/);
+  assert.match(userRole, /justify-items\s*:\s*center/);
+  assert.match(userRole, /text-align\s*:\s*center/);
+  assert.match(userRole, /border-top\s*:\s*1px\s+solid\s+var\(--border-subtle\)/);
+  assert.match(userTime, /grid-column\s*:\s*1\s*\/\s*-1/);
+  assert.match(userTime, /grid-row\s*:\s*3/);
+  assert.match(userActions, /grid-row\s*:\s*4/);
+  assert.match(userStatus, /gap\s*:\s*0/);
+  assert.match(userStatusDot, /content\s*:\s*none/);
+  assert.match(userStatusDot, /display\s*:\s*none/);
+  assert.match(actionRow, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(ipIdentity, /grid-column\s*:\s*1\s*\/\s*-1/);
+  assert.match(ipReason, /grid-row\s*:\s*2/);
+  assert.match(ipReason, /border-top\s*:\s*1px\s+solid\s+var\(--border-subtle\)/);
+  assert.match(ipActions, /grid-row\s*:\s*4/);
+  assert.match(ipActions, /display\s*:\s*block/);
 });
 
 test("admin video filter select uses an aligned custom arrow", () => {

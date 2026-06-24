@@ -73,12 +73,32 @@ go run ./cmd/server
 ### 连接前端
 
 `vite.config.ts` 已经把 `/api`、`/p`、`/admin/api` 代理到 `127.0.0.1:9192`。
+代理会转发真实来源 IP，登录失败封禁会按真实客户端 IP 计数。
 
 ```
 npm run build       构建前端静态资源
 npm run preview     前端 9191，无热更新
 go run ./cmd/server 后端 9192
 ```
+
+### 真实 IP 与登录封禁
+
+登录失败 3 次后会永久封禁来源 IP，只能在后台用户管理里手动解除。后端默认只信任来自本机代理（`127.0.0.1` / `::1`）的 `X-Forwarded-For` / `X-Real-IP`，外部直连请求伪造这些头会被忽略。
+
+如果前面套 nginx，反代配置必须覆盖真实 IP 头，避免把所有用户都算成 `127.0.0.1`：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:9191;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+单机 nginx 反代不要使用 `$proxy_add_x_forwarded_for`，否则客户端自带的伪造 `X-Forwarded-For` 可能进入转发链。
 
 ## 添加一个盘
 
@@ -212,4 +232,4 @@ cp config.example.yaml config.yaml
 ./video-server
 ```
 
-配 systemd + nginx 反代到 `/` 和 `/api`、`/p`、`/admin`。
+配 systemd + nginx 反代到 `/` 和 `/api`、`/p`、`/admin`。nginx 需要按上面的示例传递真实 IP，否则登录失败封禁会封到 nginx 或本机地址。

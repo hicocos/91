@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 type ToastKind = "info" | "success" | "error";
 type Toast = { id: number; kind: ToastKind; text: string; copyable: boolean };
@@ -133,31 +134,34 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={{ show }}>
       {children}
-      <div className="admin-toast-stack" role="status" aria-live="polite">
-        {items.map((t) => (
-          <div
-            key={t.id}
-            className={`admin-toast is-${t.kind}${
-              t.copyable ? " is-copyable" : ""
-            }`}
-            role={t.copyable ? "button" : undefined}
-            tabIndex={t.copyable ? 0 : undefined}
-            aria-label={t.copyable ? `复制提示：${t.text}` : undefined}
-            onClick={t.copyable ? () => copyToastText(t.text) : undefined}
-            onKeyDown={
-              t.copyable
-                ? (event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    copyToastText(t.text);
-                  }
-                : undefined
-            }
-          >
-            <span className="admin-toast__text">{t.text}</span>
-          </div>
-        ))}
-      </div>
+      {createPortal(
+        <div className="admin-toast-stack" role="status" aria-live="polite">
+          {items.map((t) => (
+            <div
+              key={t.id}
+              className={`admin-toast is-${t.kind}${
+                t.copyable ? " is-copyable" : ""
+              }`}
+              role={t.copyable ? "button" : undefined}
+              tabIndex={t.copyable ? 0 : undefined}
+              aria-label={t.copyable ? `复制提示：${t.text}` : undefined}
+              onClick={t.copyable ? () => copyToastText(t.text) : undefined}
+              onKeyDown={
+                t.copyable
+                  ? (event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      copyToastText(t.text);
+                    }
+                  : undefined
+              }
+            >
+              <span className="admin-toast__text">{t.text}</span>
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
     </ToastCtx.Provider>
   );
 }

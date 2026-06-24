@@ -9,6 +9,7 @@ import {
   Palette,
   RefreshCw,
   MoreVertical,
+  Users,
 } from "lucide-react";
 import * as api from "./api";
 import { useAuth } from "./AuthContext";
@@ -127,6 +128,17 @@ export function AdminLayout() {
               <span className="admin-nav__icon"><Tags size={16} /></span>
               <span className="admin-nav__text">
                 <span className="admin-nav__title">标签管理</span>
+              </span>
+            </NavLink>
+            <NavLink
+              to="/admin/users"
+              className={({ isActive }) =>
+                `admin-nav__link ${isActive ? "is-active" : ""}`
+              }
+            >
+              <span className="admin-nav__icon"><Users size={16} /></span>
+              <span className="admin-nav__text">
+                <span className="admin-nav__title">用户管理</span>
               </span>
             </NavLink>
           </div>

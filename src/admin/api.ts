@@ -37,7 +37,7 @@ async function request<T>(
 }
 
 export function login(username: string, password: string) {
-  return request<{ ok: boolean }>("/login", {
+  return request<{ ok: boolean; role?: string }>("/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
@@ -59,7 +59,7 @@ export function logout() {
 }
 
 export function me() {
-  return request<{ authenticated: boolean }>("/me");
+  return request<{ authenticated: boolean; role?: string }>("/me");
 }
 
 export type UpdateCheck = {
@@ -723,4 +723,62 @@ export function stopAllTasks() {
     "/tasks/stop",
     { method: "POST" }
   );
+}
+
+// ---------- Users ----------
+
+export type AdminUser = {
+  id: number;
+  username: string;
+  role: string;
+  banned: boolean;
+  createdAt: number;
+};
+
+export function listUsers() {
+  return request<AdminUser[]>("/users");
+}
+
+export function createUser(body: { username: string; password: string; role: string }) {
+  return request<{ ok: boolean; id: number }>("/users", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteUser(id: number) {
+  return request<{ ok: boolean }>(`/users/${id}`, { method: "DELETE" });
+}
+
+export function banUser(id: number) {
+  return request<{ ok: boolean }>(`/users/${id}/ban`, { method: "POST" });
+}
+
+export function unbanUser(id: number) {
+  return request<{ ok: boolean }>(`/users/${id}/unban`, { method: "POST" });
+}
+
+export function resetPassword(id: number, password: string) {
+  return request<{ ok: boolean }>(`/users/${id}/password`, {
+    method: "PUT",
+    body: JSON.stringify({ password }),
+  });
+}
+
+// ---------- Banned IPs ----------
+
+export type BannedIP = {
+  ip: string;
+  reason: string;
+  createdAt: number;
+};
+
+export function listBannedIPs() {
+  return request<BannedIP[]>("/banned-ips");
+}
+
+export function unbanIP(ip: string) {
+  return request<{ ok: boolean }>(`/banned-ips/${encodeURIComponent(ip)}`, {
+    method: "DELETE",
+  });
 }

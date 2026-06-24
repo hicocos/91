@@ -1,11 +1,12 @@
-import { defineConfig } from "vite";
+import { defineConfig, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-const backendProxy = {
-  "/api": "http://127.0.0.1:9192",
-  "/p": "http://127.0.0.1:9192",
-  "/admin/api": "http://127.0.0.1:9192",
+const backendTarget = "http://127.0.0.1:9192";
+const backendProxy: Record<string, ProxyOptions> = {
+  "/api": { target: backendTarget, xfwd: true },
+  "/p": { target: backendTarget, xfwd: true },
+  "/admin/api": { target: backendTarget, xfwd: true },
 };
 
 export default defineConfig({

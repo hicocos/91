@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -196,7 +195,7 @@ func DryRun(ctx context.Context, cfg DryRunConfig) *DryRunResult {
 
 	cmd := exec.CommandContext(runCtx, pythonPath, scriptPath, "--job", jobPath)
 	cmd.Dir = filepath.Dir(scriptPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setDryRunProcAttr(cmd)
 	cmd.Cancel = func() error {
 		return killDryRunProcess(cmd)
 	}
@@ -319,19 +318,6 @@ func DryRun(ctx context.Context, cfg DryRunConfig) *DryRunResult {
 		result.OK = check.OK
 	}
 	return result
-}
-
-func killDryRunProcess(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-		if err == syscall.ESRCH {
-			return nil
-		}
-		return cmd.Process.Kill()
-	}
-	return nil
 }
 
 // probeMediaURL 对视频直链发一个 Range: bytes=0-0 的小请求，

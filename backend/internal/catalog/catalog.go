@@ -82,6 +82,7 @@ type Video struct {
 	Favorites        int       `json:"favorites"`
 	Comments         int       `json:"comments"`
 	Likes            int       `json:"likes"`
+	LastLikedAt      time.Time `json:"lastLikedAt"`
 	Dislikes         int       `json:"dislikes"`
 	Hidden           bool      `json:"hidden"`
 	Badges           []string  `json:"badges"`
@@ -372,9 +373,10 @@ func (c *Catalog) IncrementLike(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE videos SET likes = likes + 1, updated_at = ? WHERE id = ?`,
-		time.Now().UnixMilli(), id); err != nil {
+		`UPDATE videos SET likes = likes + 1, last_liked_at = ?, updated_at = ? WHERE id = ?`,
+		now, now, id); err != nil {
 		return 0, err
 	}
 	var likes int
@@ -395,9 +397,14 @@ func (c *Catalog) DecrementLike(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(ctx,
-		`UPDATE videos SET likes = MAX(likes - 1, 0), updated_at = ? WHERE id = ?`,
-		time.Now().UnixMilli(), id)
+		`UPDATE videos
+		    SET likes = MAX(likes - 1, 0),
+		        last_liked_at = CASE WHEN likes <= 1 THEN 0 ELSE last_liked_at END,
+		        updated_at = ?
+		  WHERE id = ?`,
+		now, id)
 	if err != nil {
 		return 0, err
 	}
@@ -1467,8 +1474,8 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 	orderBy := " ORDER BY " + readyOrderPrefix + "published_at DESC"
 	switch p.Sort {
 	case "hot":
-		// 热度 = 点赞数，点赞相同按最新
-		orderBy = " ORDER BY " + readyOrderPrefix + "likes DESC, published_at DESC"
+		// 热度 = 点赞数；点赞数相同按最近点赞时间，最后用发布时间兜底。
+		orderBy = " ORDER BY " + readyOrderPrefix + "likes DESC, COALESCE(last_liked_at, 0) DESC, published_at DESC"
 	case "recent":
 		orderBy = " ORDER BY " + readyOrderPrefix + "COALESCE(last_viewed_at, 0) DESC, published_at DESC"
 	}
@@ -2186,28 +2193,39 @@ func (c *Catalog) SetDriveSkipDirIDs(ctx context.Context, id string, ids []strin
 
 // ---------- Admin session ----------
 
-func (c *Catalog) CreateSession(ctx context.Context, token string, ttl time.Duration) error {
+func (c *Catalog) CreateSession(ctx context.Context, token string, ttl time.Duration, userID int64) error {
 	now := time.Now()
 	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO admin_sessions (token, created_at, expires_at) VALUES (?, ?, ?)`,
-		token, now.UnixMilli(), now.Add(ttl).UnixMilli())
+		`INSERT INTO admin_sessions (token, created_at, expires_at, user_id) VALUES (?, ?, ?, ?)`,
+		token, now.UnixMilli(), now.Add(ttl).UnixMilli(), userID)
 	return err
 }
 
-func (c *Catalog) ValidateSession(ctx context.Context, token string) (bool, error) {
+func (c *Catalog) ValidateSession(ctx context.Context, token string) (bool, int64, error) {
 	var expires int64
-	err := c.db.QueryRowContext(ctx, `SELECT expires_at FROM admin_sessions WHERE token = ?`, token).Scan(&expires)
+	var userID int64
+	err := c.db.QueryRowContext(ctx,
+		`SELECT expires_at, COALESCE(user_id, 0) FROM admin_sessions WHERE token = ?`,
+		token).Scan(&expires, &userID)
 	if err == sql.ErrNoRows {
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return time.Now().UnixMilli() < expires, nil
+	return time.Now().UnixMilli() < expires, userID, nil
 }
 
 func (c *Catalog) DeleteSession(ctx context.Context, token string) error {
 	_, err := c.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token = ?`, token)
+	return err
+}
+
+func (c *Catalog) DeleteSessionsForUser(ctx context.Context, userID int64) error {
+	if userID <= 0 {
+		return nil
+	}
+	_, err := c.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE user_id = ?`, userID)
 	return err
 }
 
@@ -2263,7 +2281,7 @@ COALESCE(parent_id, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
 duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_status, 'pending'),
 	COALESCE(transcode_status, ''), COALESCE(transcode_error, ''), COALESCE(transcoded_file_id, ''), COALESCE(transcoded_size, 0),
-	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, dislikes,
+	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
 	COALESCE(hidden, 0), COALESCE(badges, '[]'), COALESCE(description, ''),
 	published_at, created_at, updated_at
 	`
@@ -2326,7 +2344,7 @@ type rowScanner interface {
 func scanVideo(row rowScanner) (*Video, error) {
 	v := &Video{}
 	var tagsJSON, badgesJSON string
-	var publishedAt, createdAt, updatedAt, lastViewedAt int64
+	var publishedAt, createdAt, updatedAt, lastViewedAt, lastLikedAt int64
 	var hidden int
 	err := row.Scan(
 		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash,
@@ -2335,7 +2353,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.Quality, &v.ThumbnailURL,
 		&v.PreviewFileID, &v.PreviewLocal, &v.PreviewStatus,
 		&v.TranscodeStatus, &v.TranscodeError, &v.TranscodedFileID, &v.TranscodedSize,
-		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &v.Dislikes,
+		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &lastLikedAt, &v.Dislikes,
 		&hidden, &badgesJSON, &v.Description,
 		&publishedAt, &createdAt, &updatedAt,
 	)
@@ -2350,6 +2368,9 @@ func scanVideo(row rowScanner) (*Video, error) {
 	v.UpdatedAt = time.UnixMilli(updatedAt)
 	if lastViewedAt > 0 {
 		v.LastViewedAt = time.UnixMilli(lastViewedAt)
+	}
+	if lastLikedAt > 0 {
+		v.LastLikedAt = time.UnixMilli(lastLikedAt)
 	}
 	return v, nil
 }

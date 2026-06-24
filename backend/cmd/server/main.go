@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -57,6 +58,14 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		if err := runHashPasswordCommand(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfgPath := "./config.yaml"
 	if v := os.Getenv("VIDEO_CONFIG"); v != "" {
 		cfgPath = v
@@ -118,6 +127,11 @@ func main() {
 		Catalog:  cat,
 	}
 	setupRequired := config.RequiresAdminSetup(cfg)
+	if !setupRequired {
+		if err := ensureConfigAdminUser(ctx, cat, cfg); err != nil {
+			log.Printf("[auth] migrate config admin: %v", err)
+		}
+	}
 	var setupMu sync.Mutex
 	versionFilePath := strings.TrimSpace(os.Getenv("VIDEO_VERSION_FILE"))
 	if versionFilePath == "" {
@@ -164,6 +178,13 @@ func main() {
 				return nil
 			}
 			if err := config.WriteAdminCredentials(cfgPath, username, password); err != nil {
+				return err
+			}
+			hashed, err := auth.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			if _, err := cat.CreateUser(ctx, username, hashed, "admin"); err != nil {
 				return err
 			}
 			cfg.Server.Admin.Username = username
@@ -328,6 +349,45 @@ func main() {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
 	_ = srv.Shutdown(shutCtx)
+}
+
+func runHashPasswordCommand(r io.Reader, w io.Writer) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+	password := strings.TrimRight(string(data), "\r\n")
+	if len(password) < 6 {
+		return fmt.Errorf("password must be at least 6 characters")
+	}
+	hashed, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	_, err = fmt.Fprintln(w, hashed)
+	return err
+}
+
+func ensureConfigAdminUser(ctx context.Context, cat *catalog.Catalog, cfg *config.Config) error {
+	if cat == nil || cfg == nil {
+		return nil
+	}
+	username := strings.TrimSpace(cfg.Server.Admin.Username)
+	password := cfg.Server.Admin.Password
+	if username == "" || password == "" {
+		return nil
+	}
+	if _, err := cat.GetUserByUsername(ctx, username); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	hashed, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	_, err = cat.CreateUser(ctx, username, hashed, "admin")
+	return err
 }
 
 // ---------- App ----------

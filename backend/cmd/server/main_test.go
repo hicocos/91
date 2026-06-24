@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
 	"github.com/video-site/backend/internal/drives"
@@ -22,6 +27,54 @@ import (
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/proxy"
 )
+
+func TestHashPasswordCommandProducesBcryptHash(t *testing.T) {
+	var out bytes.Buffer
+	if err := runHashPasswordCommand(strings.NewReader("secret123"), &out); err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	hash := strings.TrimSpace(out.String())
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("secret123")); err != nil {
+		t.Fatalf("hash does not verify: %v", err)
+	}
+}
+
+func TestEnsureConfigAdminUserMigratesCustomConfigAdmin(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	cfg := &config.Config{}
+	cfg.Server.Admin.Username = "owner"
+	cfg.Server.Admin.Password = "secret123"
+
+	if err := ensureConfigAdminUser(ctx, cat, cfg); err != nil {
+		t.Fatalf("ensure config admin: %v", err)
+	}
+	u, err := cat.GetUserByUsername(ctx, "owner")
+	if err != nil {
+		t.Fatalf("get migrated user: %v", err)
+	}
+	if u.Role != "admin" {
+		t.Fatalf("role = %q, want admin", u.Role)
+	}
+
+	authr := &auth.Authenticator{Catalog: cat}
+	role, err := authr.UserLogin(httptest.NewRecorder(), httptest.NewRequest("POST", "/admin/api/login", nil), "owner", "secret123")
+	if err != nil {
+		t.Fatalf("login migrated user: %v", err)
+	}
+	if role != "admin" {
+		t.Fatalf("role = %q, want admin", role)
+	}
+}
 
 func TestRegisterPreviewWorkerBackfillsPendingWhenDriveTeaserEnabled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

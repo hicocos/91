@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SkyStarfield } from "@/components/SkyStarfield";
 import { AdminLayout } from "@/admin/AdminLayout";
 import { RequireAuth } from "@/admin/RequireAuth";
+import { RequireAdmin } from "@/admin/RequireAdmin";
 import { rememberVideoReturnPath, routeToPath } from "@/lib/videoReturnPath";
 
 const HomePage = lazy(() => import("@/pages/HomePage"));
@@ -30,6 +31,9 @@ const TagsPage = lazy(() =>
 );
 const ThemePage = lazy(() =>
   import("@/admin/ThemePage").then((module) => ({ default: module.ThemePage }))
+);
+const UsersPage = lazy(() =>
+  import("@/admin/UsersPage").then((module) => ({ default: module.UsersPage }))
 );
 
 function PageSuspense({ children }: { children: ReactNode }) {
@@ -97,9 +101,11 @@ export default function App() {
           path="/upload"
           element={
             <RequireAuth>
-              <PageSuspense>
-                <UploadPage />
-              </PageSuspense>
+              <RequireAdmin>
+                <PageSuspense>
+                  <UploadPage />
+                </PageSuspense>
+              </RequireAdmin>
             </RequireAuth>
           }
         />
@@ -114,12 +120,14 @@ export default function App() {
           }
         />
 
-        {/* 管理后台也需要登录 */}
+        {/* 管理后台也需要登录+管理员权限 */}
         <Route
           path="/admin"
           element={
             <RequireAuth>
-              <AdminLayout />
+              <RequireAdmin>
+                <AdminLayout />
+              </RequireAdmin>
             </RequireAuth>
           }
         >
@@ -161,6 +169,14 @@ export default function App() {
             element={
               <PageSuspense>
                 <ThemePage />
+              </PageSuspense>
+            }
+          />
+          <Route
+            path="users"
+            element={
+              <PageSuspense>
+                <UsersPage />
               </PageSuspense>
             }
           />

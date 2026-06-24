@@ -63,12 +63,19 @@ export function LoginPage() {
         await refresh();
         setSetupRequired(false);
         show("管理员账号已设置", "success");
+        navigate("/admin", { replace: true });
+        return;
       } else {
-        await login(u, p);
+        const role = await login(u, p);
         show("登录成功", "success");
+        if (role === "admin") {
+          const from = (location.state as { from?: string } | null)?.from ?? "/admin";
+          navigate(from, { replace: true });
+        } else {
+          navigate("/", { replace: true });
+        }
+        return;
       }
-      const from = (location.state as { from?: string } | null)?.from ?? "/";
-      navigate(from, { replace: true });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "登录失败");
     } finally {

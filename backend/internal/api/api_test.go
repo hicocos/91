@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/mediaasset"
@@ -161,6 +162,42 @@ func TestPreviewURLFallsBackWithoutUpdatedAt(t *testing.T) {
 
 	if got != "/p/preview/video-1" {
 		t.Fatalf("preview URL = %q, want unversioned URL", got)
+	}
+}
+
+func TestPublicWriteRoutesRequireAdminRole(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	userID, err := cat.CreateUser(ctx, "viewer", hash, "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := cat.CreateSession(ctx, "viewer-token", time.Hour, userID); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	router := chi.NewRouter()
+	(&Server{Catalog: cat}).RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
+	req := httptest.NewRequest(http.MethodPut, "/api/video/video-1/tags", strings.NewReader(`{"tags":[]}`))
+	req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "viewer-token"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", rr.Code, rr.Body.String())
 	}
 }
 

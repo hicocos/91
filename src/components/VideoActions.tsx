@@ -7,6 +7,7 @@ type Props = {
   video: VideoDetail;
   onDeleteVideo: () => void;
   deleteSaving?: boolean;
+  canDelete?: boolean;
 };
 
 /**
@@ -23,6 +24,7 @@ export function VideoActions({
   video,
   onDeleteVideo,
   deleteSaving,
+  canDelete = true,
 }: Props) {
   const [likes, setLikes] = useState(video.likes ?? 0);
   const [dislikes, setDislikes] = useState(video.dislikes ?? 0);
@@ -115,16 +117,18 @@ export function VideoActions({
         </button>
       </div>
 
-      <button
-        type="button"
-        className="vd-actions__btn vd-actions__delete"
-        onClick={onDeleteVideo}
-        disabled={deleteSaving}
-        aria-label="删除这个视频"
-      >
-        <Trash2 size={16} />
-        <span>{deleteSaving ? "删除中" : "删除"}</span>
-      </button>
+      {canDelete && (
+        <button
+          type="button"
+          className="vd-actions__btn vd-actions__delete"
+          onClick={onDeleteVideo}
+          disabled={deleteSaving}
+          aria-label="删除这个视频"
+        >
+          <Trash2 size={16} />
+          <span>{deleteSaving ? "删除中" : "删除"}</span>
+        </button>
+      )}
     </div>
   );
 }

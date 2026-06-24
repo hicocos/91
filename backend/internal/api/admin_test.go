@@ -116,9 +116,85 @@ func TestHandleSetupStoresCredentialsAndCreatesSession(t *testing.T) {
 	if len(cookies) == 0 {
 		t.Fatal("setup did not set a session cookie")
 	}
-	ok, err := cat.ValidateSession(context.Background(), cookies[0].Value)
+	ok, _, err := cat.ValidateSession(context.Background(), cookies[0].Value)
 	if err != nil || !ok {
 		t.Fatalf("setup session valid=%v err=%v", ok, err)
+	}
+}
+
+func TestHandleBanUserDeletesSessions(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	userID, err := cat.CreateUser(ctx, "viewer", hash, "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := cat.CreateSession(ctx, "viewer-token", time.Hour, userID); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/users/1/ban", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.FormatInt(userID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{Catalog: cat}).handleBanUser(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	ok, _, err := cat.ValidateSession(ctx, "viewer-token")
+	if err != nil {
+		t.Fatalf("validate session: %v", err)
+	}
+	if ok {
+		t.Fatal("banned user session is still valid")
+	}
+}
+
+func TestHandleBanUserRejectsLastActiveAdmin(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	hash, err := auth.HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	adminID, err := cat.CreateUser(ctx, "owner", hash, "admin")
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/users/1/ban", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.FormatInt(adminID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{Catalog: cat}).handleBanUser(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
 }
 
