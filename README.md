@@ -81,6 +81,30 @@ sudo bash install.sh
 
 > `video-site-91` 为等效别名，两者可互换使用。
 
+### 使用 Nginx 反向代理
+
+如果你想用域名访问，或在服务器前面套一层 Nginx，可以把 Nginx 反代到前端端口 `9191`：
+
+```nginx
+server {
+    listen 80;
+    server_name example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:9191;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+登录失败 3 次后会永久封禁来源 IP，只能在后台用户管理里手动解除。后端只信任来自本机代理的 `X-Real-IP` / `X-Forwarded-For`，所以 Nginx 必须按上面的方式传递真实客户端 IP。
+
+单机 Nginx 反代时，不建议使用 `$proxy_add_x_forwarded_for`。直接使用 `$remote_addr` 可以避免客户端伪造 `X-Forwarded-For` 干扰封禁判断。
+
 **已部署用户升级：**
 
 ```bash
