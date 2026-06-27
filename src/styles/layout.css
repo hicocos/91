@@ -155,6 +155,47 @@
   filter: brightness(1.05);
 }
 
+.home-refresh {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  color: var(--text-on-accent);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 6px 24px var(--accent-glow), var(--shadow-inset);
+  cursor: pointer;
+  z-index: var(--z-overlay);
+  transition: transform var(--transition-normal), filter var(--transition-normal);
+}
+
+.app-shell.is-back-to-top-visible .home-refresh {
+  bottom: 80px;
+}
+
+.home-refresh:hover {
+  filter: brightness(1.05);
+}
+
+.home-refresh:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.home-refresh.is-refreshing svg {
+  animation: home-refresh-spin 0.75s linear infinite;
+}
+
+@keyframes home-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* =========================================================
  * Footer
  * ========================================================= */
@@ -440,5 +481,16 @@
     bottom: 14px;
     width: 40px;
     height: 40px;
+  }
+
+  .home-refresh {
+    right: 14px;
+    bottom: 14px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .app-shell.is-back-to-top-visible .home-refresh {
+    bottom: 66px;
   }
 }

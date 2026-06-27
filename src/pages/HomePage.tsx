@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
@@ -62,7 +63,29 @@ export default function HomePage() {
   const [latestVideos, setLatestVideos] = useState<VideoItem[]>(cachedLatest ?? []);
   const [rankingLoading, setRankingLoading] = useState(cachedRanking === null);
   const [latestLoading, setLatestLoading] = useState(cachedLatest === null);
+  const [refreshing, setRefreshing] = useState(false);
   const isMobile = useIsMobile();
+
+  const refreshHome = useCallback(async () => {
+    setRefreshing(true);
+    setRankingLoading(true);
+    setLatestLoading(true);
+
+    const excludeIds = loadRecentHomeVideoIds();
+    const [rankingItems, latestResult] = await Promise.all([
+      fetchHomeVideos(excludeIds),
+      fetchListing(1, DESKTOP_COUNT, { sort: "latest", includeTotal: false }),
+    ]);
+
+    rememberHomeVideos(rankingItems);
+    cachedRanking = rankingItems;
+    cachedLatest = latestResult.items;
+    setRankingVideos(rankingItems);
+    setLatestVideos(latestResult.items);
+    setRankingLoading(false);
+    setLatestLoading(false);
+    setRefreshing(false);
+  }, []);
 
   useEffect(() => {
     document.title = "首页 · 91";
@@ -126,6 +149,17 @@ export default function HomePage() {
         <SectionHeader title="最新视频" extra={latest.length > 0 ? `共 ${latest.length} 个` : undefined} />
         <VideoGrid videos={latest} loading={latestLoading} skeletonCount={displayCount} />
       </div>
+
+      <button
+        type="button"
+        className={`home-refresh ${refreshing ? "is-refreshing" : ""}`}
+        onClick={refreshHome}
+        disabled={refreshing}
+        aria-label="刷新首页"
+        title="刷新首页"
+      >
+        <RefreshCw size={18} />
+      </button>
     </AppShell>
   );
 }
