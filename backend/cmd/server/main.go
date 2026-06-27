@@ -1009,6 +1009,8 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			PageSize:       parseIntDefault(strings.TrimSpace(d.Credentials["page_size"]), 100),
 			OrderBy:        parseIntDefault(strings.TrimSpace(d.Credentials["order_by"]), 3),
 			SortType:       parseIntDefault(strings.TrimSpace(d.Credentials["sort_type"]), 1),
+			AccountBaseURL: d.Credentials["account_base_url"],
+			APIBaseURL:     d.Credentials["api_base_url"],
 			OnCredentialsUpdate: func(updated map[string]string) {
 				if d.Credentials == nil {
 					d.Credentials = make(map[string]string)

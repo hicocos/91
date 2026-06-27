@@ -10,12 +10,13 @@ import {
   deleteVideo,
   fetchTags,
   fetchVideoDetail,
+  fetchVideoSubtitles,
   recordView,
   updateVideoTags,
 } from "@/data/videos";
 import { useAuth } from "@/admin/AuthContext";
 import { resolveVideoReturnPath } from "@/lib/videoReturnPath";
-import type { TagItem, VideoDetail } from "@/types";
+import type { TagItem, VideoDetail, VideoSubtitle } from "@/types";
 
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +26,7 @@ export default function VideoDetailPage() {
   const locationState = location.state as { from?: unknown } | null;
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [tags, setTags] = useState<TagItem[]>([]);
+  const [subtitles, setSubtitles] = useState<VideoSubtitle[]>([]);
   const [loading, setLoading] = useState(true);
   const [tagSaving, setTagSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -38,13 +40,17 @@ export default function VideoDetailPage() {
     let active = true;
     window.scrollTo({ top: 0, behavior: "auto" });
     setLoading(true);
-    Promise.all([fetchVideoDetail(id), fetchTags()]).then(([d, tagList]) => {
-      if (!active) return;
-      setDetail(d);
-      setTags(tagList);
-      setLoading(false);
-      document.title = d ? `${d.title} · 91` : "视频不存在";
-    });
+    setSubtitles([]);
+    Promise.all([fetchVideoDetail(id), fetchTags(), fetchVideoSubtitles(id)]).then(
+      ([d, tagList, subtitleList]) => {
+        if (!active) return;
+        setDetail(d);
+        setTags(tagList);
+        setSubtitles(d ? subtitleList : []);
+        setLoading(false);
+        document.title = d ? `${d.title} · 91` : "视频不存在";
+      }
+    );
     return () => {
       active = false;
     };
@@ -213,6 +219,7 @@ export default function VideoDetailPage() {
                     src={detail.videoSrc}
                     poster={detail.poster}
                     previewSrc={detail.previewSrc}
+                    subtitles={subtitles}
                     title={detail.title}
                     onFirstPlay={handleFirstPlay}
                   />

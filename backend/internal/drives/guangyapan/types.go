@@ -49,6 +49,7 @@ type fileItem struct {
 	ParentID string `json:"parentId"`
 	FileName string `json:"fileName"`
 	FileSize int64  `json:"fileSize"`
+	GCID     string `json:"gcid"`
 	ResType  int    `json:"resType"`
 	CTime    int64  `json:"ctime"`
 	UTime    int64  `json:"utime"`
@@ -61,6 +62,39 @@ type downloadResp struct {
 		SignedURL   string `json:"signedURL"`
 		DownloadURL string `json:"downloadUrl"`
 	} `json:"data"`
+}
+
+type subtitleResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		List []subtitleItem `json:"list"`
+	} `json:"data"`
+}
+
+type subtitleItem struct {
+	GCID      string   `json:"gcid"`
+	CID       string   `json:"cid"`
+	Source    int      `json:"source"`
+	Name      string   `json:"name"`
+	Ext       string   `json:"ext"`
+	Duration  int64    `json:"duration"`
+	Languages []string `json:"languages"`
+	URL       string   `json:"url"`
+}
+
+type fileDetailResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		FileInfo      fileItem            `json:"fileInfo"`
+		VideoResource []videoResourceItem `json:"videoResource"`
+	} `json:"data"`
+}
+
+type videoResourceItem struct {
+	GCID    string `json:"gcid"`
+	MediaID string `json:"media_id"`
 }
 
 type createDirResp struct {

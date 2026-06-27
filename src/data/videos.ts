@@ -1,4 +1,4 @@
-import type { VideoDetail, VideoItem } from "@/types";
+import type { VideoDetail, VideoItem, VideoSubtitle } from "@/types";
 
 // 真实后端接口调用。未配置网盘时，各接口返回空数据。
 export function fetchHomeVideos(excludeIds?: string[]): Promise<VideoItem[]> {
@@ -32,6 +32,12 @@ export function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
   return apiGet<VideoDetail>(`/api/video/${encodeURIComponent(id)}`).catch(
     () => null
   );
+}
+
+export function fetchVideoSubtitles(id: string): Promise<VideoSubtitle[]> {
+  return apiGet<VideoSubtitle[]>(
+    `/api/video/${encodeURIComponent(id)}/subtitles`
+  ).catch(() => []);
 }
 
 export function updateVideoTags(

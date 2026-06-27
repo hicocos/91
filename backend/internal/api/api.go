@@ -23,6 +23,7 @@ import (
 
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
+	drivepkg "github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/mediaasset"
@@ -48,6 +49,8 @@ var allowedUploadTags = map[string]struct{}{
 	"AV": {},
 }
 
+const maxSubtitleBytes = 20 << 20
+
 type Server struct {
 	Catalog         *catalog.Catalog
 	Proxy           *proxy.Proxy
@@ -71,6 +74,8 @@ type Server struct {
 const (
 	homePageSize = 12
 )
+
+var subtitleHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // VideoDTO 是返回给前端的视频对象，字段名跟前端 VideoItem 对齐
 type VideoDTO struct {
@@ -113,6 +118,16 @@ type VideoDetailDTO struct {
 	CommentsList  []Comment     `json:"commentsList"`
 }
 
+type SubtitleDTO struct {
+	Name     string `json:"name"`
+	Label    string `json:"label"`
+	Language string `json:"language,omitempty"`
+	Ext      string `json:"ext"`
+	Type     string `json:"type"`
+	URL      string `json:"url"`
+	Source   string `json:"source"`
+}
+
 type AuthorProfile struct {
 	ID     string   `json:"id"`
 	Name   string   `json:"name"`
@@ -139,6 +154,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/home", s.handleHome)
 		r.Get("/api/list", s.handleList)
 		r.Get("/api/video/{id}", s.handleVideoDetail)
+		r.Get("/api/video/{id}/subtitles", s.handleVideoSubtitles)
 		r.Post("/api/video/{id}/like", s.handleLike)
 		r.Delete("/api/video/{id}/like", s.handleUnlike)
 		r.Post("/api/video/{id}/view", s.handleView)
@@ -147,6 +163,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/*", s.handleStream)
+		r.Get("/p/subtitle/{id}/{index}", s.handleSubtitleFile)
 		r.Get("/p/upload/{videoID}", s.handleUploadedVideo)
 		r.Get("/p/preview/{videoID}", s.handlePreview)
 		r.Get("/p/thumb/{videoID}", s.handleThumb)
@@ -812,6 +829,81 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	fileID := routeWildcardParam(r, "*")
 	s.Proxy.ServeStream(w, r, driveID, fileID)
 }
+
+func (s *Server) handleVideoSubtitles(w http.ResponseWriter, r *http.Request) {
+	v, ok := s.visibleVideo(w, r, routeParam(r, "id"))
+	if !ok {
+		return
+	}
+	subs, err := s.loadVideoSubtitles(r.Context(), v)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mapSubtitles(v.ID, subs))
+}
+
+func (s *Server) handleSubtitleFile(w http.ResponseWriter, r *http.Request) {
+	v, ok := s.visibleVideo(w, r, routeParam(r, "id"))
+	if !ok {
+		return
+	}
+	index, err := strconv.Atoi(routeParam(r, "index"))
+	if err != nil || index < 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid subtitle index"))
+		return
+	}
+	subs, err := s.loadVideoSubtitles(r.Context(), v)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if index >= len(subs) {
+		writeErr(w, http.StatusNotFound, errors.New("subtitle not found"))
+		return
+	}
+	sub := subs[index]
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, sub.URL, nil)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := subtitleHTTPClient.Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("subtitle upstream status=%d", resp.StatusCode))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSubtitleBytes+1))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if int64(len(data)) > maxSubtitleBytes {
+		writeErr(w, http.StatusBadGateway, errors.New("subtitle file is too large"))
+		return
+	}
+	w.Header().Set("Content-Type", subtitleContentType(sub.Ext))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) visibleVideo(w http.ResponseWriter, r *http.Request, id string) (*catalog.Video, bool) {
+	v, err := s.Catalog.GetVideo(r.Context(), id)
+	if err != nil || v.Hidden {
+		writeErr(w, http.StatusNotFound, sql.ErrNoRows)
+		return nil, false
+	}
+	return v, true
+}
+
 func (s *Server) handleUploadedVideo(w http.ResponseWriter, r *http.Request) {
 	videoID := routeParam(r, "videoID")
 	v, err := s.Catalog.GetVideo(r.Context(), videoID)
@@ -912,6 +1004,112 @@ func mapVideo(v *catalog.Video) VideoDTO {
 		PublishedAt:     v.PublishedAt.Format("2006-01-02"),
 		Tags:            tags,
 	}
+}
+
+func (s *Server) loadVideoSubtitles(ctx context.Context, v *catalog.Video) ([]drivepkg.Subtitle, error) {
+	if v == nil || v.DriveID == localUploadDriveID || s.Proxy == nil || s.Proxy.Registry == nil {
+		return []drivepkg.Subtitle{}, nil
+	}
+	d, ok := s.Proxy.Registry.Get(v.DriveID)
+	if !ok {
+		return []drivepkg.Subtitle{}, nil
+	}
+	provider, ok := d.(drivepkg.SubtitleProvider)
+	if !ok {
+		return []drivepkg.Subtitle{}, nil
+	}
+	subs, err := provider.Subtitles(ctx, drivepkg.SubtitleRequest{
+		FileID:          v.FileID,
+		FileName:        v.FileName,
+		ContentHash:     v.ContentHash,
+		DurationSeconds: v.DurationSeconds,
+	})
+	if err != nil {
+		if errors.Is(err, drivepkg.ErrNotSupported) {
+			return []drivepkg.Subtitle{}, nil
+		}
+		return nil, err
+	}
+	return filterSupportedSubtitles(subs), nil
+}
+
+func filterSupportedSubtitles(subs []drivepkg.Subtitle) []drivepkg.Subtitle {
+	out := make([]drivepkg.Subtitle, 0, len(subs))
+	for _, sub := range subs {
+		if subtitlePlayerType(sub.Ext) == "" {
+			continue
+		}
+		if strings.TrimSpace(sub.URL) == "" {
+			continue
+		}
+		out = append(out, sub)
+	}
+	return out
+}
+
+func mapSubtitles(videoID string, subs []drivepkg.Subtitle) []SubtitleDTO {
+	out := make([]SubtitleDTO, 0, len(subs))
+	for index, sub := range subs {
+		ext := normalizeSubtitleExt(sub.Ext)
+		typ := subtitlePlayerType(ext)
+		if typ == "" {
+			continue
+		}
+		label := subtitleLabel(sub, index)
+		out = append(out, SubtitleDTO{
+			Name:     strings.TrimSpace(sub.Name),
+			Label:    label,
+			Language: strings.TrimSpace(sub.Language),
+			Ext:      ext,
+			Type:     typ,
+			URL:      fmt.Sprintf("/p/subtitle/%s/%d", pathSegment(videoID), index),
+			Source:   strings.TrimSpace(sub.SourceLabel),
+		})
+	}
+	return out
+}
+
+func subtitleLabel(sub drivepkg.Subtitle, index int) string {
+	parts := make([]string, 0, 3)
+	if lang := strings.TrimSpace(sub.Language); lang != "" {
+		parts = append(parts, lang)
+	}
+	if name := strings.TrimSpace(sub.Name); name != "" {
+		parts = append(parts, name)
+	}
+	if ext := normalizeSubtitleExt(sub.Ext); ext != "" {
+		parts = append(parts, strings.ToUpper(ext))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("字幕 %d", index+1)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func subtitlePlayerType(ext string) string {
+	switch normalizeSubtitleExt(ext) {
+	case "vtt":
+		return "vtt"
+	case "srt":
+		return "srt"
+	case "ass", "ssa":
+		return "ass"
+	default:
+		return ""
+	}
+}
+
+func subtitleContentType(ext string) string {
+	switch subtitlePlayerType(ext) {
+	case "vtt":
+		return "text/vtt; charset=utf-8"
+	default:
+		return "text/plain; charset=utf-8"
+	}
+}
+
+func normalizeSubtitleExt(ext string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
 }
 
 func previewURL(v *catalog.Video) string {

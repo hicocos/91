@@ -7,12 +7,14 @@ import {
 } from "react";
 import Artplayer, { type Option, type SettingOption } from "artplayer";
 import type Hls from "hls.js";
+import type { VideoSubtitle } from "@/types";
 
 type Props = {
   id?: string;
   src: string;
   poster: string;
   previewSrc?: string;
+  subtitles?: VideoSubtitle[];
   title: string;
   /**
    * 用户首次按下播放时触发。同一个 VideoPlayer 实例只会触发一次；
@@ -131,12 +133,14 @@ const GESTURE_VERTICAL_SCALE = 1.15;
 const GESTURE_SEEK_MIN_SECONDS = 30;
 const GESTURE_SEEK_MAX_SECONDS = 120;
 const GESTURE_SEEK_DURATION_RATIO = 0.12;
+const EMPTY_SUBTITLES: VideoSubtitle[] = [];
 const playerGestureHudTimers = new WeakMap<HTMLElement, number>();
 
 export function VideoPlayer({
   src,
   poster,
   previewSrc,
+  subtitles = EMPTY_SUBTITLES,
   title,
   onFirstPlay,
 }: Props) {
@@ -168,6 +172,7 @@ export function VideoPlayer({
       src,
       poster,
       title,
+      subtitles,
       artRef,
       playedRef,
       onFirstPlayRef,
@@ -178,7 +183,7 @@ export function VideoPlayer({
     });
 
     return cleanupPlayer;
-  }, [poster, retryNonce, src, title]);
+  }, [poster, retryNonce, src, subtitles, title]);
 
   useEffect(() => {
     return () => {
@@ -288,10 +293,7 @@ function inferSourceType(src: string) {
 
 function isBackendNativeVideoRoute(cleanPath: string) {
   const pathname = sourcePathname(cleanPath);
-	return (
-		pathname.startsWith("/p/stream/") ||
-		pathname.startsWith("/p/upload/")
-	);
+  return pathname.startsWith("/p/stream/") || pathname.startsWith("/p/upload/");
 }
 
 function sourcePathname(src: string) {
@@ -309,6 +311,7 @@ function mountArtPlayer({
   mount,
   src,
   poster,
+  subtitles,
   title,
   artRef,
   playedRef,
@@ -321,6 +324,7 @@ function mountArtPlayer({
   mount: HTMLDivElement;
   src: string;
   poster: string;
+  subtitles: VideoSubtitle[];
   title: string;
   artRef: MutableRefObject<Artplayer | null>;
   playedRef: MutableRefObject<boolean>;
@@ -331,6 +335,7 @@ function mountArtPlayer({
   onGestureHud: (label: string, duration?: number) => void;
 }) {
   const sourceType = inferSourceType(src);
+  const subtitleTracks = playableSubtitles(subtitles);
   const fastActiveRef = { current: false };
   const loadHlsSource = createHlsSourceLoader(onError);
   const enableOrientationControl = shouldEnableMobileOrientationControl();
@@ -371,7 +376,7 @@ function mountArtPlayer({
       preload: "metadata",
       playsInline: true,
     },
-    settings: [createLoopSetting()],
+    settings: createPlayerSettings(subtitleTracks),
     controls: enableOrientationControl ? [createOrientationControl()] : [],
     contextmenu: [],
     cssVar: {
@@ -532,6 +537,80 @@ function createLoopSetting() {
       return next;
     },
   };
+}
+
+type PlayerSubtitle = VideoSubtitle & { type: "vtt" | "srt" | "ass" };
+type PlayerSetting = NonNullable<Option["settings"]>[number];
+
+function playableSubtitles(subtitles: VideoSubtitle[]): PlayerSubtitle[] {
+  return subtitles.filter(
+    (subtitle): subtitle is PlayerSubtitle =>
+      Boolean(subtitle.url) &&
+      (subtitle.type === "vtt" ||
+        subtitle.type === "srt" ||
+        subtitle.type === "ass")
+  );
+}
+
+function subtitleOption(
+  subtitle: PlayerSubtitle
+): NonNullable<Option["subtitle"]> {
+  return {
+    url: subtitle.url,
+    name: subtitleTrackLabel(subtitle),
+    type: subtitle.type,
+    encoding: "utf-8",
+    escape: true,
+  };
+}
+
+function createPlayerSettings(subtitles: PlayerSubtitle[]) {
+  return [createLoopSetting(), createSubtitleSetting(subtitles)];
+}
+
+function createSubtitleSetting(subtitles: PlayerSubtitle[]): PlayerSetting {
+  return {
+    name: "online-subtitle",
+    html: "字幕",
+    tooltip: "关闭",
+    selector: [
+      { html: "关闭", value: "off", default: true },
+      ...subtitles.map((subtitle, index) => ({
+        html: subtitleTrackLabel(subtitle, index),
+        value: String(index),
+        default: false,
+      })),
+    ],
+    onSelect(this: Artplayer, item: SettingOption) {
+      const value = String(item.value ?? "");
+      if (value === "off") {
+        setSubtitleVisible(this, false);
+        return "关闭";
+      }
+
+      const index = Number(value);
+      const subtitle = subtitles[index];
+      if (!subtitle) {
+        return this.option.subtitle?.name || "字幕";
+      }
+
+      setSubtitleVisible(this, true);
+      void this.subtitle.switch(subtitle.url, subtitleOption(subtitle));
+      return subtitleTrackLabel(subtitle, index);
+    },
+  };
+}
+
+function subtitleTrackLabel(subtitle: PlayerSubtitle, index?: number) {
+  return (
+    subtitle.label ||
+    subtitle.name ||
+    (typeof index === "number" ? `字幕 ${index + 1}` : "在线字幕")
+  );
+}
+
+function setSubtitleVisible(art: Artplayer, visible: boolean) {
+  (art.subtitle as typeof art.subtitle & { show: boolean }).show = visible;
 }
 
 function isPlayerExpanded(art: Artplayer) {

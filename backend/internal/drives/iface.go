@@ -84,6 +84,33 @@ type StreamLink struct {
 	Expires time.Time
 }
 
+// SubtitleRequest carries the video metadata a drive may need to query online
+// subtitles. Providers can use ContentHash when it is a provider-native hash,
+// or derive their own lookup key from FileID / streaming URL.
+type SubtitleRequest struct {
+	FileID          string
+	FileName        string
+	ContentHash     string
+	DurationSeconds int
+}
+
+type Subtitle struct {
+	ID              string
+	Name            string
+	Ext             string
+	Language        string
+	URL             string
+	Source          int
+	SourceLabel     string
+	DurationSeconds int
+}
+
+// SubtitleProvider is an optional drive capability for fetching online
+// subtitles for a video.
+type SubtitleProvider interface {
+	Subtitles(ctx context.Context, req SubtitleRequest) ([]Subtitle, error)
+}
+
 // ErrNotSupported 代表某家盘不支持某操作
 var ErrNotSupported = errors.New("operation not supported by this drive")
 

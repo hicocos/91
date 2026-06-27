@@ -64,7 +64,8 @@ test("detail player uses compact ArtPlayer settings panel on mobile", () => {
 });
 
 test("detail player exposes a non-persistent loop switch in ArtPlayer settings", () => {
-  assert.match(playerSource, /settings:\s*\[createLoopSetting\(\)\]/);
+  assert.match(playerSource, /settings:\s*createPlayerSettings\(subtitleTracks\)/);
+  assert.match(playerSource, /return \[createLoopSetting\(\),\s*createSubtitleSetting\(subtitles\)\]/);
   assert.match(playerSource, /function createLoopSetting\(\)/);
   assert.match(playerSource, /html:\s*"洗脑循环"/);
   assert.match(playerSource, /tooltip:\s*"关"/);
@@ -72,6 +73,16 @@ test("detail player exposes a non-persistent loop switch in ArtPlayer settings",
   assert.match(playerSource, /video\.loop = false/);
   assert.match(playerSource, /this\.video\.loop = next/);
   assert.match(playerSource, /item\.tooltip = next \? "开" : "关"/);
+});
+
+test("detail player always exposes subtitle selector with default off and no offset setting", () => {
+  assert.doesNotMatch(playerSource, /subtitleOffset/);
+  assert.match(playerSource, /function createSubtitleSetting\(subtitles: PlayerSubtitle\[\]\): PlayerSetting/);
+  assert.match(playerSource, /html:\s*"字幕"/);
+  assert.match(playerSource, /tooltip:\s*"关闭"/);
+  assert.match(playerSource, /\{\s*html:\s*"关闭",\s*value:\s*"off",\s*default:\s*true\s*\}/);
+  assert.match(playerSource, /default:\s*false/);
+  assert.doesNotMatch(playerSource, /option\.subtitle = subtitleOption/);
 });
 
 test("detail player limits ArtPlayer automatic reconnect attempts", () => {

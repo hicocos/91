@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"reflect"
 	"strconv"
 	"strings"
@@ -246,6 +247,88 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 		return nil, errors.New("guangyapan stream: empty download url")
 	}
 	return &drives.StreamLink{URL: u, Headers: http.Header{}, Expires: time.Now().Add(10 * time.Minute)}, nil
+}
+
+func (d *Driver) Subtitles(ctx context.Context, req drives.SubtitleRequest) ([]drives.Subtitle, error) {
+	fileID := strings.TrimSpace(req.FileID)
+	if fileID == "" {
+		return nil, errors.New("guangyapan subtitles: empty file id")
+	}
+	if err := d.ensureAccessToken(ctx); err != nil {
+		return nil, err
+	}
+	gcid, err := d.resolveSubtitleGCID(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.FileName)
+	if name == "" {
+		name = d.cachedFileName(fileID)
+	}
+	if name == "" {
+		name = fileID
+	}
+	duration := req.DurationSeconds
+	if duration < 0 {
+		duration = 0
+	}
+
+	var resp subtitleResp
+	if err := d.postAPI(ctx, "/misc/v1/get_subtitles", map[string]any{
+		"gcid":     gcid,
+		"name":     name,
+		"duration": duration,
+	}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 && strings.TrimSpace(resp.Msg) != "" {
+		return nil, fmt.Errorf("guangyapan subtitles: code=%d msg=%s", resp.Code, strings.TrimSpace(resp.Msg))
+	}
+	out := make([]drives.Subtitle, 0, len(resp.Data.List))
+	for _, item := range resp.Data.List {
+		sub, ok := subtitleItemToDriveSubtitle(item)
+		if ok {
+			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
+func (d *Driver) resolveSubtitleGCID(ctx context.Context, req drives.SubtitleRequest) (string, error) {
+	for _, candidate := range []string{req.ContentHash, req.FileID} {
+		if gcid := normalizeGCID(candidate); gcid != "" {
+			return gcid, nil
+		}
+	}
+	if gcid, err := d.queryFileDetailGCID(ctx, req.FileID); err == nil && gcid != "" {
+		return gcid, nil
+	}
+	return "", errors.New("guangyapan subtitles: gcid not found")
+}
+
+func (d *Driver) queryFileDetailGCID(ctx context.Context, fileID string) (string, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return "", errors.New("guangyapan file detail: empty file id")
+	}
+	var resp fileDetailResp
+	if err := d.postAPI(ctx, "/userres/v1/file/get_file_detail", map[string]any{
+		"fileId": fileID,
+	}, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 && strings.TrimSpace(resp.Msg) != "" {
+		return "", fmt.Errorf("guangyapan file detail: code=%d msg=%s", resp.Code, strings.TrimSpace(resp.Msg))
+	}
+	if gcid := normalizeGCID(resp.Data.FileInfo.GCID); gcid != "" {
+		return gcid, nil
+	}
+	for _, resource := range resp.Data.VideoResource {
+		if gcid := normalizeGCID(resource.GCID); gcid != "" {
+			return gcid, nil
+		}
+	}
+	return "", nil
 }
 
 func (d *Driver) Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error) {
@@ -1006,6 +1089,13 @@ func (d *Driver) remember(entry drives.Entry) {
 	d.fileMu.Unlock()
 }
 
+func (d *Driver) cachedFileName(fileID string) string {
+	d.fileMu.RLock()
+	entry := d.files[fileID]
+	d.fileMu.RUnlock()
+	return strings.TrimSpace(entry.Name)
+}
+
 func fileItemToEntry(item fileItem, parentID string) drives.Entry {
 	if item.ParentID != "" {
 		parentID = item.ParentID
@@ -1014,10 +1104,84 @@ func fileItemToEntry(item fileItem, parentID string) drives.Entry {
 		ID:       item.FileID,
 		Name:     item.FileName,
 		Size:     item.FileSize,
+		Hash:     normalizeGCID(item.GCID),
 		IsDir:    item.ResType == 2,
 		ParentID: parentID,
 		ModTime:  unixOrZero(item.UTime),
 	}
+}
+
+func subtitleItemToDriveSubtitle(item subtitleItem) (drives.Subtitle, bool) {
+	rawURL := strings.TrimSpace(item.URL)
+	if rawURL == "" {
+		return drives.Subtitle{}, false
+	}
+	ext := normalizeSubtitleExt(item.Ext)
+	if ext == "" {
+		ext = normalizeSubtitleExt(path.Ext(parsedPath(rawURL)))
+	}
+	id := strings.TrimSpace(item.GCID)
+	if id == "" {
+		id = strings.TrimSpace(item.CID)
+	}
+	sourceLabel := "online"
+	if item.Source == 1 {
+		sourceLabel = "inner"
+	}
+	duration := int(item.Duration)
+	if duration > 24*60*60 {
+		duration = duration / 1000
+	}
+	return drives.Subtitle{
+		ID:              id,
+		Name:            strings.TrimSpace(item.Name),
+		Ext:             ext,
+		Language:        firstLanguage(item.Languages),
+		URL:             rawURL,
+		Source:          item.Source,
+		SourceLabel:     sourceLabel,
+		DurationSeconds: duration,
+	}, true
+}
+
+func parsedPath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u == nil {
+		return rawURL
+	}
+	return u.Path
+}
+
+func firstLanguage(values []string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeSubtitleExt(value string) string {
+	value = strings.TrimSpace(strings.TrimPrefix(value, "."))
+	return strings.ToLower(value)
+}
+
+func normalizeGCID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 {
+		return ""
+	}
+	for _, ch := range value {
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch >= 'a' && ch <= 'f':
+		case ch >= 'A' && ch <= 'F':
+		default:
+			return ""
+		}
+	}
+	return strings.ToUpper(value)
 }
 
 func successMessage(msg string) bool {

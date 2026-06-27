@@ -54,6 +54,16 @@ export type VideoDetail = VideoItem & {
   commentsList: CommentItem[];
 };
 
+export type VideoSubtitle = {
+  name: string;
+  label: string;
+  language?: string;
+  ext: string;
+  type: "vtt" | "srt" | "ass";
+  url: string;
+  source: string;
+};
+
 export type PreviewState = "idle" | "intent" | "loading" | "playing" | "error";
 
 export type SortKey = "latest" | "hot" | "recent";
