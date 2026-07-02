@@ -565,7 +565,7 @@ export function getVideoStats() {
 }
 
 // 黑名单（被拉黑/手动删除、扫盘不再入库的视频）。原始记录已删除，
-// 只剩文件名/来源盘/大小/拉黑时间。
+// 这里只保留重新发现所需信息和恢复策略；源文件删除成功后记录会被移除。
 export type AdminDeletedVideo = {
   id: string;
   driveId: string;
@@ -573,6 +573,10 @@ export type AdminDeletedVideo = {
   fileName: string;
   size: number;
   reason?: string;
+  sourceDeleted: boolean;
+  canonicalVideoId?: string;
+  canonicalTitle?: string;
+  restorePolicy: "none" | "scan" | "crawler";
   deletedAt: number;
 };
 
@@ -595,10 +599,44 @@ export function listBlacklist(
   return request<AdminBlacklistList>(`/blacklist${suffix}`);
 }
 
-// 把视频移出黑名单（删除墓碑），下次扫盘会重新入库。
+// 允许视频在后续手动/定时任务中重新入库；此操作不会立即触发扫盘或爬取。
 export function removeBlacklist(id: string) {
   return request<{ ok: boolean }>(`/blacklist/${encodeURIComponent(id)}`, {
     method: "DELETE",
+  });
+}
+
+export type BlacklistSourceDeleteStatus = {
+  state: "idle" | "running" | "completed" | "failed" | "canceled";
+  running: boolean;
+  pending: number;
+  total: number;
+  processed: number;
+  deleted: number;
+  failed: number;
+  currentFile?: string;
+  lastError?: string;
+  startedAt?: string;
+  lastFinishedAt?: string;
+};
+
+export function getBlacklistSourceDeleteStatus() {
+  return request<BlacklistSourceDeleteStatus>("/blacklist/source-delete/status");
+}
+
+export function startBlacklistSourceDelete(
+  options: { deleteAllSources?: boolean; ids?: string[] } = { deleteAllSources: true }
+) {
+  const ids = Array.from(new Set((options.ids ?? []).map((id) => id.trim()).filter(Boolean)));
+  const body = options.ids !== undefined ? { ids } : { deleteAllSources: options.deleteAllSources ?? true };
+  return request<{
+    ok: boolean;
+    accepted: boolean;
+    message?: string;
+    status: BlacklistSourceDeleteStatus;
+  }>("/blacklist/source-delete", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

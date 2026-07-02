@@ -55,6 +55,10 @@ const (
 	videoMaintenanceTitleThreshold           = 0.90
 	videoMaintenanceSSIMThreshold            = 0.95
 	videoMaintenanceDurationToleranceSeconds = 2
+
+	blacklistSourceDeletePace            = 250 * time.Millisecond
+	blacklistSourceDeleteDefaultCooldown = 30 * time.Second
+	blacklistSourceDeleteMaxAttempts     = 4
 )
 
 func main() {
@@ -151,8 +155,8 @@ func main() {
 			app.enqueueUploadedVideo(ctx, v)
 		},
 		// 前台「不再展示」走拉黑逻辑：删记录 + 删本地封面/预览 + 写墓碑，
-		// 保留网盘源文件（deleteSource=false）。下次扫盘不再入库；如需恢复，
-		// 在后台「拉黑视频」移出黑名单即可，扫盘时会重新添加回来。
+		// 保留网盘源文件（deleteSource=false）。后续任务不再入库；可重新发现的
+		// 普通网盘/爬虫来源可在后台解除墓碑，操作本身不会立即触发扫盘或爬取。
 		OnHideVideo: func(reqCtx context.Context, videoID string) error {
 			_, err := app.deleteVideo(reqCtx, videoID, false)
 			return err
@@ -262,6 +266,12 @@ func main() {
 		},
 		OnDeleteVideo: func(reqCtx context.Context, videoID string, deleteSource bool) (api.DeleteVideoResult, error) {
 			return app.deleteVideo(reqCtx, videoID, deleteSource)
+		},
+		OnStartBlacklistSourceDelete: func(req api.BlacklistSourceDeleteRequest) bool {
+			return app.startBlacklistSourceDelete(ctx, req)
+		},
+		GetBlacklistSourceDeleteStatus: func() api.BlacklistSourceDeleteStatus {
+			return app.blacklistSourceDeleteStatus()
 		},
 		GetDriveGenerationStatuses: func() map[string]api.DriveGenerationStatuses {
 			return app.driveGenerationStatuses()
@@ -453,6 +463,12 @@ type App struct {
 	transcodeMu      sync.Mutex
 	transcodeWorkers map[string]*transcode.Worker
 	transcodeCancels map[string]context.CancelFunc
+
+	// blacklistSourceDeleteMu protects the one-at-a-time background job that
+	// removes source files for tombstoned videos. The job reads tombstones from
+	// the catalog and purges each one after a successful provider delete.
+	blacklistSourceDeleteMu    sync.Mutex
+	blacklistSourceDeleteState api.BlacklistSourceDeleteStatus
 }
 
 type driveScanProgress struct {
@@ -2116,10 +2132,223 @@ func (a *App) deleteVideo(ctx context.Context, videoID string, deleteSource bool
 	if err := removeLocalVideoAssets(localDir, v); err != nil {
 		return api.DeleteVideoResult{}, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
 	}
-	if err := a.cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+	if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
+		SourceDeleted: deletedSource,
+	}); err != nil {
 		return api.DeleteVideoResult{}, err
 	}
 	return api.DeleteVideoResult{OK: true, DeletedSource: deletedSource}, nil
+}
+
+func (a *App) startBlacklistSourceDelete(ctx context.Context, req api.BlacklistSourceDeleteRequest) bool {
+	if a == nil || a.cat == nil {
+		return false
+	}
+	req = normalizeBlacklistSourceDeleteRequest(req)
+	a.blacklistSourceDeleteMu.Lock()
+	if a.blacklistSourceDeleteState.Running {
+		a.blacklistSourceDeleteMu.Unlock()
+		return false
+	}
+	a.blacklistSourceDeleteState = api.BlacklistSourceDeleteStatus{
+		State:     "running",
+		Running:   true,
+		StartedAt: time.Now().Format(time.RFC3339),
+	}
+	a.blacklistSourceDeleteMu.Unlock()
+
+	go a.runBlacklistSourceDelete(ctx, req)
+	return true
+}
+
+func normalizeBlacklistSourceDeleteRequest(req api.BlacklistSourceDeleteRequest) api.BlacklistSourceDeleteRequest {
+	if req.DeleteAllSources {
+		return api.BlacklistSourceDeleteRequest{DeleteAllSources: true}
+	}
+	seen := make(map[string]bool, len(req.IDs))
+	ids := make([]string, 0, len(req.IDs))
+	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return api.BlacklistSourceDeleteRequest{DeleteAllSources: true}
+	}
+	return api.BlacklistSourceDeleteRequest{IDs: ids}
+}
+
+func (a *App) blacklistSourceDeleteStatus() api.BlacklistSourceDeleteStatus {
+	if a == nil {
+		return api.BlacklistSourceDeleteStatus{State: "idle"}
+	}
+	a.blacklistSourceDeleteMu.Lock()
+	defer a.blacklistSourceDeleteMu.Unlock()
+	status := a.blacklistSourceDeleteState
+	if status.State == "" {
+		status.State = "idle"
+	}
+	return status
+}
+
+func (a *App) runBlacklistSourceDelete(ctx context.Context, reqs ...api.BlacklistSourceDeleteRequest) {
+	req := api.BlacklistSourceDeleteRequest{DeleteAllSources: true}
+	if len(reqs) > 0 {
+		req = normalizeBlacklistSourceDeleteRequest(reqs[0])
+	}
+
+	var (
+		items []*catalog.DeletedVideo
+		err   error
+	)
+	if req.DeleteAllSources {
+		items, err = a.cat.ListDeletedVideosPendingSourceDeletion(ctx)
+	} else {
+		items, err = a.cat.ListDeletedVideosPendingSourceDeletionByIDs(ctx, req.IDs)
+	}
+	if err != nil {
+		a.finishBlacklistSourceDelete("failed", err)
+		return
+	}
+
+	a.blacklistSourceDeleteMu.Lock()
+	a.blacklistSourceDeleteState.Total = len(items)
+	a.blacklistSourceDeleteMu.Unlock()
+
+	for index, item := range items {
+		if err := ctx.Err(); err != nil {
+			a.finishBlacklistSourceDelete("canceled", err)
+			return
+		}
+		if item == nil {
+			continue
+		}
+
+		a.blacklistSourceDeleteMu.Lock()
+		a.blacklistSourceDeleteState.CurrentFile = item.FileName
+		if a.blacklistSourceDeleteState.CurrentFile == "" {
+			a.blacklistSourceDeleteState.CurrentFile = item.ID
+		}
+		a.blacklistSourceDeleteMu.Unlock()
+
+		deleteErr := a.removeDeletedVideoSourceFile(ctx, item)
+		if deleteErr == nil {
+			deleteErr = a.purgeDeletedVideoTombstone(ctx, item.ID)
+		}
+
+		a.blacklistSourceDeleteMu.Lock()
+		a.blacklistSourceDeleteState.Processed++
+		if deleteErr != nil {
+			a.blacklistSourceDeleteState.Failed++
+			a.blacklistSourceDeleteState.LastError = deleteErr.Error()
+		} else {
+			a.blacklistSourceDeleteState.Deleted++
+		}
+		a.blacklistSourceDeleteMu.Unlock()
+
+		if deleteErr != nil {
+			log.Printf("[blacklist-source-delete] id=%s drive=%s file=%s failed: %v", item.ID, item.DriveID, item.FileID, deleteErr)
+		} else {
+			log.Printf("[blacklist-source-delete] id=%s drive=%s file=%s deleted", item.ID, item.DriveID, item.FileID)
+		}
+
+		if index+1 < len(items) {
+			if err := waitForBlacklistSourceDelete(ctx, blacklistSourceDeletePace); err != nil {
+				a.finishBlacklistSourceDelete("canceled", err)
+				return
+			}
+		}
+	}
+
+	a.finishBlacklistSourceDelete("completed", nil)
+}
+
+func (a *App) removeDeletedVideoSourceFile(ctx context.Context, item *catalog.DeletedVideo) error {
+	if item == nil {
+		return errors.New("remove blacklisted source: empty tombstone")
+	}
+	if strings.TrimSpace(item.FileID) == "" {
+		return fmt.Errorf("remove blacklisted source %s: empty file id", item.ID)
+	}
+	video := &catalog.Video{
+		ID:       item.ID,
+		DriveID:  item.DriveID,
+		FileID:   item.FileID,
+		ParentID: item.ParentID,
+		FileName: item.FileName,
+		Size:     item.Size,
+	}
+	var lastErr error
+	for attempt := 0; attempt < blacklistSourceDeleteMaxAttempts; attempt++ {
+		_, err := a.removeVideoSourceFile(ctx, video)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		wait, rateLimited := drives.RateLimitRetryAfter(err)
+		if !rateLimited && drives.TextMentionsHTTPStatus(err.Error(), http.StatusTooManyRequests) {
+			rateLimited = true
+		}
+		if !rateLimited || attempt+1 >= blacklistSourceDeleteMaxAttempts {
+			return err
+		}
+		if wait <= 0 {
+			wait = blacklistSourceDeleteDefaultCooldown
+		}
+		a.blacklistSourceDeleteMu.Lock()
+		a.blacklistSourceDeleteState.LastError = fmt.Sprintf("%s 限流，等待 %s 后重试", item.FileName, wait)
+		a.blacklistSourceDeleteMu.Unlock()
+		log.Printf("[blacklist-source-delete] id=%s drive=%s rate limited; retry_in=%s attempt=%d", item.ID, item.DriveID, wait, attempt+1)
+		if err := waitForBlacklistSourceDelete(ctx, wait); err != nil {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func waitForBlacklistSourceDelete(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *App) purgeDeletedVideoTombstone(ctx context.Context, videoID string) error {
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := a.cat.PurgeDeletedVideo(ctx, videoID); err != nil {
+			if !isSQLiteBusyError(err) {
+				return err
+			}
+			lastErr = err
+			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("purge blacklisted tombstone after retries: %w", lastErr)
+}
+
+func (a *App) finishBlacklistSourceDelete(state string, err error) {
+	a.blacklistSourceDeleteMu.Lock()
+	defer a.blacklistSourceDeleteMu.Unlock()
+	a.blacklistSourceDeleteState.State = state
+	a.blacklistSourceDeleteState.Running = false
+	a.blacklistSourceDeleteState.CurrentFile = ""
+	a.blacklistSourceDeleteState.LastFinished = time.Now().Format(time.RFC3339)
+	if err != nil {
+		a.blacklistSourceDeleteState.LastError = err.Error()
+	}
 }
 
 func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) (bool, error) {
@@ -2868,7 +3097,10 @@ func (a *App) deleteDuplicateVideoWithAssets(ctx context.Context, localDir strin
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := a.cat.DeleteVideoWithTombstoneReason(ctx, v.ID, catalog.DeletedVideoReasonDuplicate); err != nil {
+		if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
+			Reason:           catalog.DeletedVideoReasonDuplicate,
+			CanonicalVideoID: canonicalID,
+		}); err != nil {
 			if !isSQLiteBusyError(err) {
 				return fmt.Errorf("delete catalog video %s canonical=%s: %w", v.ID, canonicalID, err)
 			}

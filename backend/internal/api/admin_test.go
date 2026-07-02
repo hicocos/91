@@ -255,6 +255,127 @@ func TestHandleDeleteVideoPassesDeleteSourceOption(t *testing.T) {
 	}
 }
 
+func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "local-upload-video", DriveID: "local-upload", FileID: "upload.mp4",
+		Title: "Upload", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/local-upload-video", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "local-upload-video")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{Catalog: cat}).handleRemoveBlacklist(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-video"); err != nil || !deleted {
+		t.Fatalf("non-restorable tombstone was removed: deleted=%v err=%v", deleted, err)
+	}
+}
+
+func TestHandleStartBlacklistSourceDeleteReturnsBackgroundStatus(t *testing.T) {
+	started := false
+	server := &AdminServer{
+		OnStartBlacklistSourceDelete: func(req BlacklistSourceDeleteRequest) bool {
+			if !req.DeleteAllSources || len(req.IDs) != 0 {
+				t.Fatalf("request = %#v, want all sources", req)
+			}
+			started = true
+			return true
+		},
+		GetBlacklistSourceDeleteStatus: func() BlacklistSourceDeleteStatus {
+			return BlacklistSourceDeleteStatus{
+				State: "running", Running: true, Total: 12, Processed: 3, Deleted: 2, Failed: 1,
+			}
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"deleteAllSources":true}`))
+	rr := httptest.NewRecorder()
+
+	server.handleStartBlacklistSourceDelete(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	}
+	if !started {
+		t.Fatal("source delete hook was not called")
+	}
+	var got struct {
+		Accepted bool                        `json:"accepted"`
+		Status   BlacklistSourceDeleteStatus `json:"status"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.Accepted ||
+		!got.Status.Running ||
+		got.Status.Total != 12 ||
+		got.Status.Processed != 3 ||
+		got.Status.Deleted != 2 ||
+		got.Status.Failed != 1 {
+		t.Fatalf("response = %#v", got)
+	}
+}
+
+func TestHandleStartBlacklistSourceDeleteRequiresExplicitConfirmation(t *testing.T) {
+	called := false
+	server := &AdminServer{
+		OnStartBlacklistSourceDelete: func(_ BlacklistSourceDeleteRequest) bool {
+			called = true
+			return true
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+
+	server.handleStartBlacklistSourceDelete(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if called {
+		t.Fatal("source delete hook ran without explicit confirmation")
+	}
+}
+
+func TestHandleStartBlacklistSourceDeleteAcceptsExplicitIDs(t *testing.T) {
+	var got BlacklistSourceDeleteRequest
+	server := &AdminServer{
+		OnStartBlacklistSourceDelete: func(req BlacklistSourceDeleteRequest) bool {
+			got = req
+			return true
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"ids":[" a ","","b","a"]}`))
+	rr := httptest.NewRecorder()
+
+	server.handleStartBlacklistSourceDelete(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	}
+	if got.DeleteAllSources || len(got.IDs) != 2 || got.IDs[0] != "a" || got.IDs[1] != "b" {
+		t.Fatalf("request = %#v", got)
+	}
+}
+
 func TestHandleCheckUpdateReportsNewRelease(t *testing.T) {
 	dir := t.TempDir()
 	versionFile := filepath.Join(dir, ".version")

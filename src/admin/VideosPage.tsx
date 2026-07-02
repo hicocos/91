@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ChevronDown,
   Edit,
@@ -11,6 +11,7 @@ import {
   Trash2,
   Ban,
   RotateCcw,
+  ExternalLink,
 } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "./ToastContext";
@@ -38,7 +39,7 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 /**
- * 视频管理容器：顶部分段标签在「当前 / 隐藏 / 拉黑」三个视图间切换，
+ * 视频管理容器：顶部分段标签在「当前 / 拉黑」两个视图间切换，
  * 激活标签同步到 URL ?tab=，标签上的计数来自 /videos/stats。
  */
 export function VideosPage() {
@@ -585,8 +586,14 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   const [driveId, setDriveId] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [removeTarget, setRemoveTarget] = useState<api.AdminDeletedVideo | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [sourceDeleteStatus, setSourceDeleteStatus] = useState<api.BlacklistSourceDeleteStatus | null>(null);
+  const [sourceDeleteOpen, setSourceDeleteOpen] = useState(false);
+  const [sourceDeleteTarget, setSourceDeleteTarget] = useState<api.AdminDeletedVideo | null>(null);
+  const [batchSourceDeleteOpen, setBatchSourceDeleteOpen] = useState(false);
+  const [sourceDeleteStarting, setSourceDeleteStarting] = useState(false);
   const pageSize = useVideosPageSize();
   const { show } = useToast();
 
@@ -601,6 +608,7 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       setList(r.items ?? []);
       setTotal(r.total ?? 0);
       setDrives(driveList ?? []);
+      setSelectedIds(new Set());
     } catch (e) {
       const message = e instanceof Error ? e.message : "加载失败";
       setLoadError(message);
@@ -613,6 +621,52 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   useEffect(() => {
     refresh();
   }, [driveId, page, searchKeyword, pageSize]);
+
+  useEffect(() => {
+    let active = true;
+    void api.getBlacklistSourceDeleteStatus()
+      .then((status) => {
+        if (active) setSourceDeleteStatus(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sourceDeleteStatus?.running) return;
+    let active = true;
+    let timer = 0;
+
+    const poll = async () => {
+      try {
+        const status = await api.getBlacklistSourceDeleteStatus();
+        if (!active) return;
+        setSourceDeleteStatus(status);
+        if (status.running) {
+          timer = window.setTimeout(poll, 2000);
+          return;
+        }
+        show(
+          status.failed > 0
+            ? `源文件删除完成：成功 ${status.deleted}，失败 ${status.failed}`
+            : `源文件删除完成：成功 ${status.deleted}`,
+          status.failed > 0 ? "info" : "success"
+        );
+        onStatsChanged();
+        void refresh();
+      } catch {
+        if (active) timer = window.setTimeout(poll, 2000);
+      }
+    };
+
+    timer = window.setTimeout(poll, 1000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [sourceDeleteStatus?.running]);
 
   useEffect(() => {
     setPage(1);
@@ -629,6 +683,10 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
 
   const driveNameMap = new Map(drives.map((d) => [d.id, d.name || d.id]));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const sourceDeleteRunning = !!sourceDeleteStatus?.running;
+  const deletableItems = list.filter(canDeleteBlacklistSource);
+  const allDeletableSelected =
+    deletableItems.length > 0 && deletableItems.every((v) => selectedIds.has(v.id));
 
   async function confirmRemove() {
     if (!removeTarget) return;
@@ -637,7 +695,12 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
     try {
       await api.removeBlacklist(target.id);
       setRemoveTarget(null);
-      show("已移出黑名单，下次扫盘会重新入库", "success");
+      show(
+        target.restorePolicy === "crawler"
+          ? "已允许重新入库，将在下次爬虫任务时生效"
+          : "已允许重新入库，将在下次手动或定时扫盘时生效",
+        "success"
+      );
       onStatsChanged();
       if (list.length === 1 && page > 1) {
         setPage((p) => Math.max(1, p - 1));
@@ -651,6 +714,82 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
     }
   }
 
+  async function startSourceDelete(
+    options: { deleteAllSources?: boolean; ids?: string[] },
+    onAccepted: () => void,
+    startedMessage: string
+  ) {
+    setSourceDeleteStarting(true);
+    try {
+      const result = await api.startBlacklistSourceDelete(options);
+      setSourceDeleteStatus(result.status);
+      if (!result.accepted) {
+        show(result.message || "源文件删除任务已在运行", "info");
+        return;
+      }
+      onAccepted();
+      show(startedMessage, "info");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "启动删除任务失败", "error");
+    } finally {
+      setSourceDeleteStarting(false);
+    }
+  }
+
+  async function confirmSourceDeleteAll() {
+    await startSourceDelete(
+      { deleteAllSources: true },
+      () => setSourceDeleteOpen(false),
+      "已开始后台顺序删除全部黑名单源文件"
+    );
+  }
+
+  async function confirmSourceDeleteTarget() {
+    if (!sourceDeleteTarget) return;
+    const target = sourceDeleteTarget;
+    await startSourceDelete(
+      { ids: [target.id] },
+      () => {
+        setSourceDeleteTarget(null);
+        setSelectedIds((ids) => {
+          const next = new Set(ids);
+          next.delete(target.id);
+          return next;
+        });
+      },
+      "已开始后台删除该拉黑视频源文件"
+    );
+  }
+
+  async function confirmBatchSourceDelete() {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    await startSourceDelete(
+      { ids },
+      () => {
+        setBatchSourceDeleteOpen(false);
+        setSelectedIds(new Set());
+      },
+      `已开始后台顺序删除 ${ids.length} 个拉黑视频源文件`
+    );
+  }
+
+  const toggleSelectAll = () => {
+    if (allDeletableSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(deletableItems.map((v) => v.id)));
+    }
+  };
+
+  const toggleSelect = (v: api.AdminDeletedVideo) => {
+    if (!canDeleteBlacklistSource(v)) return;
+    const next = new Set(selectedIds);
+    if (next.has(v.id)) next.delete(v.id);
+    else next.add(v.id);
+    setSelectedIds(next);
+  };
+
   function handleSearchSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSearchKeyword(keyword);
@@ -658,7 +797,7 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   }
 
   return (
-    <>
+    <div className={`admin-videos-blacklist${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
         <DriveFilter drives={drives} driveId={driveId} onChange={(id) => { setDriveId(id); setPage(1); }} />
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} placeholder="搜索文件名" />
@@ -667,6 +806,22 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
           <span className="admin-videos-filter__refresh-text">刷新</span>
         </button>
       </div>
+
+      {!loading && selectedIds.size > 0 && (
+        <div className="admin-videos-list-toolbar admin-blacklist-bulk-toolbar">
+          <div className="admin-videos-bulk-actions">
+            <span className="admin-videos-bulk-actions__count">已选择 {selectedIds.size} 项</span>
+            <button
+              type="button"
+              className="admin-btn is-danger admin-videos-bulk-actions__btn"
+              onClick={() => setBatchSourceDeleteOpen(true)}
+              disabled={sourceDeleteRunning}
+            >
+              <Trash2 size={13} /> 批量删除
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <LoadingState />
@@ -683,10 +838,37 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
         <>
           <div className="admin-videos-list-toolbar">
             <div className="admin-videos-summary">共 {total} 个拉黑视频</div>
+            <div className="admin-blacklist-source-delete">
+              {sourceDeleteStatus?.running && (
+                <span className="admin-blacklist-source-delete__status">
+                  正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
+                </span>
+              )}
+              <button
+                type="button"
+                className="admin-btn is-danger admin-blacklist-source-delete__button"
+                disabled={sourceDeleteStatus?.running || (sourceDeleteStatus?.pending ?? total) <= 0}
+                onClick={() => setSourceDeleteOpen(true)}
+              >
+                <Trash2 size={13} />
+                {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
+              </button>
+            </div>
           </div>
-          <table className="admin-table admin-blacklist-table">
+          <table className="admin-table is-selectable admin-blacklist-table">
             <thead>
               <tr>
+                <th className="is-checkbox" style={{ width: "40px" }}>
+                  <button
+                    type="button"
+                    className="admin-table-checkbox-btn"
+                    onClick={toggleSelectAll}
+                    disabled={deletableItems.length === 0 || sourceDeleteRunning}
+                    aria-label={allDeletableSelected ? "清空当前页可删除项选择" : "选择当前页可删除项"}
+                  >
+                    {allDeletableSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                  </button>
+                </th>
                 <th>文件名</th>
                 <th>来源</th>
                 <th>大小</th>
@@ -695,12 +877,34 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
               </tr>
             </thead>
             <tbody>
-              {list.map((v) => (
-                <tr key={v.id}>
+              {list.map((v) => {
+                const sourceDeletable = canDeleteBlacklistSource(v);
+                const isSelected = selectedIds.has(v.id);
+
+                return (
+                <tr key={v.id} className={isSelected ? "is-selected" : ""}>
+                  <td className="is-checkbox" data-label="选择">
+                    <button
+                      type="button"
+                      className={`admin-table-checkbox-btn ${isSelected ? "is-selected" : ""}`}
+                      onClick={() => toggleSelect(v)}
+                      disabled={!sourceDeletable || sourceDeleteRunning}
+                      aria-label={`${isSelected ? "取消选择" : "选择"}拉黑视频 ${v.fileName || v.id}`}
+                    >
+                      {isSelected ? (
+                        <CheckSquare size={16} color="var(--accent)" />
+                      ) : (
+                        <Square size={16} color="var(--border-strong)" />
+                      )}
+                    </button>
+                  </td>
                   <td data-label="文件名">
                     <div className="admin-blacklist-filecell">
                       <span className="admin-blacklist-filename">{v.fileName || <span className="admin-text-faint">（无文件名）</span>}</span>
                       {v.reason === "duplicate" && <span className="admin-blacklist-reason-pill">重复文件</span>}
+                      {v.driveId === "local-upload" && (
+                        <span className="admin-blacklist-reason-pill">本地上传</span>
+                      )}
                     </div>
                   </td>
                   <td data-label="来源" className="admin-mono-cell">
@@ -709,17 +913,48 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
                   <td data-label="大小">{v.size > 0 ? formatBytes(v.size) : <span className="admin-text-faint">—</span>}</td>
                   <td data-label="拉黑时间">{formatDateTime(v.deletedAt)}</td>
                   <td className="is-actions" data-label="操作">
-                    <button
-                      type="button"
-                      className="admin-btn admin-blacklist-restore-btn"
-                      onClick={() => setRemoveTarget(v)}
-                      title="移出黑名单"
-                    >
-                      <RotateCcw size={13} /> 移出黑名单
-                    </button>
+                    <div className="admin-blacklist-actions">
+                      {v.restorePolicy !== "none" ? (
+                        <button
+                          type="button"
+                          className="admin-btn admin-blacklist-restore-btn"
+                          onClick={() => setRemoveTarget(v)}
+                          title="重新入库"
+                        >
+                          <RotateCcw size={13} /> 重新入库
+                        </button>
+                      ) : v.reason === "duplicate" ? (
+                        v.canonicalVideoId && v.canonicalTitle ? (
+                          <Link
+                            className="admin-btn admin-blacklist-canonical-btn"
+                            to={`/video/${encodeURIComponent(v.canonicalVideoId)}`}
+                            title={v.canonicalTitle}
+                          >
+                            <ExternalLink size={13} /> 查看保留视频
+                          </Link>
+                        ) : null
+                      ) : (
+                        <span className="admin-blacklist-unavailable">
+                          {v.driveId === "local-upload" ? "不可自动恢复" : "不可恢复"}
+                        </span>
+                      )}
+                      {sourceDeletable && (
+                        <button
+                          type="button"
+                          className="admin-btn is-danger admin-blacklist-delete-source-btn"
+                          onClick={() => setSourceDeleteTarget(v)}
+                          disabled={sourceDeleteRunning}
+                          aria-label={`删除 ${v.fileName || v.id}`}
+                          title="删除"
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} />
@@ -727,14 +962,89 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       )}
 
       <ConfirmModal
+        open={sourceDeleteOpen}
+        title="删除全部黑名单源文件"
+        message={`确定删除全部待处理的黑名单源文件吗？当前共 ${sourceDeleteStatus?.pending ?? total} 个。`}
+        confirmText="删除全部"
+        danger
+        centerMessage
+        modalClassName="admin-modal--delete-confirm"
+        loading={sourceDeleteStarting}
+        onCancel={() => {
+          if (!sourceDeleteStarting) setSourceDeleteOpen(false);
+        }}
+        onConfirm={confirmSourceDeleteAll}
+      >
+        <DeleteSourceNotice
+          title="直接删除网盘中的源文件"
+          notes={[
+            "范围为整个黑名单，不受当前来源筛选或搜索条件影响。",
+            "任务会在后台逐个删除，避免并发请求触发网盘限流。",
+            "此操作不可撤销；成功项会从黑名单和管理库中移除，失败项可再次执行重试。",
+            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
+          ]}
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={sourceDeleteTarget !== null}
+        title="删除拉黑视频源文件"
+        message={sourceDeleteTarget ? `确定删除「${sourceDeleteTarget.fileName || sourceDeleteTarget.id}」的源文件吗？` : ""}
+        confirmText="删除"
+        danger
+        centerMessage
+        modalClassName="admin-modal--delete-confirm"
+        loading={sourceDeleteStarting}
+        onCancel={() => {
+          if (!sourceDeleteStarting) setSourceDeleteTarget(null);
+        }}
+        onConfirm={confirmSourceDeleteTarget}
+      >
+        <DeleteSourceNotice
+          title="直接删除网盘中的源文件"
+          notes={[
+            "成功后会从黑名单和管理库中移除。",
+            "失败时不会改变该拉黑记录，可稍后再次重试。",
+            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
+          ]}
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={batchSourceDeleteOpen}
+        title="批量删除拉黑视频源文件"
+        message={`确定删除当前页选中的 ${selectedIds.size} 个拉黑视频源文件吗？`}
+        confirmText="批量删除"
+        danger
+        centerMessage
+        modalClassName="admin-modal--delete-confirm"
+        loading={sourceDeleteStarting}
+        onCancel={() => {
+          if (!sourceDeleteStarting) setBatchSourceDeleteOpen(false);
+        }}
+        onConfirm={confirmBatchSourceDelete}
+      >
+        <DeleteSourceNotice
+          title="直接删除网盘中的源文件"
+          notes={[
+            "任务会在后台逐个删除，避免并发请求触发网盘限流。",
+            "成功项会从黑名单和管理库中移除，失败项可再次执行重试。",
+            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
+          ]}
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
         open={removeTarget !== null}
-        title="移出黑名单"
+        title="重新入库"
         message={
           removeTarget
-            ? `确定把「${removeTarget.fileName || removeTarget.id}」移出黑名单吗？移出后它会在下次扫盘时被重新发现并入库。`
+            ? removeTarget.restorePolicy === "crawler"
+              ? `确定允许「${removeTarget.fileName || removeTarget.id}」重新入库吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
+              : `确定允许「${removeTarget.fileName || removeTarget.id}」重新入库吗？此操作不会立即扫盘，将在下次手动或定时扫盘时生效。`
             : ""
         }
-        confirmText="移出黑名单"
+        confirmText="重新入库"
         centerMessage
         loading={removing}
         onCancel={() => {
@@ -742,7 +1052,7 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
         }}
         onConfirm={confirmRemove}
       />
-    </>
+    </div>
   );
 }
 
@@ -858,6 +1168,10 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
+function canDeleteBlacklistSource(v: api.AdminDeletedVideo) {
+  return !v.sourceDeleted;
+}
+
 function DeleteSourceOption({
   checked,
   disabled,
@@ -877,6 +1191,20 @@ function DeleteSourceOption({
         <small>{note}</small>
       </span>
     </label>
+  );
+}
+
+function DeleteSourceNotice({ title, notes }: { title: string; notes: string[] }) {
+  return (
+    <div className="admin-delete-source-option admin-delete-source-option--notice">
+      <Trash2 size={15} aria-hidden="true" />
+      <span>
+        <strong>{title}</strong>
+        {notes.map((note) => (
+          <small key={note}>{note}</small>
+        ))}
+      </span>
+    </div>
   );
 }
 

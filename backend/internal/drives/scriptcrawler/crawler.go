@@ -635,7 +635,10 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		return false, fmt.Errorf("near duplicate lookup: %w", err)
 	} else if duplicate != nil && duplicate.video != nil {
 		if v.Size > duplicate.video.Size {
-			if err := c.cfg.Catalog.DeleteVideoWithTombstoneReason(ctx, duplicate.video.ID, catalog.DeletedVideoReasonDuplicate); err != nil {
+			if err := c.cfg.Catalog.DeleteVideoWithTombstoneOptions(ctx, duplicate.video.ID, catalog.DeleteVideoTombstoneOptions{
+				Reason:           catalog.DeletedVideoReasonDuplicate,
+				CanonicalVideoID: v.ID,
+			}); err != nil {
 				_ = os.Remove(videoPath)
 				if thumbPath != "" {
 					_ = os.Remove(thumbPath)

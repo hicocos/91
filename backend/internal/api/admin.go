@@ -65,10 +65,12 @@ type AdminServer struct {
 	// 处理完候选列表后任务自然结束。
 	OnStartDriveTranscode func(driveID string) (bool, string)
 	// OnStopDriveTranscode 手动停止某盘正在进行的转码任务。返回是否有任务被停。
-	OnStopDriveTranscode         func(driveID string) bool
-	OnDeleteVideo                func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error)
-	GetDriveGenerationStatuses   func() map[string]DriveGenerationStatuses
-	GetPreviewGenerationVideoIDs func() map[string]bool
+	OnStopDriveTranscode           func(driveID string) bool
+	OnDeleteVideo                  func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error)
+	OnStartBlacklistSourceDelete   func(BlacklistSourceDeleteRequest) bool
+	GetBlacklistSourceDeleteStatus func() BlacklistSourceDeleteStatus
+	GetDriveGenerationStatuses     func() map[string]DriveGenerationStatuses
+	GetPreviewGenerationVideoIDs   func() map[string]bool
 	// OnTeaserEnabledChanged 在 per-drive 预览视频开关被切换后调用。
 	// enabled=true 时上层应该重新把 pending 预览视频入队（类似旧的全局开关从关到开）；
 	// enabled=false 时通常不用做事 —— worker 入队前会再次查 catalog，自然停止。
@@ -137,6 +139,25 @@ type NightlyJobStatus struct {
 	LastFinishedAt string `json:"lastFinishedAt,omitempty"`
 }
 
+type BlacklistSourceDeleteStatus struct {
+	State        string `json:"state"`
+	Running      bool   `json:"running"`
+	Pending      int    `json:"pending"`
+	Total        int    `json:"total"`
+	Processed    int    `json:"processed"`
+	Deleted      int    `json:"deleted"`
+	Failed       int    `json:"failed"`
+	CurrentFile  string `json:"currentFile,omitempty"`
+	LastError    string `json:"lastError,omitempty"`
+	StartedAt    string `json:"startedAt,omitempty"`
+	LastFinished string `json:"lastFinishedAt,omitempty"`
+}
+
+type BlacklistSourceDeleteRequest struct {
+	DeleteAllSources bool     `json:"deleteAllSources,omitempty"`
+	IDs              []string `json:"ids,omitempty"`
+}
+
 const maxCrawlerScriptBytes = 2 * 1024 * 1024
 
 type DeleteVideoResult struct {
@@ -203,6 +224,8 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Post("/videos/{id}/regen-preview", a.handleRegenPreview)
 			// 黑名单（被拉黑/手动删除、扫盘不再入库的视频）
 			r.Get("/blacklist", a.handleListBlacklist)
+			r.Get("/blacklist/source-delete/status", a.handleBlacklistSourceDeleteStatus)
+			r.Post("/blacklist/source-delete", a.handleStartBlacklistSourceDelete)
 			r.Delete("/blacklist/{id}", a.handleRemoveBlacklist)
 
 			// 标签
@@ -2107,12 +2130,91 @@ func (a *AdminServer) handleListBlacklist(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// handleRemoveBlacklist 把视频移出黑名单（删除墓碑），下次扫盘会重新入库。
+func (a *AdminServer) handleStartBlacklistSourceDelete(w http.ResponseWriter, r *http.Request) {
+	var body BlacklistSourceDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := normalizeBlacklistSourceDeleteRequest(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	accepted := false
+	if a.OnStartBlacklistSourceDelete != nil {
+		accepted = a.OnStartBlacklistSourceDelete(body)
+	}
+	resp := map[string]any{
+		"ok":       true,
+		"accepted": accepted,
+		"status":   a.blacklistSourceDeleteStatus(r.Context()),
+	}
+	if !accepted {
+		resp["message"] = "黑名单源文件删除任务已在运行"
+	}
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func normalizeBlacklistSourceDeleteRequest(req *BlacklistSourceDeleteRequest) error {
+	if req == nil {
+		return errors.New("blacklist source delete request is required")
+	}
+	seen := make(map[string]bool, len(req.IDs))
+	ids := req.IDs[:0]
+	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	req.IDs = ids
+
+	hasIDs := len(req.IDs) > 0
+	switch {
+	case req.DeleteAllSources && hasIDs:
+		return errors.New("deleteAllSources and ids cannot be used together")
+	case !req.DeleteAllSources && !hasIDs:
+		return errors.New("deleteAllSources=true or ids is required")
+	default:
+		return nil
+	}
+}
+
+func (a *AdminServer) handleBlacklistSourceDeleteStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.blacklistSourceDeleteStatus(r.Context()))
+}
+
+func (a *AdminServer) blacklistSourceDeleteStatus(ctx context.Context) BlacklistSourceDeleteStatus {
+	var status BlacklistSourceDeleteStatus
+	if a.GetBlacklistSourceDeleteStatus == nil {
+		status.State = "idle"
+	} else {
+		status = a.GetBlacklistSourceDeleteStatus()
+	}
+	if status.State == "" {
+		status.State = "idle"
+	}
+	if a.Catalog != nil {
+		if pending, err := a.Catalog.CountDeletedVideosPendingSourceDeletion(ctx); err == nil {
+			status.Pending = pending
+		}
+	}
+	return status
+}
+
+// handleRemoveBlacklist 允许视频在后续手动/定时任务中重新入库，不会立即触发
+// 扫盘或爬取。不可重新发现的来源会返回 409。
 func (a *AdminServer) handleRemoveBlacklist(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := a.Catalog.RemoveDeletedVideo(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		if errors.Is(err, catalog.ErrDeletedVideoNotRestorable) {
+			writeErr(w, http.StatusConflict, err)
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err)

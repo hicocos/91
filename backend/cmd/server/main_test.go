@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/video-site/backend/internal/api"
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
@@ -1600,6 +1601,13 @@ func TestDeleteVideoRemovesSourceFileWhenRequested(t *testing.T) {
 	if _, err := cat.GetVideo(ctx, "video-with-source"); err != sql.ErrNoRows {
 		t.Fatalf("deleted video lookup error = %v, want sql.ErrNoRows", err)
 	}
+	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	if err != nil {
+		t.Fatalf("list deleted videos: %v", err)
+	}
+	if len(deletedItems) != 0 {
+		t.Fatalf("source-deleted video kept tombstone = %#v", deletedItems)
+	}
 	for _, path := range []string{previewPath, thumbPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("generated asset %s still exists, stat err=%v", path, err)
@@ -1740,8 +1748,141 @@ func TestDeleteVideoRemovesScriptCrawlerSourceFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check tombstone: %v", err)
 	}
-	if !deleted {
-		t.Fatal("deleted crawler video tombstone missing")
+	if deleted {
+		t.Fatal("deleted crawler source kept tombstone")
+	}
+}
+
+func TestRunBlacklistSourceDeleteMarksSuccessAndKeepsFailuresPending(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	for _, v := range []*catalog.Video{
+		{
+			ID: "source-ok", DriveID: "source-drive", FileID: "file-ok", ParentID: "parent-ok",
+			FileName: "ok.mp4", Title: "OK", Size: 123,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "source-fail", DriveID: "missing-drive", FileID: "file-fail",
+			FileName: "fail.mp4", Title: "Fail", Size: 456,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed %s: %v", v.ID, err)
+		}
+		if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+			t.Fatalf("tombstone %s: %v", v.ID, err)
+		}
+	}
+
+	registry := proxy.NewRegistry()
+	drv := &serverSourceRemovableFakeDrive{id: "source-drive"}
+	registry.Set(drv.ID(), drv)
+	app := &App{cat: cat, registry: registry}
+
+	app.runBlacklistSourceDelete(ctx)
+
+	wantSource := drives.SourceFile{
+		FileID: "file-ok", ParentID: "parent-ok", Name: "ok.mp4", Size: 123,
+	}
+	if drv.removedSource != wantSource {
+		t.Fatalf("removed source = %#v, want %#v", drv.removedSource, wantSource)
+	}
+	status := app.blacklistSourceDeleteStatus()
+	if status.State != "completed" ||
+		status.Running ||
+		status.Total != 2 ||
+		status.Processed != 2 ||
+		status.Deleted != 1 ||
+		status.Failed != 1 {
+		t.Fatalf("source delete status = %#v", status)
+	}
+
+	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	remaining := make(map[string]bool, len(items))
+	for _, item := range items {
+		remaining[item.ID] = true
+	}
+	if remaining["source-ok"] || !remaining["source-fail"] {
+		t.Fatalf("remaining tombstones = %#v, want only failed source", remaining)
+	}
+	pending, err := cat.CountDeletedVideosPendingSourceDeletion(ctx)
+	if err != nil || pending != 1 {
+		t.Fatalf("pending after job = %d, err=%v, want 1", pending, err)
+	}
+}
+
+func TestRunBlacklistSourceDeleteCanTargetSelectedIDs(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	for _, v := range []*catalog.Video{
+		{
+			ID: "selected-source", DriveID: "source-drive", FileID: "file-selected", ParentID: "parent-selected",
+			FileName: "selected.mp4", Title: "Selected", Size: 123,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "unselected-source", DriveID: "source-drive", FileID: "file-unselected", ParentID: "parent-unselected",
+			FileName: "unselected.mp4", Title: "Unselected", Size: 456,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed %s: %v", v.ID, err)
+		}
+		if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+			t.Fatalf("tombstone %s: %v", v.ID, err)
+		}
+	}
+
+	registry := proxy.NewRegistry()
+	drv := &serverSourceRemovableFakeDrive{id: "source-drive"}
+	registry.Set(drv.ID(), drv)
+	app := &App{cat: cat, registry: registry}
+
+	app.runBlacklistSourceDelete(ctx, api.BlacklistSourceDeleteRequest{IDs: []string{"selected-source"}})
+
+	wantSource := drives.SourceFile{
+		FileID: "file-selected", ParentID: "parent-selected", Name: "selected.mp4", Size: 123,
+	}
+	if drv.removedSource != wantSource {
+		t.Fatalf("removed source = %#v, want %#v", drv.removedSource, wantSource)
+	}
+	status := app.blacklistSourceDeleteStatus()
+	if status.State != "completed" ||
+		status.Total != 1 ||
+		status.Processed != 1 ||
+		status.Deleted != 1 ||
+		status.Failed != 0 {
+		t.Fatalf("source delete status = %#v", status)
+	}
+
+	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	remaining := make(map[string]bool, len(items))
+	for _, item := range items {
+		remaining[item.ID] = true
+	}
+	if remaining["selected-source"] || !remaining["unselected-source"] {
+		t.Fatalf("remaining tombstones = %#v, want only unselected source", remaining)
 	}
 }
 
@@ -2038,7 +2179,11 @@ func TestCleanupDuplicateVideoAssetsDeletesExactDuplicateRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list deleted videos: %v", err)
 	}
-	if len(deletedItems) != 1 || deletedItems[0].ID != "duplicate-video" || deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate {
+	if len(deletedItems) != 1 ||
+		deletedItems[0].ID != "duplicate-video" ||
+		deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate ||
+		deletedItems[0].CanonicalVideoID != "canonical-video" ||
+		deletedItems[0].RestorePolicy != catalog.DeletedVideoRestorePolicyNone {
 		t.Fatalf("duplicate tombstone = %#v, want reason %q", deletedItems, catalog.DeletedVideoReasonDuplicate)
 	}
 	canon, err := cat.GetVideo(ctx, "canonical-video")
@@ -2138,7 +2283,11 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 	if err != nil {
 		t.Fatalf("list deleted videos: %v", err)
 	}
-	if len(deletedItems) != 1 || deletedItems[0].ID != "small-video" || deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate {
+	if len(deletedItems) != 1 ||
+		deletedItems[0].ID != "small-video" ||
+		deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate ||
+		deletedItems[0].CanonicalVideoID != "large-video" ||
+		deletedItems[0].RestorePolicy != catalog.DeletedVideoRestorePolicyNone {
 		t.Fatalf("small duplicate tombstone = %#v, want reason %q", deletedItems, catalog.DeletedVideoReasonDuplicate)
 	}
 	large, err := cat.GetVideo(ctx, "large-video")

@@ -75,17 +75,20 @@ CREATE TABLE IF NOT EXISTS deleted_tags (
     deleted_at INTEGER NOT NULL
 );
 
--- 管理员显式删除过的视频。用于防止后续扫描 / 爬虫把同一个源文件
--- 再次入库；不代表原始云盘文件已被删除。
+-- 被拉黑、删除或自动去重的视频。用于防止后续扫描 / 爬虫把同一个源文件
+-- 再次入库；source_deleted 是旧版本兼容字段，源文件删除成功后会清除墓碑。
 CREATE TABLE IF NOT EXISTS deleted_videos (
-    id           TEXT PRIMARY KEY,
-    drive_id     TEXT NOT NULL DEFAULT '',
-    file_id      TEXT NOT NULL DEFAULT '',
-    content_hash TEXT NOT NULL DEFAULT '',
-    file_name    TEXT NOT NULL DEFAULT '',
-    size_bytes   INTEGER NOT NULL DEFAULT 0,
-    reason       TEXT NOT NULL DEFAULT '',
-    deleted_at   INTEGER NOT NULL
+    id                 TEXT PRIMARY KEY,
+    drive_id           TEXT NOT NULL DEFAULT '',
+    file_id            TEXT NOT NULL DEFAULT '',
+    parent_id          TEXT NOT NULL DEFAULT '',
+    content_hash       TEXT NOT NULL DEFAULT '',
+    file_name          TEXT NOT NULL DEFAULT '',
+    size_bytes         INTEGER NOT NULL DEFAULT 0,
+    reason             TEXT NOT NULL DEFAULT '',
+    source_deleted     INTEGER NOT NULL DEFAULT 0,
+    canonical_video_id TEXT NOT NULL DEFAULT '',
+    deleted_at         INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_file

@@ -899,19 +899,47 @@ ON CONFLICT(kind, drive_id, source_id) DO UPDATE SET
 	return err
 }
 
-const DeletedVideoReasonDuplicate = "duplicate"
+const (
+	DeletedVideoReasonDuplicate = "duplicate"
+
+	DeletedVideoRestorePolicyNone    = "none"
+	DeletedVideoRestorePolicyScan    = "scan"
+	DeletedVideoRestorePolicyCrawler = "crawler"
+)
+
+var ErrDeletedVideoNotRestorable = errors.New("deleted video is not restorable")
+
+type DeleteVideoTombstoneOptions struct {
+	Reason           string
+	SourceDeleted    bool
+	CanonicalVideoID string
+}
 
 // DeleteVideoWithTombstone records that a video was removed, then removes the
 // visible catalog row. The tombstone is used by scanners/crawlers to avoid
 // importing the same source file again.
 func (c *Catalog) DeleteVideoWithTombstone(ctx context.Context, id string) error {
-	return c.DeleteVideoWithTombstoneReason(ctx, id, "")
+	return c.DeleteVideoWithTombstoneOptions(ctx, id, DeleteVideoTombstoneOptions{})
 }
 
 // DeleteVideoWithTombstoneReason is the same tombstone path with an optional
 // machine reason for admin UI hints. Empty reason means user/admin initiated.
 func (c *Catalog) DeleteVideoWithTombstoneReason(ctx context.Context, id, reason string) error {
-	reason = normalizeDeletedVideoReason(reason)
+	return c.DeleteVideoWithTombstoneOptions(ctx, id, DeleteVideoTombstoneOptions{Reason: reason})
+}
+
+// DeleteVideoWithTombstoneOptions records restore-relevant facts alongside the
+// tombstone. When SourceDeleted is true the source file is gone, so no tombstone
+// is retained. CanonicalVideoID links deduplicated rows to the retained video.
+func (c *Catalog) DeleteVideoWithTombstoneOptions(ctx context.Context, id string, options DeleteVideoTombstoneOptions) error {
+	if options.SourceDeleted {
+		return c.DeleteVideo(ctx, id)
+	}
+	options.Reason = normalizeDeletedVideoReason(options.Reason)
+	options.CanonicalVideoID = strings.TrimSpace(options.CanonicalVideoID)
+	if options.Reason != DeletedVideoReasonDuplicate {
+		options.CanonicalVideoID = ""
+	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -922,15 +950,16 @@ func (c *Catalog) DeleteVideoWithTombstoneReason(ctx context.Context, id, reason
 		ID          string
 		DriveID     string
 		FileID      string
+		ParentID    string
 		ContentHash string
 		FileName    string
 		Size        int64
 	}
 	row := tx.QueryRowContext(ctx, `
-SELECT id, drive_id, file_id, COALESCE(content_hash, ''), COALESCE(file_name, ''), size_bytes
+SELECT id, drive_id, file_id, COALESCE(parent_id, ''), COALESCE(content_hash, ''), COALESCE(file_name, ''), size_bytes
   FROM videos
  WHERE id = ?`, id)
-	if err := row.Scan(&v.ID, &v.DriveID, &v.FileID, &v.ContentHash, &v.FileName, &v.Size); err != nil {
+	if err := row.Scan(&v.ID, &v.DriveID, &v.FileID, &v.ParentID, &v.ContentHash, &v.FileName, &v.Size); err != nil {
 		return err
 	}
 	v.ContentHash = normalizeContentHash(v.ContentHash)
@@ -943,17 +972,24 @@ SELECT id, drive_id, file_id, COALESCE(content_hash, ''), COALESCE(file_name, ''
 
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO deleted_videos (id, drive_id, file_id, content_hash, file_name, size_bytes, reason, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO deleted_videos (
+  id, drive_id, file_id, parent_id, content_hash, file_name, size_bytes,
+  reason, source_deleted, canonical_video_id, deleted_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-  drive_id     = excluded.drive_id,
-  file_id      = excluded.file_id,
-  content_hash = excluded.content_hash,
-  file_name    = excluded.file_name,
-  size_bytes   = excluded.size_bytes,
-  reason       = excluded.reason,
-  deleted_at   = excluded.deleted_at`,
-		v.ID, v.DriveID, v.FileID, v.ContentHash, v.FileName, v.Size, reason, now); err != nil {
+  drive_id           = excluded.drive_id,
+  file_id            = excluded.file_id,
+  parent_id          = excluded.parent_id,
+  content_hash       = excluded.content_hash,
+  file_name          = excluded.file_name,
+  size_bytes         = excluded.size_bytes,
+  reason             = excluded.reason,
+  source_deleted     = excluded.source_deleted,
+  canonical_video_id = excluded.canonical_video_id,
+  deleted_at         = excluded.deleted_at`,
+		v.ID, v.DriveID, v.FileID, v.ParentID, v.ContentHash, v.FileName, v.Size,
+		options.Reason, boolToInt(options.SourceDeleted), options.CanonicalVideoID, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE video_id = ?`, id); err != nil {
@@ -1008,17 +1044,23 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) error {
 // DeletedVideo 是黑名单（墓碑）表里的一条记录。原始视频行已删除，
 // 这里只保留扫盘去重和后台展示需要的最小字段；没有 title/封面/作者。
 type DeletedVideo struct {
-	ID        string `json:"id"`
-	DriveID   string `json:"driveId"`
-	FileID    string `json:"fileId"`
-	FileName  string `json:"fileName"`
-	Size      int64  `json:"size"`
-	Reason    string `json:"reason"`
-	DeletedAt int64  `json:"deletedAt"` // unix 毫秒
+	ID               string `json:"id"`
+	DriveID          string `json:"driveId"`
+	FileID           string `json:"fileId"`
+	ParentID         string `json:"-"`
+	FileName         string `json:"fileName"`
+	Size             int64  `json:"size"`
+	Reason           string `json:"reason"`
+	SourceDeleted    bool   `json:"sourceDeleted"`
+	CanonicalVideoID string `json:"canonicalVideoId,omitempty"`
+	CanonicalTitle   string `json:"canonicalTitle,omitempty"`
+	RestorePolicy    string `json:"restorePolicy"`
+	DeletedAt        int64  `json:"deletedAt"` // unix 毫秒
 }
 
 // ListDeletedVideos 分页列出黑名单视频，按拉黑时间倒序。
 // Keyword 非空时按文件名模糊匹配，DriveID 非空时限定来源网盘。
+// source_deleted 是旧版本兼容字段；新版本删除源文件成功后会直接清除墓碑。
 func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*DeletedVideo, int, error) {
 	if p.PageSize <= 0 {
 		p.PageSize = 50
@@ -1028,12 +1070,15 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	}
 	var where []string
 	var args []any
+	if !p.IncludeSourceDeleted {
+		where = append(where, "COALESCE(dv.source_deleted, 0) = 0")
+	}
 	if kw := strings.TrimSpace(p.Keyword); kw != "" {
-		where = append(where, "file_name LIKE ?")
+		where = append(where, "dv.file_name LIKE ?")
 		args = append(args, "%"+kw+"%")
 	}
 	if driveID := strings.TrimSpace(p.DriveID); driveID != "" {
-		where = append(where, "drive_id = ?")
+		where = append(where, "dv.drive_id = ?")
 		args = append(args, driveID)
 	}
 	whereSQL := ""
@@ -1042,15 +1087,27 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	}
 
 	var total int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos`+whereSQL, args...).Scan(&total); err != nil {
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos dv`+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	offset := (p.Page - 1) * p.PageSize
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, COALESCE(drive_id, ''), COALESCE(file_id, ''), COALESCE(file_name, ''), COALESCE(size_bytes, 0), COALESCE(reason, ''), deleted_at
-		   FROM deleted_videos`+whereSQL+`
-		  ORDER BY deleted_at DESC
+		`SELECT dv.id,
+		        COALESCE(dv.drive_id, ''),
+		        COALESCE(dv.file_id, ''),
+		        COALESCE(dv.file_name, ''),
+		        COALESCE(dv.size_bytes, 0),
+		        COALESCE(dv.reason, ''),
+		        COALESCE(dv.source_deleted, 0),
+		        COALESCE(dv.canonical_video_id, ''),
+		        COALESCE(cv.title, ''),
+		        COALESCE(d.kind, ''),
+		        dv.deleted_at
+		   FROM deleted_videos dv
+		   LEFT JOIN videos cv ON cv.id = dv.canonical_video_id
+		   LEFT JOIN drives d ON d.id = dv.drive_id`+whereSQL+`
+		  ORDER BY dv.deleted_at DESC
 		  LIMIT ? OFFSET ?`,
 		append(args, p.PageSize, offset)...)
 	if err != nil {
@@ -1061,17 +1118,149 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	var out []*DeletedVideo
 	for rows.Next() {
 		v := &DeletedVideo{}
-		if err := rows.Scan(&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.Size, &v.Reason, &v.DeletedAt); err != nil {
+		var sourceDeleted int
+		var driveKind string
+		if err := rows.Scan(
+			&v.ID,
+			&v.DriveID,
+			&v.FileID,
+			&v.FileName,
+			&v.Size,
+			&v.Reason,
+			&sourceDeleted,
+			&v.CanonicalVideoID,
+			&v.CanonicalTitle,
+			&driveKind,
+			&v.DeletedAt,
+		); err != nil {
 			return nil, 0, err
 		}
+		v.SourceDeleted = sourceDeleted != 0
+		v.RestorePolicy = deletedVideoRestorePolicy(v, driveKind)
 		out = append(out, v)
 	}
 	return out, total, rows.Err()
 }
 
-// RemoveDeletedVideo 把视频移出黑名单（删除墓碑）。移除后该视频会在
-// 下次扫盘/凌晨流水线时被重新发现并入库，本函数不主动触发扫描。
-func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
+// ListDeletedVideosPendingSourceDeletion returns every tombstone whose source
+// has not been confirmed deleted. It is intentionally unpaginated because the
+// caller runs one serialized background cleanup job and needs a stable work
+// snapshot without repeatedly racing a changing page boundary.
+func (c *Catalog) ListDeletedVideosPendingSourceDeletion(ctx context.Context) ([]*DeletedVideo, error) {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT id,
+       COALESCE(drive_id, ''),
+       COALESCE(file_id, ''),
+       COALESCE(parent_id, ''),
+       COALESCE(file_name, ''),
+       COALESCE(size_bytes, 0),
+       COALESCE(reason, ''),
+       deleted_at
+  FROM deleted_videos
+ WHERE COALESCE(source_deleted, 0) = 0
+ ORDER BY deleted_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*DeletedVideo
+	for rows.Next() {
+		v := &DeletedVideo{}
+		if err := rows.Scan(
+			&v.ID,
+			&v.DriveID,
+			&v.FileID,
+			&v.ParentID,
+			&v.FileName,
+			&v.Size,
+			&v.Reason,
+			&v.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ListDeletedVideosPendingSourceDeletionByIDs returns the requested tombstones
+// whose source files have not been confirmed deleted. Missing IDs and already
+// marked entries are ignored so callers can safely retry stale UI selections.
+func (c *Catalog) ListDeletedVideosPendingSourceDeletionByIDs(ctx context.Context, ids []string) ([]*DeletedVideo, error) {
+	seen := make(map[string]bool, len(ids))
+	normalized := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		normalized = append(normalized, id)
+	}
+	if len(normalized) == 0 {
+		return []*DeletedVideo{}, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
+	args := make([]any, 0, len(normalized))
+	for _, id := range normalized {
+		args = append(args, id)
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT id,
+       COALESCE(drive_id, ''),
+       COALESCE(file_id, ''),
+       COALESCE(parent_id, ''),
+       COALESCE(file_name, ''),
+       COALESCE(size_bytes, 0),
+       COALESCE(reason, ''),
+       deleted_at
+  FROM deleted_videos
+ WHERE COALESCE(source_deleted, 0) = 0
+   AND id IN (`+placeholders+`)
+ ORDER BY deleted_at, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*DeletedVideo
+	for rows.Next() {
+		v := &DeletedVideo{}
+		if err := rows.Scan(
+			&v.ID,
+			&v.DriveID,
+			&v.FileID,
+			&v.ParentID,
+			&v.FileName,
+			&v.Size,
+			&v.Reason,
+			&v.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (c *Catalog) CountDeletedVideosPendingSourceDeletion(ctx context.Context) (int, error) {
+	var count int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0`,
+	).Scan(&count)
+	return count, err
+}
+
+// PurgeDeletedVideo removes a blacklist tombstone after the source file has
+// been deleted. Crawler seen metadata is intentionally retained so crawler
+// sources are not fetched again after the user deletes their stored video file.
+func (c *Catalog) PurgeDeletedVideo(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sql.ErrNoRows
+	}
 	res, err := c.db.ExecContext(ctx, `DELETE FROM deleted_videos WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -1082,15 +1271,90 @@ func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
 	return nil
 }
 
+// RemoveDeletedVideo 允许可扫描来源在后续任务中重新入库。本函数不会触发
+// 扫描或爬取。爬虫来源还会在同一事务中清理对应的 seen 记录；无法重新发现
+// 的本地上传、已删除源文件和自动去重记录会被拒绝。
+func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sql.ErrNoRows
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var deleted DeletedVideo
+	var sourceDeleted int
+	var driveKind string
+	err = tx.QueryRowContext(ctx, `
+SELECT dv.id,
+       COALESCE(dv.drive_id, ''),
+       COALESCE(dv.reason, ''),
+       COALESCE(dv.source_deleted, 0),
+       COALESCE(d.kind, '')
+  FROM deleted_videos dv
+  LEFT JOIN drives d ON d.id = dv.drive_id
+ WHERE dv.id = ?`, id).Scan(
+		&deleted.ID,
+		&deleted.DriveID,
+		&deleted.Reason,
+		&sourceDeleted,
+		&driveKind,
+	)
+	if err != nil {
+		return err
+	}
+	deleted.SourceDeleted = sourceDeleted != 0
+	deleted.RestorePolicy = deletedVideoRestorePolicy(&deleted, driveKind)
+	if deleted.RestorePolicy == DeletedVideoRestorePolicyNone {
+		switch {
+		case deleted.SourceDeleted:
+			return fmt.Errorf("%w: source file was deleted", ErrDeletedVideoNotRestorable)
+		case deleted.Reason == DeletedVideoReasonDuplicate:
+			return fmt.Errorf("%w: duplicate videos must use the retained canonical video", ErrDeletedVideoNotRestorable)
+		default:
+			return fmt.Errorf("%w: source does not support rediscovery", ErrDeletedVideoNotRestorable)
+		}
+	}
+
+	if deleted.RestorePolicy == DeletedVideoRestorePolicyCrawler {
+		prefix := driveKind + "-" + deleted.DriveID + "-"
+		if !strings.HasPrefix(deleted.ID, prefix) {
+			return fmt.Errorf("%w: crawler source id is unavailable", ErrDeletedVideoNotRestorable)
+		}
+		sourceID := strings.TrimSpace(strings.TrimPrefix(deleted.ID, prefix))
+		if sourceID == "" {
+			return fmt.Errorf("%w: crawler source id is unavailable", ErrDeletedVideoNotRestorable)
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM crawler_seen_sources
+ WHERE kind = ? AND drive_id = ? AND source_id = ?`,
+			driveKind, deleted.DriveID, sourceID); err != nil {
+			return err
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 // VideoManagementCounts 返回后台视频管理两个标签的计数：
 // current=当前可见（与「当前视频」页一致的去重+在线盘+hidden=0 口径），
-// blacklisted=黑名单墓碑总数。
+// blacklisted=仍有源文件待管理的黑名单墓碑数。
 func (c *Catalog) VideoManagementCounts(ctx context.Context) (current, blacklisted int, err error) {
 	currentSQL := `SELECT COUNT(*) FROM videos WHERE COALESCE(hidden, 0) = 0 AND ` + activeDriveWhereSQL + ` AND ` + uniqueVideoWhereSQL
 	if err = c.db.QueryRowContext(ctx, currentSQL).Scan(&current); err != nil {
 		return 0, 0, err
 	}
-	if err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos`).Scan(&blacklisted); err != nil {
+	if err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0`).Scan(&blacklisted); err != nil {
 		return 0, 0, err
 	}
 	return current, blacklisted, nil
@@ -1429,6 +1693,7 @@ type ListParams struct {
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
 	SkipTotal             bool
+	IncludeSourceDeleted  bool
 	Page                  int
 	PageSize              int
 }
@@ -2386,6 +2651,19 @@ func normalizeDeletedVideoReason(reason string) string {
 	default:
 		return ""
 	}
+}
+
+func deletedVideoRestorePolicy(v *DeletedVideo, driveKind string) string {
+	if v == nil ||
+		v.SourceDeleted ||
+		v.Reason == DeletedVideoReasonDuplicate ||
+		strings.TrimSpace(v.DriveID) == "local-upload" {
+		return DeletedVideoRestorePolicyNone
+	}
+	if strings.TrimSpace(driveKind) == "scriptcrawler" {
+		return DeletedVideoRestorePolicyCrawler
+	}
+	return DeletedVideoRestorePolicyScan
 }
 
 func unixMilliOrZero(t time.Time) int64 {

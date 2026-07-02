@@ -108,18 +108,33 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	}
 	if _, err := c.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS deleted_videos (
-	id           TEXT PRIMARY KEY,
-	drive_id     TEXT NOT NULL DEFAULT '',
-	file_id      TEXT NOT NULL DEFAULT '',
-	content_hash TEXT NOT NULL DEFAULT '',
-	file_name    TEXT NOT NULL DEFAULT '',
-	size_bytes   INTEGER NOT NULL DEFAULT 0,
-	reason       TEXT NOT NULL DEFAULT '',
-	deleted_at   INTEGER NOT NULL
+	id                 TEXT PRIMARY KEY,
+	drive_id           TEXT NOT NULL DEFAULT '',
+	file_id            TEXT NOT NULL DEFAULT '',
+	parent_id          TEXT NOT NULL DEFAULT '',
+	content_hash       TEXT NOT NULL DEFAULT '',
+	file_name          TEXT NOT NULL DEFAULT '',
+	size_bytes         INTEGER NOT NULL DEFAULT 0,
+	reason             TEXT NOT NULL DEFAULT '',
+	source_deleted     INTEGER NOT NULL DEFAULT 0,
+	canonical_video_id TEXT NOT NULL DEFAULT '',
+	deleted_at         INTEGER NOT NULL
 )`); err != nil {
 		return err
 	}
 	if err := c.addColumnIfMissing(ctx, "deleted_videos", "reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "deleted_videos", "parent_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "deleted_videos", "source_deleted", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "deleted_videos", "canonical_video_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := c.purgeLegacySourceDeletedTombstones(ctx); err != nil {
 		return err
 	}
 	if err := c.syncDriveScanRootIDToRootID(ctx); err != nil {
@@ -214,6 +229,11 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 		return err
 	}
 	return nil
+}
+
+func (c *Catalog) purgeLegacySourceDeletedTombstones(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `DELETE FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 1`)
+	return err
 }
 
 func (c *Catalog) addColumnIfMissing(ctx context.Context, table, column, definition string) error {

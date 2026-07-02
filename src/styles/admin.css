@@ -2143,6 +2143,15 @@
   opacity: 0.72;
 }
 
+.admin-delete-source-option--notice {
+  cursor: default;
+}
+
+.admin-delete-source-option--notice > svg {
+  margin-top: 2px;
+  color: var(--danger);
+}
+
 /* =========================================================
  * Toast
  * ========================================================= */
@@ -3837,6 +3846,64 @@
   box-shadow: none;
 }
 
+.admin-blacklist-canonical-btn {
+  border-color: var(--border-default);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+.admin-blacklist-canonical-btn:hover {
+  border-color: var(--border-accent);
+  background: var(--accent-softer);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+.admin-blacklist-unavailable {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  color: var(--text-faint);
+  font-size: var(--font-xs);
+  line-height: 1.35;
+  text-align: right;
+}
+
+.admin-blacklist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.admin-blacklist-delete-source-btn {
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.admin-blacklist-source-delete {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.admin-blacklist-source-delete__status {
+  color: var(--text-faint);
+  font-size: var(--font-xs);
+  line-height: 1.35;
+}
+
+.admin-blacklist-source-delete__button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .admin-videos-list-toolbar {
   display: flex;
   align-items: center;
@@ -3845,7 +3912,8 @@
   margin: var(--space-2) 0 var(--space-4);
 }
 
-.admin-videos-current .admin-videos-list-toolbar {
+.admin-videos-current .admin-videos-list-toolbar,
+.admin-blacklist-bulk-toolbar {
   position: fixed;
   left: auto;
   right: var(--space-7);
@@ -3861,7 +3929,8 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
 }
 
-.admin-videos-current.has-bulk-actions {
+.admin-videos-current.has-bulk-actions,
+.admin-videos-blacklist.has-bulk-actions {
   padding-bottom: 72px;
 }
 
@@ -4020,7 +4089,8 @@
     margin: 0 0 2px;
   }
 
-  .admin-videos-current .admin-videos-list-toolbar {
+  .admin-videos-current .admin-videos-list-toolbar,
+  .admin-blacklist-bulk-toolbar {
     align-items: stretch;
     flex-direction: column;
     position: fixed;
@@ -4033,7 +4103,8 @@
     padding: 10px;
   }
 
-  .admin-videos-current.has-bulk-actions {
+  .admin-videos-current.has-bulk-actions,
+  .admin-videos-blacklist.has-bulk-actions {
     padding-bottom: calc(104px + env(safe-area-inset-bottom));
   }
 
@@ -4055,6 +4126,39 @@
     min-width: 0;
   }
 
+  .admin-blacklist-bulk-toolbar .admin-videos-bulk-actions__btn {
+    grid-column: 1 / -1;
+  }
+
+  .admin-blacklist-table:not(.admin-drives-table) tr {
+    --admin-video-card-bg: var(--bg-surface);
+    --admin-video-card-selected-shadow: 0 0 0 1px var(--border-accent), var(--shadow-md);
+  }
+
+  :root:not([data-theme="pink"]) .admin-blacklist-table:not(.admin-drives-table) tr {
+    --admin-video-card-bg: #1e1e1e;
+    --admin-video-card-selected-shadow:
+      0 0 0 1px rgba(255, 138, 60, 0.28),
+      0 8px 20px rgba(0, 0, 0, 0.24);
+  }
+
+  .admin-blacklist-table:not(.admin-drives-table) tr.is-selected {
+    background: var(--admin-video-card-bg);
+    border-color: var(--border-accent);
+    box-shadow: var(--admin-video-card-selected-shadow);
+  }
+
+  .admin-blacklist-table:not(.admin-drives-table) td.is-checkbox {
+    grid-column: 1;
+    grid-row: 2;
+    align-content: center;
+  }
+
+  .admin-blacklist-table:not(.admin-drives-table) td.is-checkbox::before {
+    content: none;
+    display: none;
+  }
+
   .admin-blacklist-table:not(.admin-drives-table) td[data-label="文件名"] {
     grid-column: 1 / -1;
   }
@@ -4072,6 +4176,10 @@
     text-align: right;
   }
 
+  .admin-blacklist-actions {
+    justify-content: flex-end;
+  }
+
   .admin-blacklist-table:not(.admin-drives-table) td.is-actions::before {
     content: none;
     display: none;
@@ -4085,6 +4193,22 @@
     min-height: 32px;
     padding: 6px 10px;
     white-space: normal;
+  }
+
+  .admin-blacklist-table:not(.admin-drives-table) td.is-actions .admin-blacklist-delete-source-btn {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+  }
+
+  .admin-blacklist-source-delete {
+    flex-wrap: wrap;
+  }
+
+  .admin-blacklist-source-delete__status {
+    width: 100%;
+    text-align: right;
   }
 }
 
