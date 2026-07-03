@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/video-site/backend/internal/tagging"
 )
 
 //go:embed schema.sql
@@ -18,6 +21,12 @@ var schemaSQL string
 
 type Catalog struct {
 	db *sql.DB
+
+	// matcher 缓存：按 settings 里的规则版本号失效。标签创建/修改/删除都会
+	// bump 版本；Matcher() 每次调用只多花一条单行 SELECT。
+	matcherMu      sync.Mutex
+	matcherVersion int64
+	matcher        *tagging.Matcher
 }
 
 type CrawlerAssetCounts struct {
@@ -60,6 +69,7 @@ type Video struct {
 	FingerprintStatus string   `json:"fingerprintStatus"`
 	FingerprintError  string   `json:"fingerprintError"`
 	ParentID          string   `json:"parentId"`
+	DirName           string   `json:"dirName"`
 	Title             string   `json:"title"`
 	Author            string   `json:"author"`
 	Tags              []string `json:"tags"`
@@ -110,13 +120,13 @@ func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
 
 	_, err := c.db.ExecContext(ctx, `
 INSERT INTO videos (
-  id, drive_id, file_id, file_name, content_hash, sampled_sha256, fingerprint_status, fingerprint_error, parent_id, title, author, tags,
+  id, drive_id, file_id, file_name, content_hash, sampled_sha256, fingerprint_status, fingerprint_error, parent_id, dir_name, title, author, tags,
   duration_seconds, size_bytes, ext, quality, thumbnail_url, thumbnail_status,
 	  preview_file_id, preview_local, preview_status,
 	  views, last_viewed_at, favorites, comments, likes, dislikes,
 	  hidden, badges, description, published_at, created_at, updated_at
 	) VALUES (
-	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
 	  ?, ?, ?,
 	  ?, ?, ?, ?, ?, ?,
@@ -126,6 +136,10 @@ ON CONFLICT(id) DO UPDATE SET
   file_name       = CASE
                       WHEN excluded.file_name != '' THEN excluded.file_name
                       ELSE videos.file_name
+                    END,
+  dir_name        = CASE
+                      WHEN excluded.dir_name != '' THEN excluded.dir_name
+                      ELSE videos.dir_name
                     END,
   title           = excluded.title,
   author          = excluded.author,
@@ -166,7 +180,7 @@ ON CONFLICT(id) DO UPDATE SET
 	  description     = excluded.description,
   updated_at      = excluded.updated_at
 `,
-		v.ID, v.DriveID, v.FileID, v.FileName, v.ContentHash, v.SampledSHA256, fingerprintStatus, v.FingerprintError, v.ParentID, v.Title, v.Author, string(tagsJSON),
+		v.ID, v.DriveID, v.FileID, v.FileName, v.ContentHash, v.SampledSHA256, fingerprintStatus, v.FingerprintError, v.ParentID, v.DirName, v.Title, v.Author, string(tagsJSON),
 		v.DurationSeconds, v.Size, v.Ext, v.Quality, v.ThumbnailURL, v.ThumbnailURL,
 		v.PreviewFileID, v.PreviewLocal, nullableStatus(v.PreviewStatus),
 		v.Views, unixMilliOrZero(v.LastViewedAt), v.Favorites, v.Comments, v.Likes, v.Dislikes,
@@ -456,6 +470,7 @@ type VideoMetaPatch struct {
 	DurationSeconds        int
 	ContentHash            string
 	FileName               string
+	DirName                string
 	Title                  string
 	TitleSet               bool
 	Author                 string
@@ -504,6 +519,10 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	if p.FileName != "" {
 		parts = append(parts, "file_name = ?")
 		args = append(args, p.FileName)
+	}
+	if p.DirName != "" {
+		parts = append(parts, "dir_name = ?")
+		args = append(args, p.DirName)
 	}
 	if p.TitleSet {
 		parts = append(parts, "title = ?")
@@ -964,7 +983,7 @@ SELECT id, drive_id, file_id, COALESCE(parent_id, ''), COALESCE(content_hash, ''
 	}
 	v.ContentHash = normalizeContentHash(v.ContentHash)
 
-	// 先记录这次视频关联的 tag_id，便于事务末尾清理旧版本遗留的孤儿 collection 标签。
+	// 先记录这次视频关联的 tag_id，便于事务末尾清理孤儿自动生成标签。
 	tagIDs, err := collectVideoTagIDs(ctx, tx, id)
 	if err != nil {
 		return err
@@ -1002,7 +1021,7 @@ ON CONFLICT(id) DO UPDATE SET
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return sql.ErrNoRows
 	}
-	if err := pruneOrphanCollectionTagsByID(ctx, tx, tagIDs); err != nil {
+	if err := pruneOrphanGeneratedTagsByID(ctx, tx, tagIDs); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1015,7 +1034,7 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	// 先记录这次视频关联的 tag_id，便于事务末尾清理旧版本遗留的孤儿 collection 标签。
+	// 先记录这次视频关联的 tag_id，便于事务末尾清理孤儿自动生成标签。
 	tagIDs, err := collectVideoTagIDs(ctx, tx, id)
 	if err != nil {
 		return err
@@ -1032,9 +1051,8 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 
-	// collection 标签来自旧版本按目录名生成的标签；视频删完后若不再被引用就一起回收。
-	// system / user / auto / legacy 不在此处删除，避免破坏管理员手动维护的标签语义。
-	if err := pruneOrphanCollectionTagsByID(ctx, tx, tagIDs); err != nil {
+	// 自动生成标签在视频删完后若不再被引用就一起回收；内置和自定义标签保留。
+	if err := pruneOrphanGeneratedTagsByID(ctx, tx, tagIDs); err != nil {
 		return err
 	}
 
@@ -2542,7 +2560,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 const allVideoCols = `
 id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''),
 COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(fingerprint_error, ''),
-COALESCE(parent_id, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
+COALESCE(parent_id, ''), COALESCE(dir_name, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
 duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_status, 'pending'),
 	COALESCE(transcode_status, ''), COALESCE(transcode_error, ''), COALESCE(transcoded_file_id, ''), COALESCE(transcoded_size, 0),
@@ -2614,7 +2632,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 	err := row.Scan(
 		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash,
 		&v.SampledSHA256, &v.FingerprintStatus, &v.FingerprintError,
-		&v.ParentID, &v.Title, &v.Author, &tagsJSON,
+		&v.ParentID, &v.DirName, &v.Title, &v.Author, &tagsJSON,
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.Quality, &v.ThumbnailURL,
 		&v.PreviewFileID, &v.PreviewLocal, &v.PreviewStatus,
 		&v.TranscodeStatus, &v.TranscodeError, &v.TranscodedFileID, &v.TranscodedSize,

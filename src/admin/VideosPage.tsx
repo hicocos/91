@@ -6,7 +6,6 @@ import {
   RefreshCw,
   Search,
   CheckSquare,
-  Square,
   Image,
   Trash2,
   Ban,
@@ -121,6 +120,7 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   const [total, setTotal] = useState(0);
   const [editing, setEditing] = useState<api.AdminVideo | null>(null);
   const [availableTags, setAvailableTags] = useState<api.AdminTag[]>([]);
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchRegenOpen, setBatchRegenOpen] = useState(false);
   const [batchRegening, setBatchRegening] = useState(false);
@@ -262,6 +262,7 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       );
       setSelectedIds(new Set());
       setBatchRegenOpen(false);
+      setSelectMode(false);
     } finally {
       setBatchRegening(false);
     }
@@ -342,6 +343,7 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       setSelectedIds(new Set());
       setBatchDeleteOpen(false);
       setBatchDeleteSource(false);
+      setSelectMode(false);
       onStatsChanged();
       if (success >= listItems.length && page > 1) {
         setPage((p) => Math.max(1, p - 1));
@@ -353,19 +355,16 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
     }
   }
 
-  const toggleSelectAll = () => {
-    if (selectedIds.size === listItems.length && listItems.length > 0) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(listItems.map((v) => v.id)));
-    }
-  };
-
   const toggleSelect = (id: string) => {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedIds(next);
+  };
+
+  const toggleSelectMode = () => {
+    setSelectMode((active) => !active);
+    setSelectedIds(new Set());
   };
 
   function handleSearchSubmit(e: React.FormEvent) {
@@ -379,9 +378,14 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--current">
         <DriveFilter drives={drives} driveId={driveId} onChange={(id) => { setDriveId(id); setPage(1); }} />
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} />
-        <button type="button" className="admin-btn admin-videos-filter__refresh" onClick={refresh} aria-label="刷新当前视频">
-          <RefreshCw size={13} />
-          <span className="admin-videos-filter__refresh-text">刷新</span>
+        <button
+          type="button"
+          className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+          onClick={toggleSelectMode}
+          aria-pressed={selectMode}
+        >
+          <CheckSquare size={13} />
+          <span>{selectMode ? "退出选择" : "批量选择"}</span>
         </button>
       </div>
 
@@ -416,55 +420,28 @@ function CurrentVideosTab({ onStatsChanged }: { onStatsChanged: () => void }) {
         </div>
       ) : (
         <>
-          <table className="admin-table is-selectable admin-videos-table">
-            <thead>
-              <tr>
-                <th className="is-checkbox" style={{ width: "40px" }}>
-                  <button
-                    type="button"
-                    className="admin-table-checkbox-btn"
-                    onClick={toggleSelectAll}
-                    aria-label={
-                      selectedIds.size > 0 && selectedIds.size === listItems.length
-                        ? "清空当前页选择"
-                        : "选择当前页视频"
-                    }
-                  >
-                    {selectedIds.size > 0 && selectedIds.size === listItems.length ? (
-                      <CheckSquare size={16} />
-                    ) : (
-                      <Square size={16} />
-                    )}
-                  </button>
-                </th>
-                <th>标题</th>
-                <th>作者</th>
-                <th>时长</th>
-                <th>预览视频</th>
-                <th>来源</th>
-                <th className="is-actions">操作</th>
-              </tr>
-            </thead>
+          <table className={`admin-table is-selectable admin-videos-table${selectMode ? " is-row-select-mode" : ""}`}>
             <tbody>
               {listItems.map((v) => {
                 const isSelected = selectedIds.has(v.id);
 
                 return (
-                  <tr key={v.id} className={isSelected ? "is-selected" : ""}>
-                    <td className="is-checkbox">
-                      <button
-                        type="button"
-                        className={`admin-table-checkbox-btn ${isSelected ? "is-selected" : ""}`}
-                        onClick={() => toggleSelect(v.id)}
-                        aria-label={`${isSelected ? "取消选择" : "选择"}视频 ${v.title}`}
-                      >
-                        {isSelected ? (
-                          <CheckSquare size={16} color="var(--accent)" />
-                        ) : (
-                          <Square size={16} color="var(--border-strong)" />
-                        )}
-                      </button>
-                    </td>
+                  <tr
+                    key={v.id}
+                    className={isSelected ? "is-selected" : ""}
+                    aria-selected={selectMode ? isSelected : undefined}
+                    tabIndex={selectMode ? 0 : undefined}
+                    onClick={(event) => {
+                      if (!selectMode || isInteractiveTarget(event.target)) return;
+                      toggleSelect(v.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (!selectMode || isInteractiveTarget(event.target)) return;
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      toggleSelect(v.id);
+                    }}
+                  >
                     <td data-label="标题">
                       <VideoTitleCell video={v} />
                     </td>
@@ -586,6 +563,7 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   const [driveId, setDriveId] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [removeTarget, setRemoveTarget] = useState<api.AdminDeletedVideo | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -684,9 +662,6 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
   const driveNameMap = new Map(drives.map((d) => [d.id, d.name || d.id]));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const sourceDeleteRunning = !!sourceDeleteStatus?.running;
-  const deletableItems = list.filter(canDeleteBlacklistSource);
-  const allDeletableSelected =
-    deletableItems.length > 0 && deletableItems.every((v) => selectedIds.has(v.id));
 
   async function confirmRemove() {
     if (!removeTarget) return;
@@ -769,18 +744,11 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       () => {
         setBatchSourceDeleteOpen(false);
         setSelectedIds(new Set());
+        setSelectMode(false);
       },
       `已开始后台顺序删除 ${ids.length} 个拉黑视频源文件`
     );
   }
-
-  const toggleSelectAll = () => {
-    if (allDeletableSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(deletableItems.map((v) => v.id)));
-    }
-  };
 
   const toggleSelect = (v: api.AdminDeletedVideo) => {
     if (!canDeleteBlacklistSource(v)) return;
@@ -788,6 +756,11 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
     if (next.has(v.id)) next.delete(v.id);
     else next.add(v.id);
     setSelectedIds(next);
+  };
+
+  const toggleSelectMode = () => {
+    setSelectMode((active) => !active);
+    setSelectedIds(new Set());
   };
 
   function handleSearchSubmit(e: React.FormEvent) {
@@ -801,9 +774,14 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
         <DriveFilter drives={drives} driveId={driveId} onChange={(id) => { setDriveId(id); setPage(1); }} />
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} placeholder="搜索文件名" />
-        <button type="button" className="admin-btn admin-videos-filter__refresh" onClick={refresh} aria-label="刷新拉黑视频">
-          <RefreshCw size={13} />
-          <span className="admin-videos-filter__refresh-text">刷新</span>
+        <button
+          type="button"
+          className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+          onClick={toggleSelectMode}
+          aria-pressed={selectMode}
+        >
+          <CheckSquare size={13} />
+          <span>{selectMode ? "退出选择" : "批量选择"}</span>
         </button>
       </div>
 
@@ -855,20 +833,9 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
               </button>
             </div>
           </div>
-          <table className="admin-table is-selectable admin-blacklist-table">
+          <table className={`admin-table is-selectable admin-blacklist-table${selectMode ? " is-row-select-mode" : ""}`}>
             <thead>
               <tr>
-                <th className="is-checkbox" style={{ width: "40px" }}>
-                  <button
-                    type="button"
-                    className="admin-table-checkbox-btn"
-                    onClick={toggleSelectAll}
-                    disabled={deletableItems.length === 0 || sourceDeleteRunning}
-                    aria-label={allDeletableSelected ? "清空当前页可删除项选择" : "选择当前页可删除项"}
-                  >
-                    {allDeletableSelected ? <CheckSquare size={16} /> : <Square size={16} />}
-                  </button>
-                </th>
                 <th>文件名</th>
                 <th>来源</th>
                 <th>大小</th>
@@ -880,24 +847,25 @@ function BlacklistTab({ onStatsChanged }: { onStatsChanged: () => void }) {
               {list.map((v) => {
                 const sourceDeletable = canDeleteBlacklistSource(v);
                 const isSelected = selectedIds.has(v.id);
+                const rowSelectable = selectMode && sourceDeletable && !sourceDeleteRunning;
 
                 return (
-                <tr key={v.id} className={isSelected ? "is-selected" : ""}>
-                  <td className="is-checkbox" data-label="选择">
-                    <button
-                      type="button"
-                      className={`admin-table-checkbox-btn ${isSelected ? "is-selected" : ""}`}
-                      onClick={() => toggleSelect(v)}
-                      disabled={!sourceDeletable || sourceDeleteRunning}
-                      aria-label={`${isSelected ? "取消选择" : "选择"}拉黑视频 ${v.fileName || v.id}`}
-                    >
-                      {isSelected ? (
-                        <CheckSquare size={16} color="var(--accent)" />
-                      ) : (
-                        <Square size={16} color="var(--border-strong)" />
-                      )}
-                    </button>
-                  </td>
+                <tr
+                  key={v.id}
+                  className={`${isSelected ? "is-selected" : ""}${selectMode && !rowSelectable ? " is-disabled-select" : ""}`}
+                  aria-selected={selectMode ? isSelected : undefined}
+                  tabIndex={rowSelectable ? 0 : undefined}
+                  onClick={(event) => {
+                    if (!rowSelectable || isInteractiveTarget(event.target)) return;
+                    toggleSelect(v);
+                  }}
+                  onKeyDown={(event) => {
+                    if (!rowSelectable || isInteractiveTarget(event.target)) return;
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    toggleSelect(v);
+                  }}
+                >
                   <td data-label="文件名">
                     <div className="admin-blacklist-filecell">
                       <span className="admin-blacklist-filename">{v.fileName || <span className="admin-text-faint">（无文件名）</span>}</span>
@@ -1172,6 +1140,13 @@ function canDeleteBlacklistSource(v: api.AdminDeletedVideo) {
   return !v.sourceDeleted;
 }
 
+function isInteractiveTarget(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    target.closest("button, a, input, label, select, textarea, [role='button']") !== null
+  );
+}
+
 function DeleteSourceOption({
   checked,
   disabled,
@@ -1226,8 +1201,16 @@ function VideoTitleCell({ video: v }: { video: api.AdminVideo }) {
         {(v.tags ?? []).length > 0 && (
           <div className="admin-pills admin-video-title-tags">
             {(v.tags ?? []).map((t) => (
-              <span key={t} className="admin-pill">
-                {t}
+              <span
+                key={t}
+                className="admin-pill admin-video-tag-source"
+                data-source={v.tagSources?.[t] ?? "unknown"}
+                title={tagAssignmentTitle(v, t)}
+              >
+                <span>{t}</span>
+                {v.tagSources?.[t] && (
+                  <small>{tagAssignmentSourceLabel(v.tagSources[t])}</small>
+                )}
               </span>
             ))}
           </div>
@@ -1376,6 +1359,15 @@ function EditVideoModal({
                   onChange={() => setSelectedTags(toggleTag(selectedTags, tag.label))}
                 />
                 <span className="admin-video-tag-option__label" title={tag.label}>{tag.label}</span>
+                {video.tagSources?.[tag.label] && (
+                  <span
+                    className="admin-video-tag-option__source"
+                    data-source={video.tagSources[tag.label]}
+                    title={video.tagEvidence?.[tag.label] || tagAssignmentSourceLabel(video.tagSources[tag.label])}
+                  >
+                    {tagAssignmentSourceLabel(video.tagSources[tag.label])}
+                  </span>
+                )}
                 <em className="admin-video-tag-option__count">{tag.count}</em>
               </label>
             ))}
@@ -1420,6 +1412,24 @@ function EditVideoModal({
       </div>
     </Modal>
   );
+}
+
+function tagAssignmentSourceLabel(source: string): string {
+  if (source === "manual") return "人工";
+  if (source === "auto") return "自动";
+  if (source === "series") return "系列";
+  if (source === "propagated") return "传播";
+  if (source === "crawler") return "爬虫";
+  if (source === "legacy") return "自动生成";
+  return source || "未知";
+}
+
+function tagAssignmentTitle(video: api.AdminVideo, label: string): string {
+  const source = video.tagSources?.[label];
+  const evidence = video.tagEvidence?.[label];
+  return [source ? `来源：${tagAssignmentSourceLabel(source)}` : "", evidence ? `依据：${evidence}` : ""]
+    .filter(Boolean)
+    .join("；");
 }
 
 function fileMeta(v: api.AdminVideo): string {

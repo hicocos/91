@@ -14,6 +14,10 @@ const usersPageSource = readFileSync(
   new URL("../src/admin/UsersPage.tsx", import.meta.url),
   "utf8"
 );
+const tagsPageSource = readFileSync(
+  new URL("../src/admin/TagsPage.tsx", import.meta.url),
+  "utf8"
+);
 const apiSource = readFileSync(
   new URL("../src/admin/api.ts", import.meta.url),
   "utf8"
@@ -154,7 +158,79 @@ test("admin video bulk actions use semantic theme colors", () => {
   assert.doesNotMatch(bulkBodies, /#ff5b8a|#fff6f9|rgba\(255,\s*91,\s*138/);
 });
 
+test("admin tag bulk actions use a fixed floating toolbar", () => {
+  const css = mobileCss();
+  const pageWithBulk = ruleBody(adminCss, ".admin-tags-page.has-bulk-actions");
+  const toolbar = ruleBody(adminCss, ".admin-tags-bulk-toolbar");
+  const actions = ruleBody(adminCss, ".admin-tags-bulk-actions");
+  const count = ruleBodyByContains(adminCss, ".admin-tags-bulk-actions__count");
+  const mobileToolbar = allRuleBodies(css, ".admin-tags-bulk-toolbar");
+  const mobilePageWithBulk = allRuleBodies(css, ".admin-tags-page.has-bulk-actions");
+  const mobileActions = allRuleBodies(css, ".admin-tags-bulk-actions");
+  const mobileButton = allRuleBodies(css, ".admin-tags-bulk-actions__btn");
+
+  assert.match(tagsPageSource, /className="admin-tags-bulk-toolbar"/);
+  assert.match(tagsPageSource, /aria-label="标签批量操作"/);
+  assert.match(tagsPageSource, /aria-pressed=\{isSelected\}/);
+  assert.match(tagsPageSource, />已选择 \{selected\.size\} 项</);
+  assert.match(tagsPageSource, /全选本页/);
+  assert.match(tagsPageSource, /取消选中/);
+  assert.doesNotMatch(tagsPageSource, /全选本页 \(/);
+  assert.doesNotMatch(tagsPageSource, /CheckSquare/);
+  assert.doesNotMatch(tagsPageSource, /admin-tag-card__check/);
+  assert.doesNotMatch(tagsPageSource, /admin-tags-bulk-actions__select-all/);
+  assert.doesNotMatch(tagsPageSource, /checked=\{allSelected\}/);
+  assert.doesNotMatch(tagsPageSource, /admin-tags-bulkbar/);
+  assert.doesNotMatch(adminCss, /admin-tags-bulkbar/);
+  assert.doesNotMatch(adminCss, /admin-tag-card__check/);
+  assert.match(pageWithBulk, /padding-bottom\s*:\s*72px/);
+  assert.match(toolbar, /position\s*:\s*fixed/);
+  assert.match(toolbar, /right\s*:\s*var\(--space-7\)/);
+  assert.match(toolbar, /bottom\s*:\s*var\(--space-5\)/);
+  assert.match(toolbar, /margin\s*:\s*0/);
+  assert.match(actions, /display\s*:\s*inline-flex/);
+  assert.match(count, /white-space\s*:\s*nowrap/);
+  assert.match(mobileToolbar, /left\s*:\s*var\(--space-3\)/);
+  assert.match(mobileToolbar, /right\s*:\s*var\(--space-3\)/);
+  assert.match(mobileToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(mobilePageWithBulk, /padding-bottom\s*:\s*calc\(104px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(mobileActions, /display\s*:\s*grid/);
+  assert.match(mobileActions, /grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(mobileButton, /min-height\s*:\s*40px/);
+  assert.match(mobileButton, /min-width\s*:\s*0/);
+});
+
+test("admin tag auto-generation setting uses a compact switch", () => {
+  const toggle = ruleBody(adminCss, ".admin-tag-setting-toggle");
+  const switchBody = ruleBody(adminCss, ".admin-tag-setting-toggle__switch");
+  const switchText = ruleBody(adminCss, ".admin-tag-setting-toggle__switch-text");
+  const switchOnText = ruleBody(adminCss, ".admin-tag-setting-toggle.is-on .admin-tag-setting-toggle__switch-text");
+  const switchOffText = ruleBody(adminCss, ".admin-tag-setting-toggle:not(.is-on) .admin-tag-setting-toggle__switch-text");
+
+  assert.match(tagsPageSource, /admin-tag-setting-toggle__switch/);
+  assert.match(tagsPageSource, /role="switch"/);
+  assert.match(tagsPageSource, /onClick=\{toggleAutoGenerateTags\}/);
+  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__hint/);
+  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__body/);
+  assert.doesNotMatch(tagsPageSource, /<label\s+className=\{`admin-tag-setting-toggle/);
+  assert.doesNotMatch(adminCss, /\.admin-tag-setting-toggle input/);
+  assert.match(toggle, /justify-content\s*:\s*space-between/);
+  assert.doesNotMatch(toggle, /cursor\s*:\s*pointer/);
+  assert.match(switchBody, /width\s*:\s*58px/);
+  assert.match(switchBody, /height\s*:\s*30px/);
+  assert.match(switchBody, /cursor\s*:\s*pointer/);
+  assert.match(switchText, /width\s*:\s*34px/);
+  assert.match(switchText, /height\s*:\s*24px/);
+  assert.match(switchOnText, /background\s*:\s*#10b981/);
+  assert.match(switchOffText, /transform\s*:\s*translateX\(20px\)/);
+});
+
 test("current video list does not render the drive summary under filters", () => {
+  const shell = ruleBody(adminCss, ".admin-shell");
+  const navGroupLabel = ruleBody(adminCss, ".admin-nav__group-label");
+  const navLink = ruleBody(adminCss, ".admin-nav__link");
+  const navText = ruleBody(adminCss, ".admin-nav__text");
+  const sidebarFooterAction = ruleBodyByContains(adminCss, ".admin-sidebar__footer .admin-sidebar__check-update");
   const filter = ruleBody(adminCss, ".admin-videos-filter");
   const toolbar = ruleBody(adminCss, ".admin-videos-list-toolbar");
   const currentToolbar = ruleBodyByContains(adminCss, ".admin-videos-current .admin-videos-list-toolbar");
@@ -165,19 +241,64 @@ test("current video list does not render the drive summary under filters", () =>
   assert.doesNotMatch(videosPageSource, /withCounts/);
   assert.doesNotMatch(videosPageSource, /teaserReadyCount|teaserPendingCount/);
   assert.match(videosPageSource, /admin-videos-filter admin-videos-filter--current/);
-  assert.match(videosPageSource, /className="admin-btn admin-videos-filter__refresh"[\s\S]*aria-label="刷新当前视频"/);
-  assert.match(videosPageSource, /className="admin-videos-filter__refresh-text">刷新/);
+  assert.doesNotMatch(videosPageSource, /aria-label="刷新当前视频"/);
+  assert.match(videosPageSource, /admin-videos-filter__batch\$\{selectMode \? " is-primary" : ""\}/);
+  assert.match(videosPageSource, /selectMode \? "退出选择" : "批量选择"/);
   assert.match(videosPageSource, /admin-videos-current\$\{selectedIds\.size > 0 \? " has-bulk-actions" : ""\}/);
   assert.match(videosPageSource, /\{!loading && selectedIds\.size > 0 && \(/);
+  assert.match(shell, /--admin-sidebar-width\s*:\s*232px/);
+  assert.match(shell, /grid-template-columns\s*:\s*var\(--admin-sidebar-width\)\s+minmax\(0,\s*1fr\)/);
+  assert.match(navGroupLabel, /padding\s*:\s*0\s+12px/);
+  assert.match(navGroupLabel, /text-align\s*:\s*left/);
+  assert.match(navLink, /display\s*:\s*flex/);
+  assert.match(navLink, /justify-content\s*:\s*center/);
+  assert.match(navLink, /text-align\s*:\s*center/);
+  assert.match(navText, /justify-items\s*:\s*center/);
+  assert.match(sidebarFooterAction, /display\s*:\s*flex/);
+  assert.match(sidebarFooterAction, /justify-content\s*:\s*center/);
   assert.match(filter, /margin-bottom\s*:\s*var\(--space-4\)/);
   assert.match(toolbar, /margin\s*:\s*var\(--space-2\)\s+0\s+var\(--space-4\)/);
   assert.match(currentToolbar, /position\s*:\s*fixed/);
   assert.match(currentToolbar, /left\s*:\s*auto/);
   assert.match(currentToolbar, /right\s*:\s*var\(--space-7\)/);
   assert.match(currentToolbar, /bottom\s*:\s*var\(--space-5\)/);
-  assert.match(currentToolbar, /max-width\s*:\s*calc\(100vw\s*-\s*288px\s*-\s*\(var\(--space-7\)\s*\*\s*2\)\)/);
+  assert.match(currentToolbar, /max-width\s*:\s*calc\(100vw\s*-\s*var\(--admin-sidebar-width\)\s*-\s*\(var\(--space-7\)\s*\*\s*2\)\)/);
   assert.match(currentToolbar, /margin\s*:\s*0/);
   assert.match(currentWithBulk, /padding-bottom\s*:\s*72px/);
+});
+
+test("desktop current video list uses long cards without a header row", () => {
+  const table = ruleBody(adminCss, ".admin-videos-current .admin-videos-table");
+  const body = ruleBody(adminCss, ".admin-videos-current .admin-videos-table tbody");
+  const row = ruleBody(adminCss, ".admin-videos-current .admin-videos-table tr");
+  const selected = ruleBody(adminCss, ".admin-videos-current .admin-videos-table tr.is-selected");
+  const cell = ruleBody(adminCss, ".admin-videos-current .admin-videos-table td");
+  const label = ruleBody(adminCss, ".admin-videos-current .admin-videos-table td::before");
+  const titleCell = ruleBody(adminCss, ".admin-videos-current .admin-videos-table .admin-video-title-cell");
+  const thumb = ruleBody(adminCss, ".admin-videos-current .admin-videos-table .admin-video-thumb-wrap");
+  const actions = ruleBody(adminCss, ".admin-videos-current .admin-videos-table td.is-actions");
+
+  assert.match(videosPageSource, /admin-table is-selectable admin-videos-table/);
+  assert.match(videosPageSource, /<tbody>\s*\{\s*listItems\.map/);
+  assert.doesNotMatch(videosPageSource, /<th>标题<\/th>/);
+  assert.doesNotMatch(videosPageSource, /<th>作者<\/th>/);
+  assert.doesNotMatch(videosPageSource, /<th>时长<\/th>/);
+  assert.doesNotMatch(videosPageSource, /<th>预览视频<\/th>/);
+  assert.match(table, /display\s*:\s*block/);
+  assert.match(table, /background\s*:\s*transparent/);
+  assert.match(body, /display\s*:\s*grid/);
+  assert.match(body, /gap\s*:\s*10px/);
+  assert.match(row, /display\s*:\s*grid/);
+  assert.match(row, /grid-template-columns\s*:\s*[\s\S]*minmax\(320px,\s*1\.55fr\)/);
+  assert.match(row, /min-height\s*:\s*80px/);
+  assert.match(row, /border-radius\s*:\s*8px/);
+  assert.match(selected, /background\s*:\s*var\(--accent-soft\)/);
+  assert.match(cell, /background\s*:\s*transparent\s*!important/);
+  assert.match(label, /content\s*:\s*none/);
+  assert.match(titleCell, /width\s*:\s*100%/);
+  assert.match(thumb, /width\s*:\s*96px/);
+  assert.match(thumb, /height\s*:\s*54px/);
+  assert.match(actions, /justify-content\s*:\s*flex-end/);
 });
 
 test("desktop video management filters use a stable three-column toolbar", () => {
@@ -192,10 +313,11 @@ test("desktop video management filters use a stable three-column toolbar", () =>
   const blacklistIcon = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__select-icon");
   const currentFilterSearch = ruleBodyByContains(css, ".admin-videos-filter--current .admin-videos-filter__search");
   const blacklistFilterSearch = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__search");
-  const refresh = ruleBody(css, ".admin-videos-filter__refresh");
+  const batch = ruleBody(css, ".admin-videos-filter__batch");
 
-  assert.match(videosPageSource, /className="admin-btn admin-videos-filter__refresh"[\s\S]*aria-label="刷新当前视频"/);
-  assert.match(videosPageSource, /className="admin-btn admin-videos-filter__refresh"[\s\S]*aria-label="刷新拉黑视频"/);
+  assert.doesNotMatch(videosPageSource, /aria-label="刷新当前视频"/);
+  assert.doesNotMatch(videosPageSource, /aria-label="刷新拉黑视频"/);
+  assert.match(videosPageSource, /admin-videos-filter__batch/);
   assert.match(currentFilter, /display\s*:\s*grid/);
   assert.match(currentFilter, /grid-template-columns\s*:\s*72px\s+minmax\(0,\s*1fr\)\s+auto/);
   assert.match(currentFilter, /width\s*:\s*100%/);
@@ -212,8 +334,8 @@ test("desktop video management filters use a stable three-column toolbar", () =>
   assert.match(blacklistIcon, /display\s*:\s*none/);
   assert.match(currentFilterSearch, /min-width\s*:\s*0/);
   assert.match(blacklistFilterSearch, /min-width\s*:\s*0/);
-  assert.match(refresh, /white-space\s*:\s*nowrap/);
-  assert.doesNotMatch(refresh, /display\s*:\s*none/);
+  assert.match(batch, /white-space\s*:\s*nowrap/);
+  assert.doesNotMatch(batch, /display\s*:\s*none/);
 });
 
 test("admin table action headers center-align with action buttons", () => {
@@ -278,8 +400,8 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.match(videosPageSource, /删除拉黑视频源文件/);
   assert.match(videosPageSource, /\{ ids: \[target\.id\] \}/);
   assert.match(videosPageSource, /\{ ids \}/);
-  assert.match(videosPageSource, /className="admin-table is-selectable admin-blacklist-table"/);
-  assert.match(videosPageSource, /admin-table-checkbox-btn/);
+  assert.match(videosPageSource, /admin-table is-selectable admin-blacklist-table\$\{selectMode \? " is-row-select-mode" : ""\}/);
+  assert.doesNotMatch(videosPageSource, /admin-table-checkbox-btn/);
   assert.match(videosPageSource, /后台逐个删除/);
   assert.match(videosPageSource, /sourceDeleteStatus\.processed/);
   assert.match(videosPageSource, /sourceDeleteStatus\.total/);
@@ -298,13 +420,12 @@ test("admin video management controls wrap instead of covering text on mobile", 
   const currentFilterField = ruleBodyByContains(css, ".admin-videos-filter--current .admin-videos-filter__search");
   const currentFilterSelect = ruleBody(css, ".admin-videos-filter--current .admin-videos-filter__select");
   const currentFilterIcon = ruleBody(css, ".admin-videos-filter--current .admin-videos-filter__select-icon");
-  const currentFilterRefresh = ruleBody(css, ".admin-videos-filter--current .admin-videos-filter__refresh");
-  const currentFilterRefreshText = ruleBody(css, ".admin-videos-filter--current .admin-videos-filter__refresh-text");
+  const currentFilterBatch = ruleBodyByContains(css, ".admin-videos-filter--current .admin-videos-filter__batch");
   const blacklistFilter = allRuleBodies(css, ".admin-videos-filter--blacklist");
   const blacklistFilterField = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__search");
   const blacklistFilterSelect = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__select");
   const blacklistFilterIcon = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__select-icon");
-  const blacklistFilterButton = ruleBody(css, ".admin-videos-filter--blacklist .admin-btn");
+  const blacklistFilterBatch = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__batch");
   const bulkToolbar = ruleBodyByContains(css, ".admin-videos-current .admin-videos-list-toolbar");
   const blacklistBulkToolbar = ruleBodyByContains(css, ".admin-blacklist-bulk-toolbar");
   const currentWithBulk = ruleBodyByContains(css, ".admin-videos-current.has-bulk-actions");
@@ -338,16 +459,15 @@ test("admin video management controls wrap instead of covering text on mobile", 
 
   assert.match(paginationInfo, /flex\s*:\s*1\s+0\s+100%/);
   assert.match(currentFilter, /display\s*:\s*grid/);
-  assert.match(currentFilter, /grid-template-columns\s*:\s*72px\s+minmax\(0,\s*1fr\)\s+38px/);
+  assert.match(currentFilter, /grid-template-columns\s*:\s*72px\s+minmax\(0,\s*1fr\)\s+auto/);
   assert.match(currentFilterField, /min-width\s*:\s*0/);
   assert.match(currentFilterSelect, /padding\s*:\s*0\s+4px/);
   assert.match(currentFilterSelect, /text-align\s*:\s*center/);
   assert.match(currentFilterSelect, /text-align-last\s*:\s*center/);
   assert.match(currentFilterSelect, /text-overflow\s*:\s*ellipsis/);
   assert.match(currentFilterIcon, /display\s*:\s*none/);
-  assert.match(currentFilterRefresh, /width\s*:\s*38px/);
-  assert.match(currentFilterRefresh, /min-width\s*:\s*38px/);
-  assert.match(currentFilterRefreshText, /display\s*:\s*none/);
+  assert.match(currentFilterBatch, /min-width\s*:\s*54px/);
+  assert.match(currentFilterBatch, /white-space\s*:\s*nowrap/);
   assert.match(blacklistFilter, /display\s*:\s*grid/);
   assert.match(blacklistFilter, /grid-template-columns\s*:\s*72px\s+minmax\(0,\s*1fr\)\s+auto/);
   assert.match(blacklistFilterField, /min-width\s*:\s*0/);
@@ -355,7 +475,7 @@ test("admin video management controls wrap instead of covering text on mobile", 
   assert.match(blacklistFilterSelect, /text-align\s*:\s*center/);
   assert.match(blacklistFilterSelect, /text-align-last\s*:\s*center/);
   assert.match(blacklistFilterIcon, /display\s*:\s*none/);
-  assert.match(blacklistFilterButton, /white-space\s*:\s*nowrap/);
+  assert.match(blacklistFilterBatch, /white-space\s*:\s*nowrap/);
   assert.match(bulkToolbar, /position\s*:\s*fixed/);
   assert.match(bulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkToolbar, /margin\s*:\s*0/);
@@ -397,7 +517,6 @@ test("mobile video management uses compact theme-aware video cards", () => {
   const css = mobileCss();
   const card = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) tr");
   const title = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"标题\"]");
-  const checkbox = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-checkbox");
   const label = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td::before");
   const titleCell = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-title-cell");
   const thumb = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-video-thumb-wrap");
@@ -409,12 +528,6 @@ test("mobile video management uses compact theme-aware video cards", () => {
   const previewColumn = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td[data-label=\"预览视频\"]");
   const actions = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions");
   const actionsLabel = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions::before");
-  const checkboxLabel = ruleBodyByContains(css, ".admin-videos-table:not(.admin-drives-table) td.is-checkbox::before");
-  const checkboxButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-table-checkbox-btn");
-  const checkboxIcon = ruleBody(
-    css,
-    ".admin-videos-table:not(.admin-drives-table) .admin-table-checkbox-btn svg"
-  );
   const status = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-status");
   const statusDot = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) .admin-status::before");
   const actionButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn");
@@ -428,15 +541,8 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.match(card, /gap\s*:\s*0\s+10px/);
   assert.match(css, /:root:not\(\[data-theme="pink"\]\)\s+\.admin-videos-table:not\(\.admin-drives-table\)\s+tr\s*\{[^}]*--admin-video-card-bg\s*:\s*#1e1e1e/s);
   assert.match(css, /:root\[data-theme="pink"\]\s+\.admin-videos-table:not\(\.admin-drives-table\)\s+tr\s*\{/);
-  assert.match(checkbox, /grid-column\s*:\s*1\s*\/\s*4/);
-  assert.match(checkbox, /grid-row\s*:\s*3/);
-  assert.match(checkbox, /display\s*:\s*flex/);
-  assert.match(checkboxLabel, /content\s*:\s*none/);
-  assert.match(checkboxButton, /width\s*:\s*100%/);
-  assert.match(checkboxButton, /height\s*:\s*32px/);
-  assert.match(videosPageSource, /admin-table-checkbox-btn \$\{isSelected \? "is-selected" : ""\}/);
-  assert.match(checkboxIcon, /color\s*:\s*var\(--admin-video-card-button-text\)/);
-  assert.match(checkboxIcon, /stroke\s*:\s*currentColor/);
+  assert.doesNotMatch(videosPageSource, /className="is-checkbox"/);
+  assert.doesNotMatch(videosPageSource, /admin-table-checkbox-btn/);
   assert.match(title, /padding-left\s*:\s*0/);
   assert.match(title, /min-height\s*:\s*72px/);
   assert.match(label, /font-size\s*:\s*10px/);
@@ -462,7 +568,7 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.match(previewColumn, /grid-row\s*:\s*2/);
   assert.match(previewColumn, /grid-column\s*:\s*9\s*\/\s*-1/);
   assert.match(previewColumn, /justify-items\s*:\s*end/);
-  assert.match(actions, /grid-column\s*:\s*4\s*\/\s*-1/);
+  assert.match(actions, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(actions, /grid-row\s*:\s*3/);
   assert.match(actions, /display\s*:\s*grid/);
   assert.match(actions, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
@@ -541,6 +647,11 @@ test("mobile tags management does not create horizontal page overflow", () => {
   const filters = allRuleBodies(css, ".admin-tags-filter-tabs");
   const grid = allRuleBodies(css, ".admin-tags-grid");
   const card = allRuleBodies(css, ".admin-tag-card");
+  const cardFooter = allRuleBodies(adminCss, ".admin-tag-card__footer");
+  const cardCount = allRuleBodies(adminCss, ".admin-tag-card__count");
+  const cardActions = allRuleBodies(adminCss, ".admin-tag-card__footer-actions");
+  const cardEdit = allRuleBodies(adminCss, ".admin-tag-card__edit");
+  const cardDelete = allRuleBodies(adminCss, ".admin-tag-card__delete");
   const pagination = allRuleBodies(css, ".admin-tags-pagination");
   const paginationInfo = allRuleBodies(css, ".admin-tags-pagination .admin-table-pagination__info");
 
@@ -552,9 +663,18 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.match(filters, /width\s*:\s*100%/);
   assert.match(filters, /min-width\s*:\s*0/);
   assert.match(filters, /max-width\s*:\s*100%/);
+  assert.match(allRuleBodies(adminCss, ".admin-tags-grid"), /align-items\s*:\s*stretch/);
   assert.match(grid, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
   assert.match(grid, /max-width\s*:\s*100%/);
   assert.match(card, /max-width\s*:\s*100%/);
+  assert.match(cardFooter, /flex-wrap\s*:\s*nowrap/);
+  assert.match(cardCount, /white-space\s*:\s*nowrap/);
+  assert.match(cardActions, /min-width\s*:\s*0/);
+  assert.match(cardActions, /white-space\s*:\s*nowrap/);
+  assert.match(cardEdit, /white-space\s*:\s*nowrap/);
+  assert.match(cardDelete, /white-space\s*:\s*nowrap/);
+  assert.match(cardDelete, /width\s*:\s*0/);
+  assert.match(cardDelete, /padding-inline\s*:\s*0/);
   assert.match(pagination, /min-width\s*:\s*0/);
   assert.match(paginationInfo, /overflow-wrap\s*:\s*anywhere/);
 });

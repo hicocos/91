@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -273,6 +274,12 @@ func main() {
 		GetBlacklistSourceDeleteStatus: func() api.BlacklistSourceDeleteStatus {
 			return app.blacklistSourceDeleteStatus()
 		},
+		OnStartTagRetag: func() bool {
+			return app.startTagRetag(ctx)
+		},
+		GetTagJobStatus: func() api.TagJobStatus {
+			return app.tagJobStatus()
+		},
 		GetDriveGenerationStatuses: func() map[string]api.DriveGenerationStatuses {
 			return app.driveGenerationStatuses()
 		},
@@ -323,6 +330,7 @@ func main() {
 	//   Phase 2 脚本爬虫 + 入队预览视频
 	//   Phase 3 爬虫本地视频 → 云盘上传
 	//   Phase 4 全库重复视频维护：精确指纹去重 + 标题/时长/封面近似去重
+	//   Phase 5 标签维护：增量重打、系列同步和同类传播
 	// 也响应 admin "扫描所有网盘" 按钮（POST /admin/api/jobs/nightly/run → TriggerNow）。
 	app.nightlyRunner = nightly.New(nightly.Config{
 		Settings:              cat,
@@ -335,6 +343,7 @@ func main() {
 		WaitPreviewQueuesIdle: app.waitAllPreviewQueuesIdle,
 		RunMigration:          app.crawlerUploader.RunOnce,
 		RunDedupeAssetCleanup: app.cleanupDuplicateVideoAssets,
+		RunTagMaintenance:     app.runNightlyTagMaintenance,
 	})
 	go app.nightlyRunner.Run(ctx)
 
@@ -342,12 +351,19 @@ func main() {
 		Addr:    cfg.Server.Listen,
 		Handler: r,
 	}
+	listener, err := net.Listen("tcp", cfg.Server.Listen)
+	if err != nil {
+		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
+	}
 	go func() {
 		log.Printf("video-site backend listening on %s", cfg.Server.Listen)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
+	// One-time tag upgrade work starts only after the listener is bound.
+	// Completed upgrades do not rerun tag maintenance on normal restarts.
+	app.startPostStartupTagMaintenance(ctx)
 	go app.attachExistingDrives(ctx)
 	go app.migrateHiddenVideosToTombstone(ctx)
 
@@ -469,6 +485,13 @@ type App struct {
 	// the catalog and purges each one after a successful provider delete.
 	blacklistSourceDeleteMu    sync.Mutex
 	blacklistSourceDeleteState api.BlacklistSourceDeleteStatus
+
+	// tagJobMu protects the admin-visible tag job status. tagMaintenanceMu
+	// serializes bulk writes to video_tags across startup, manual, and nightly
+	// maintenance paths.
+	tagJobMu         sync.Mutex
+	tagMaintenanceMu sync.Mutex
+	tagJobState      api.TagJobStatus
 }
 
 type driveScanProgress struct {
@@ -1272,7 +1295,7 @@ func (a *App) ensureScriptCrawlerNameTag(driveID, crawlerName string) {
 	go func() {
 		defer cancel()
 		prefix := scriptcrawler.BuildVideoID(driveID, "")
-		if _, err := a.cat.EnsureTagForVideoIDPrefix(bgCtx, prefix, tagName, nil, "legacy"); err != nil {
+		if _, err := a.cat.EnsureCrawlerTagForVideoIDPrefix(bgCtx, prefix, tagName); err != nil {
 			log.Printf("[scriptcrawler] drive=%s ensure crawler tag %q: %v", driveID, tagName, err)
 		}
 	}()

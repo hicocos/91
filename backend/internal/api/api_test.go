@@ -744,7 +744,7 @@ func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {
 	}
 	req := multipartUploadRequest(t, map[string]string{
 		"title": "用户上传标题",
-		"tags":  "奶子,口交,AV,女大",
+		"tags":  "奶子,女大,人妻,后入,制服,美臀,口交",
 	}, "clip.mp4", "video-bytes")
 	rr := httptest.NewRecorder()
 
@@ -770,7 +770,7 @@ func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {
 	if got.Title != "用户上传标题" {
 		t.Fatalf("title = %q, want submitted title", got.Title)
 	}
-	if !sameStringSet(got.Tags, []string{"奶子", "口交", "AV", "女大"}) {
+	if !sameStringSet(got.Tags, []string{"奶子", "女大", "人妻", "后入", "制服", "美臀", "口交"}) {
 		t.Fatalf("tags = %#v, want selected tags", got.Tags)
 	}
 	if got.PreviewStatus != "pending" {
@@ -833,7 +833,7 @@ func TestHandleUploadVideoRejectsUnsupportedTag(t *testing.T) {
 		}
 	})
 	server := &Server{Catalog: cat, LocalDir: t.TempDir()}
-	req := multipartUploadRequest(t, map[string]string{"tags": "奶子,后入"}, "clip.mp4", "video-bytes")
+	req := multipartUploadRequest(t, map[string]string{"tags": "奶子,不存在"}, "clip.mp4", "video-bytes")
 	rr := httptest.NewRecorder()
 
 	server.handleUploadVideo(rr, req)
@@ -1020,7 +1020,7 @@ func TestHandleTagsReturnsUnifiedTagPool(t *testing.T) {
 		t.Fatalf("labels = %#v, want user tag 清纯", labels)
 	}
 	if !containsString(labels, "后入") {
-		t.Fatalf("labels = %#v, want system tag 后入", labels)
+		t.Fatalf("labels = %#v, want builtin tag 后入", labels)
 	}
 	var qingchunCount int
 	for _, tag := range got {

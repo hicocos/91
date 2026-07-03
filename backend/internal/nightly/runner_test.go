@@ -118,6 +118,10 @@ func TestRunPipelineHonoursPhaseOrder(t *testing.T) {
 			rec.push("dedupe-cleanup")
 			return nil
 		},
+		RunTagMaintenance: func(context.Context) error {
+			rec.push("tag-maintenance")
+			return nil
+		},
 	})
 
 	r.runPipeline(context.Background())
@@ -133,6 +137,7 @@ func TestRunPipelineHonoursPhaseOrder(t *testing.T) {
 		"wait-idle", // after phase 2
 		"migrate",
 		"dedupe-cleanup",
+		"tag-maintenance",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("call sequence len = %d, want %d; got=%v", len(got), len(want), got)
@@ -165,6 +170,10 @@ func TestRunPipelineSkipsMigrationWhenNoCrawler(t *testing.T) {
 			rec.push("dedupe-cleanup")
 			return nil
 		},
+		RunTagMaintenance: func(context.Context) error {
+			rec.push("tag-maintenance")
+			return nil
+		},
 	})
 
 	r.runPipeline(context.Background())
@@ -182,6 +191,15 @@ func TestRunPipelineSkipsMigrationWhenNoCrawler(t *testing.T) {
 	}
 	if !foundCleanup {
 		t.Fatalf("dedupe cleanup should still run when crawler is absent; calls=%v", rec.snapshot())
+	}
+	foundTagMaintenance := false
+	for _, c := range rec.snapshot() {
+		if c == "tag-maintenance" {
+			foundTagMaintenance = true
+		}
+	}
+	if !foundTagMaintenance {
+		t.Fatalf("tag maintenance should still run when crawler is absent; calls=%v", rec.snapshot())
 	}
 }
 

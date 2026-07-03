@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS videos (
     fingerprint_status TEXT DEFAULT 'pending',  -- pending / ready / failed
     fingerprint_error  TEXT DEFAULT '',
     parent_id        TEXT,
+    dir_name         TEXT DEFAULT '',           -- 所在目录名（扫盘时落库，供标签重算使用）
     title            TEXT NOT NULL,
     author           TEXT,
     tags             TEXT,                      -- JSON array
@@ -48,18 +49,25 @@ CREATE INDEX IF NOT EXISTS idx_videos_views ON videos(views DESC);
 
 -- 统一标签池
 CREATE TABLE IF NOT EXISTS tags (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    label      TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    aliases    TEXT NOT NULL DEFAULT '[]',       -- JSON array
-    source     TEXT NOT NULL DEFAULT 'user',     -- system / user / collection / legacy
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    label       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    aliases     TEXT NOT NULL DEFAULT '[]',       -- JSON array，展示用同义词
+    -- 匹配规则 JSON：{"keywords":[],"words":[],"excludes":[],"matchAvCode":bool}
+    -- 为空时匹配器按 label+aliases 兜底（等价旧版行为 + 短词保护）。
+    match_rules TEXT NOT NULL DEFAULT '{}',
+    source      TEXT NOT NULL DEFAULT 'user',     -- builtin / user / generated
+    origin      TEXT NOT NULL DEFAULT '',         -- crawler 等来源型标签标记；不参与匹配来源归一
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS video_tags (
     video_id   TEXT NOT NULL,
     tag_id     INTEGER NOT NULL,
-    source     TEXT NOT NULL DEFAULT 'auto',     -- auto / manual / legacy
+    -- auto=规则引擎 / manual=人工 / legacy=旧数据回填 / crawler=爬虫脚本或爬虫名 /
+    -- series=番号系列 / propagated=同类传播
+    source     TEXT NOT NULL DEFAULT 'auto',
+    evidence   TEXT NOT NULL DEFAULT '',          -- 命中证据，如 "文件名:翘臀"
     created_at INTEGER NOT NULL,
     PRIMARY KEY (video_id, tag_id)
 );
@@ -67,7 +75,7 @@ CREATE TABLE IF NOT EXISTS video_tags (
 CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_video_tags_video ON video_tags(video_id);
 
--- 用户手动删除过的非系统标签。自动扫描/迁移不再重新创建同名标签；
+-- 用户手动删除过的标签（包含 builtin/user/generated）。自动扫描/迁移不再重新创建同名标签；
 -- 管理员手动新建同名标签时会移除这里的记录。
 CREATE TABLE IF NOT EXISTS deleted_tags (
     label      TEXT PRIMARY KEY COLLATE NOCASE,

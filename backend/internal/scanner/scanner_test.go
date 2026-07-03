@@ -429,7 +429,7 @@ func TestRunReplacesExistingVideoTagsWithFixedFilenameTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	want := []string{"后入", "女大"}
+	want := []string{"女大", "后入"}
 	if !sameStrings(got.Tags, want) {
 		t.Fatalf("tags = %#v, want %#v", got.Tags, want)
 	}

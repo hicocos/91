@@ -42,11 +42,12 @@ var allowedUploadExtensions = map[string]struct{}{
 
 var allowedUploadTags = map[string]struct{}{
 	"奶子": {},
-	"臀":  {},
-	"口交": {},
 	"女大": {},
 	"人妻": {},
-	"AV": {},
+	"后入": {},
+	"制服": {},
+	"美臀": {},
+	"口交": {},
 }
 
 const maxSubtitleBytes = 20 << 20

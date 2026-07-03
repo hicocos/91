@@ -25,6 +25,7 @@ import (
 	"github.com/video-site/backend/internal/drives/p123"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/wopan"
+	"github.com/video-site/backend/internal/tagging"
 )
 
 type AdminServer struct {
@@ -69,6 +70,8 @@ type AdminServer struct {
 	OnDeleteVideo                  func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error)
 	OnStartBlacklistSourceDelete   func(BlacklistSourceDeleteRequest) bool
 	GetBlacklistSourceDeleteStatus func() BlacklistSourceDeleteStatus
+	OnStartTagRetag                func() bool
+	GetTagJobStatus                func() TagJobStatus
 	GetDriveGenerationStatuses     func() map[string]DriveGenerationStatuses
 	GetPreviewGenerationVideoIDs   func() map[string]bool
 	// OnTeaserEnabledChanged 在 per-drive 预览视频开关被切换后调用。
@@ -135,6 +138,17 @@ type NightlyJobStatus struct {
 	State          string `json:"state"`
 	Running        bool   `json:"running"`
 	Queued         bool   `json:"queued"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	LastFinishedAt string `json:"lastFinishedAt,omitempty"`
+}
+
+type TagJobStatus struct {
+	State          string `json:"state"`
+	Running        bool   `json:"running"`
+	Kind           string `json:"kind,omitempty"`
+	Total          int    `json:"total"`
+	Processed      int    `json:"processed"`
+	LastError      string `json:"lastError,omitempty"`
 	StartedAt      string `json:"startedAt,omitempty"`
 	LastFinishedAt string `json:"lastFinishedAt,omitempty"`
 }
@@ -231,7 +245,10 @@ func (a *AdminServer) Register(r chi.Router) {
 			// 标签
 			r.Get("/tags", a.handleListTags)
 			r.Post("/tags", a.handleCreateTag)
+			r.Put("/tags/{id}", a.handleUpdateTag)
 			r.Delete("/tags/{id}", a.handleDeleteTag)
+			r.Post("/tags/retag", a.handleStartTagRetag)
+			r.Get("/tags/jobs/status", a.handleTagJobStatus)
 
 			// 用户管理
 			r.Get("/users", a.handleListUsers)
@@ -954,6 +971,10 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := a.ensureCrawlerNameTag(r.Context(), name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	if existing != nil && existing.TeaserEnabled != teaserEnabled && a.OnTeaserEnabledChanged != nil {
 		a.OnTeaserEnabledChanged(id, teaserEnabled)
 	}
@@ -1104,6 +1125,10 @@ func (a *AdminServer) handleImportCrawlerScriptFile(w http.ResponseWriter, r *ht
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := a.ensureCrawlerNameTag(r.Context(), meta.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"scriptPath": scriptPath, "name": meta.Name})
 }
 
@@ -1172,7 +1197,23 @@ func (a *AdminServer) handleImportCrawlerScriptURL(w http.ResponseWriter, r *htt
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := a.ensureCrawlerNameTag(r.Context(), meta.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"scriptPath": scriptPath, "name": meta.Name, "sourceUrl": downloadURL.String()})
+}
+
+func (a *AdminServer) ensureCrawlerNameTag(ctx context.Context, name string) error {
+	if a == nil || a.Catalog == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	_, err := a.Catalog.EnsureCrawlerTag(ctx, name)
+	return err
 }
 
 func crawlerScriptDownloadURL(u *url.URL) *url.URL {
@@ -2080,8 +2121,37 @@ func (a *AdminServer) handleAdminListVideos(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
+	videoIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			videoIDs = append(videoIDs, item.ID)
+		}
+	}
+	tagMetadata, err := a.Catalog.ListVideoTagMetadata(r.Context(), videoIDs)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	mappedItems := mapAdminVideos(items)
+	for i := range mappedItems {
+		metadata := tagMetadata[mappedItems[i].ID]
+		if len(metadata) == 0 {
+			continue
+		}
+		mappedItems[i].TagSources = make(map[string]string, len(metadata))
+		mappedItems[i].TagEvidence = make(map[string]string, len(metadata))
+		for label, item := range metadata {
+			mappedItems[i].TagSources[label] = item.Source
+			if item.Evidence != "" {
+				mappedItems[i].TagEvidence[label] = item.Evidence
+			}
+		}
+		if len(mappedItems[i].TagEvidence) == 0 {
+			mappedItems[i].TagEvidence = nil
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": mapAdminVideos(items),
+		"items": mappedItems,
 		"total": total,
 		"page":  page,
 		"size":  size,
@@ -2503,6 +2573,11 @@ type createTagReq struct {
 	Aliases []string `json:"aliases"`
 }
 
+type updateTagReq struct {
+	Aliases    []string     `json:"aliases"`
+	MatchRules tagging.Rule `json:"matchRules"`
+}
+
 func (a *AdminServer) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	var body createTagReq
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -2520,6 +2595,54 @@ func (a *AdminServer) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *AdminServer) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid tag id"))
+		return
+	}
+	var body updateTagReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	tag, err := a.Catalog.UpdateTag(r.Context(), id, body.Aliases, body.MatchRules)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, err)
+		} else {
+			writeErr(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	classified, err := a.Catalog.ClassifyTagByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tag": tag, "classified": classified})
+}
+
+func (a *AdminServer) handleStartTagRetag(w http.ResponseWriter, _ *http.Request) {
+	if a.OnStartTagRetag == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("tag retag job is not configured"))
+		return
+	}
+	if !a.OnStartTagRetag() {
+		writeJSON(w, http.StatusConflict, map[string]any{"accepted": false})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
+func (a *AdminServer) handleTagJobStatus(w http.ResponseWriter, _ *http.Request) {
+	status := TagJobStatus{State: "idle"}
+	if a.GetTagJobStatus != nil {
+		status = a.GetTagJobStatus()
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 func (a *AdminServer) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -2531,8 +2654,6 @@ func (a *AdminServer) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			writeErr(w, http.StatusNotFound, err)
-		case errors.Is(err, catalog.ErrSystemTag):
-			writeErr(w, http.StatusBadRequest, err)
 		default:
 			writeErr(w, http.StatusInternalServerError, err)
 		}
@@ -2553,42 +2674,44 @@ type updateVideoReq struct {
 }
 
 type adminVideoDTO struct {
-	ID                string    `json:"id"`
-	DriveID           string    `json:"driveId"`
-	FileID            string    `json:"fileId"`
-	FileName          string    `json:"fileName"`
-	ContentHash       string    `json:"contentHash"`
-	SampledSHA256     string    `json:"sampledSha256"`
-	FingerprintStatus string    `json:"fingerprintStatus"`
-	FingerprintError  string    `json:"fingerprintError"`
-	ParentID          string    `json:"parentId"`
-	Title             string    `json:"title"`
-	Author            string    `json:"author"`
-	Tags              []string  `json:"tags"`
-	DurationSeconds   int       `json:"durationSeconds"`
-	Size              int64     `json:"size"`
-	Ext               string    `json:"ext"`
-	Quality           string    `json:"quality"`
-	ThumbnailURL      string    `json:"thumbnailUrl"`
-	PreviewFileID     string    `json:"previewFileId"`
-	PreviewLocal      string    `json:"previewLocal"`
-	PreviewStatus     string    `json:"previewStatus"`
-	TranscodeStatus   string    `json:"transcodeStatus"`
-	TranscodeError    string    `json:"transcodeError"`
-	TranscodedFileID  string    `json:"transcodedFileId"`
-	TranscodedSize    int64     `json:"transcodedSize"`
-	Views             int       `json:"views"`
-	LastViewedAt      time.Time `json:"lastViewedAt"`
-	Favorites         int       `json:"favorites"`
-	Comments          int       `json:"comments"`
-	Likes             int       `json:"likes"`
-	Dislikes          int       `json:"dislikes"`
-	Hidden            bool      `json:"hidden"`
-	Badges            []string  `json:"badges"`
-	Description       string    `json:"description"`
-	PublishedAt       time.Time `json:"publishedAt"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                string            `json:"id"`
+	DriveID           string            `json:"driveId"`
+	FileID            string            `json:"fileId"`
+	FileName          string            `json:"fileName"`
+	ContentHash       string            `json:"contentHash"`
+	SampledSHA256     string            `json:"sampledSha256"`
+	FingerprintStatus string            `json:"fingerprintStatus"`
+	FingerprintError  string            `json:"fingerprintError"`
+	ParentID          string            `json:"parentId"`
+	Title             string            `json:"title"`
+	Author            string            `json:"author"`
+	Tags              []string          `json:"tags"`
+	TagSources        map[string]string `json:"tagSources,omitempty"`
+	TagEvidence       map[string]string `json:"tagEvidence,omitempty"`
+	DurationSeconds   int               `json:"durationSeconds"`
+	Size              int64             `json:"size"`
+	Ext               string            `json:"ext"`
+	Quality           string            `json:"quality"`
+	ThumbnailURL      string            `json:"thumbnailUrl"`
+	PreviewFileID     string            `json:"previewFileId"`
+	PreviewLocal      string            `json:"previewLocal"`
+	PreviewStatus     string            `json:"previewStatus"`
+	TranscodeStatus   string            `json:"transcodeStatus"`
+	TranscodeError    string            `json:"transcodeError"`
+	TranscodedFileID  string            `json:"transcodedFileId"`
+	TranscodedSize    int64             `json:"transcodedSize"`
+	Views             int               `json:"views"`
+	LastViewedAt      time.Time         `json:"lastViewedAt"`
+	Favorites         int               `json:"favorites"`
+	Comments          int               `json:"comments"`
+	Likes             int               `json:"likes"`
+	Dislikes          int               `json:"dislikes"`
+	Hidden            bool              `json:"hidden"`
+	Badges            []string          `json:"badges"`
+	Description       string            `json:"description"`
+	PublishedAt       time.Time         `json:"publishedAt"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
 }
 
 func mapAdminVideo(v *catalog.Video) adminVideoDTO {
@@ -2789,9 +2912,10 @@ func (a *AdminServer) handleRegenFailedFingerprints(w http.ResponseWriter, r *ht
 //
 // 注意：早期的全局 previewEnabled 字段已经下沉为每盘 teaser_enabled，
 // 不再出现在这里；前端要切换某个盘的预览视频生成请用 POST /admin/api/drives 上传
-// teaserEnabled 字段。settings 目前只保留全站主题。
+// teaserEnabled 字段。settings 目前保留全站主题和标签自动生成开关。
 type settingsDTO struct {
-	Theme string `json:"theme"`
+	Theme                   string `json:"theme"`
+	AutoGenerateTagsEnabled bool   `json:"autoGenerateTagsEnabled"`
 }
 
 func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -2801,8 +2925,18 @@ func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) 
 			theme = v
 		}
 	}
+	autoGenerateTagsEnabled := true
+	if a.Catalog != nil {
+		enabled, err := a.Catalog.AutoGenerateTagsEnabled(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		autoGenerateTagsEnabled = enabled
+	}
 	writeJSON(w, http.StatusOK, settingsDTO{
-		Theme: theme,
+		Theme:                   theme,
+		AutoGenerateTagsEnabled: autoGenerateTagsEnabled,
 	})
 }
 
@@ -2826,11 +2960,30 @@ func (a *AdminServer) handlePutSettings(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	if v, ok := raw["autoGenerateTagsEnabled"]; ok && a.Catalog != nil {
+		var enabled bool
+		if err := json.Unmarshal(v, &enabled); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := a.Catalog.SetAutoGenerateTagsEnabled(r.Context(), enabled); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 
 	// 回显当前值
-	resp := settingsDTO{}
+	resp := settingsDTO{AutoGenerateTagsEnabled: true}
 	if a.GetTheme != nil {
 		resp.Theme = a.GetTheme()
+	}
+	if a.Catalog != nil {
+		enabled, err := a.Catalog.AutoGenerateTagsEnabled(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		resp.AutoGenerateTagsEnabled = enabled
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

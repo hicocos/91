@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { fetchTags, type TagItem } from "@/data/videos";
 
@@ -7,6 +7,10 @@ export function TagCloud() {
   const activeTag = params.get("tag");
   const [tags, setTags] = useState<TagItem[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const visibleTags = useMemo(
+    () => tags.filter((tag) => typeof tag.count !== "number" || tag.count > 0),
+    [tags]
+  );
 
   useEffect(() => {
     let active = true;
@@ -89,13 +93,13 @@ export function TagCloud() {
       slider.removeEventListener("wheel", handleWheel);
       slider.removeEventListener("click", handleClick, { capture: true });
     };
-  }, [tags]);
+  }, [visibleTags]);
 
-  if (tags.length === 0) return null;
+  if (visibleTags.length === 0) return null;
 
   // 将标签分为奇偶两行，使其横向自由流式排布，不发生强制的列对齐
-  const row1 = tags.filter((_, idx) => idx % 2 === 0);
-  const row2 = tags.filter((_, idx) => idx % 2 !== 0);
+  const row1 = visibleTags.filter((_, idx) => idx % 2 === 0);
+  const row2 = visibleTags.filter((_, idx) => idx % 2 !== 0);
 
   const renderTag = (tag: TagItem) => (
     <Link

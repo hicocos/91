@@ -14,6 +14,7 @@
 //	         honored within this call)
 //	Phase 4: full-library duplicate video maintenance:
 //	         exact size+sampled_sha256 dedupe, then title/duration/thumbnail dedupe
+//	Phase 5: tag maintenance
 //
 // A 6h soft deadline guards each pipeline run; phases check deadline at their
 // boundaries and exit cleanly if exceeded (no in-flight ffmpeg / upload is
@@ -91,6 +92,10 @@ type Config struct {
 	// removes duplicate catalog rows and local generated assets, but never
 	// deletes cloud source files.
 	RunDedupeAssetCleanup func(ctx context.Context) error
+
+	// RunTagMaintenance performs incremental retagging, series synchronization,
+	// propagation after dedupe maintenance.
+	RunTagMaintenance func(ctx context.Context) error
 
 	// Now is injected for tests; nil → time.Now.
 	Now func() time.Time
@@ -358,6 +363,7 @@ func (r *Runner) runPipeline(ctx context.Context) {
 	if len(crawlerIDs) == 0 {
 		log.Printf("[nightly] phase 2/3 skipped: no crawler configured")
 		r.runDedupeAssetCleanupPhase(ctx)
+		r.runTagMaintenancePhase(ctx)
 		return
 	}
 	log.Printf("[nightly] phase 2: crawling %d crawler drive(s)", len(crawlerIDs))
@@ -386,6 +392,7 @@ func (r *Runner) runPipeline(ctx context.Context) {
 	}
 
 	r.runDedupeAssetCleanupPhase(ctx)
+	r.runTagMaintenancePhase(ctx)
 }
 
 // checkDeadline returns true when ctx is already done (runner shutting down or
@@ -409,6 +416,19 @@ func (r *Runner) waitIdle(ctx context.Context, phase string) error {
 		return err
 	}
 	return nil
+}
+
+func (r *Runner) runTagMaintenancePhase(ctx context.Context) {
+	if r.checkDeadline(ctx, "phase 5") {
+		return
+	}
+	log.Printf("[nightly] phase 5: tag maintenance")
+	if r.cfg.RunTagMaintenance == nil {
+		return
+	}
+	if err := r.cfg.RunTagMaintenance(ctx); err != nil {
+		log.Printf("[nightly] phase 5 tag maintenance: %v", err)
+	}
 }
 
 func (r *Runner) runDedupeAssetCleanupPhase(ctx context.Context) {

@@ -182,9 +182,15 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 		if parsed.Title == "" {
 			parsed.Title = strings.TrimSuffix(e.Name, ext)
 		}
-		tags := parsed.Tags
-		if matched, err := s.Catalog.MatchTags(ctx, e.Name+" "+dirName+" "+parsed.Author); err == nil {
-			tags = mergeTags(tags, matched)
+		// 标签走统一匹配引擎（catalog 内部按规则版本缓存编译结果，
+		// 不再像旧版那样每个文件跑一次全量标签查询）。
+		assignments, err := s.Catalog.MatchTagAssignments(ctx, parsed.Title, e.Name, parsed.Author, dirName)
+		if err != nil {
+			assignments = nil
+		}
+		tags := make([]string, 0, len(assignments))
+		for _, a := range assignments {
+			tags = append(tags, a.Label)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -200,6 +206,10 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 				patch.ContentHash = e.Hash
 				existing.ContentHash = e.Hash
 			}
+			if dirName != "" && existing.DirName != dirName {
+				patch.DirName = dirName
+				existing.DirName = dirName
+			}
 			if e.Name != "" && existing.FileName != e.Name {
 				patch.FileName = e.Name
 				existing.FileName = e.Name
@@ -208,7 +218,7 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 				patch.Author = parsed.Author
 				patch.AuthorSet = true
 			}
-			if patch.ContentHash != "" || patch.FileName != "" || patch.TitleSet || patch.AuthorSet {
+			if patch.ContentHash != "" || patch.FileName != "" || patch.DirName != "" || patch.TitleSet || patch.AuthorSet {
 				_ = s.Catalog.UpdateVideoMeta(ctx, id, patch)
 				if err := ctx.Err(); err != nil {
 					return err
@@ -220,11 +230,13 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !sameTags(existing.Tags, tags) {
-				_ = s.Catalog.SetAutoVideoTags(ctx, id, tags)
-				if err := ctx.Err(); err != nil {
-					return err
-				}
+			// 引擎标签整组替换（内部先比对，无变化时不落盘）；
+			// 人工锁定和爬虫/系列/传播来源的行不受影响。
+			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, id, assignments); err != nil {
+				log.Printf("[scanner] retag %s error: %v", id, err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			continue
 		}
@@ -244,9 +256,9 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			FileName:      e.Name,
 			ContentHash:   e.Hash,
 			ParentID:      e.ParentID,
+			DirName:       dirName,
 			Title:         parsed.Title,
 			Author:        parsed.Author,
-			Tags:          tags,
 			Ext:           strings.TrimPrefix(ext, "."),
 			Quality:       "HD",
 			Size:          e.Size,
@@ -261,6 +273,13 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			}
 			log.Printf("[scanner] upsert %s error: %v", v.Title, err)
 			continue
+		}
+		// 标签行（带命中证据）在 upsert 后统一落库。
+		if len(assignments) > 0 {
+			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, v.ID, assignments); err != nil {
+				log.Printf("[scanner] tag %s error: %v", v.ID, err)
+			}
+			v.Tags = tags
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -305,33 +324,6 @@ func (s *Scanner) findDuplicateByFileSignature(ctx context.Context, fileName str
 		return nil
 	}
 	return dup
-}
-
-func sameTags(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func mergeTags(lists ...[]string) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, list := range lists {
-		for _, tag := range list {
-			if tag == "" || seen[tag] {
-				continue
-			}
-			seen[tag] = true
-			out = append(out, tag)
-		}
-	}
-	return out
 }
 
 func videoIDFilePart(fileID string) string {

@@ -6,6 +6,10 @@ const homePageSource = readFileSync(
   new URL("../src/pages/HomePage.tsx", import.meta.url),
   "utf8"
 );
+const tagCloudSource = readFileSync(
+  new URL("../src/components/TagCloud.tsx", import.meta.url),
+  "utf8"
+);
 const layoutCss = readFileSync(
   new URL("../src/styles/layout.css", import.meta.url),
   "utf8"
@@ -27,7 +31,7 @@ function ruleBody(css: string, selector: string): string {
 }
 
 test("home page refresh button shares back-to-top slot until back-to-top is visible", () => {
-  assert.match(homePageSource, /import \{ RefreshCw \} from "lucide-react"/);
+  assert.match(homePageSource, /import \{ Film, RefreshCw \} from "lucide-react"/);
   assert.match(homePageSource, /const refreshHome = useCallback\(async \(\) =>/);
   assert.match(homePageSource, /fetchHomeVideos\(excludeIds\)/);
   assert.match(homePageSource, /fetchListing\(1,\s*DESKTOP_COUNT,\s*\{ sort: "latest", includeTotal: false \}\)/);
@@ -50,4 +54,22 @@ test("home page refresh button shares back-to-top slot until back-to-top is visi
   assert.match(appShellSource, /<BackToTop onVisibilityChange=\{setBackToTopVisible\} \/>/);
   assert.match(backToTopSource, /onVisibilityChange\?: \(visible: boolean\) => void/);
   assert.match(backToTopSource, /onVisibilityChange\?\.\(nextVisible\)/);
+});
+
+test("home page hides empty tag cloud and uses one empty library state", () => {
+  assert.match(tagCloudSource, /const visibleTags = useMemo/);
+  assert.match(tagCloudSource, /typeof tag\.count !== "number" \|\| tag\.count > 0/);
+  assert.match(tagCloudSource, /if \(visibleTags\.length === 0\) return null/);
+  assert.match(tagCloudSource, /const row1 = visibleTags\.filter/);
+
+  assert.match(homePageSource, /const homeLoading = rankingLoading \|\| latestLoading/);
+  assert.match(homePageSource, /const hasAnyVideos = ranking\.length > 0 \|\| latest\.length > 0/);
+  assert.match(homePageSource, /const showEmptyHome = !homeLoading && !hasAnyVideos/);
+  assert.match(homePageSource, /className="home-empty"/);
+  assert.match(homePageSource, /当前还没有可播放的视频/);
+
+  const empty = ruleBody(layoutCss, ".home-empty");
+  assert.match(empty, /min-height\s*:\s*240px/);
+  assert.match(empty, /border\s*:\s*1px dashed var\(--border-default\)/);
+  assert.match(empty, /border-radius\s*:\s*8px/);
 });

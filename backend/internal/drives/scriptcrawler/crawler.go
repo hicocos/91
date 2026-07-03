@@ -541,12 +541,41 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 	if author == "" {
 		author = c.cfg.Driver.ID()
 	}
-	tags := cleanStringList(item.Tags)
-	if matched, err := c.cfg.Catalog.MatchTags(ctx, title+" "+author+" "+strings.Join(tags, " ")); err == nil {
-		tags = mergeStringLists(tags, matched)
+	// 标签策略：
+	//   1. 规则引擎按标题/文件名/作者匹配站内标签池 → source=auto；
+	//   2. 脚本返回的 tags 只挂已存在的标签，不再自动创建新标签（治理长尾）→ source=crawler；
+	//   3. 爬虫名标签总是确保存在并强制挂载（不受自动生成开关和人工锁定影响）。
+	var tagAssignments []catalog.TagAssignment
+	tagLabelSeen := map[string]bool{}
+	crawlerTagLabel := ""
+	appendAssignment := func(a catalog.TagAssignment) {
+		key := strings.ToLower(strings.TrimSpace(a.Label))
+		if key == "" || tagLabelSeen[key] {
+			return
+		}
+		tagLabelSeen[key] = true
+		tagAssignments = append(tagAssignments, a)
+	}
+	if matched, err := c.cfg.Catalog.MatchTagAssignments(ctx, title, videoFile, author, ""); err == nil {
+		for _, a := range matched {
+			appendAssignment(a)
+		}
+	}
+	for _, scriptTag := range cleanStringList(item.Tags) {
+		label, ok, err := c.cfg.Catalog.LookupTagLabel(ctx, scriptTag)
+		if err != nil || !ok {
+			continue
+		}
+		appendAssignment(catalog.TagAssignment{Label: label, Source: "crawler", Evidence: "脚本标签"})
 	}
 	if crawlerTag := c.crawlerTagName(); crawlerTag != "" {
-		tags = mergeStringLists(tags, []string{crawlerTag})
+		tag, err := c.cfg.Catalog.EnsureCrawlerTag(ctx, crawlerTag)
+		switch {
+		case err == nil:
+			crawlerTagLabel = tag.Label
+		default:
+			log.Printf("[scriptcrawler] ensure crawler tag %q: %v", crawlerTag, err)
+		}
 	}
 	publishedAt := now
 	if parsed := parsePublishedAt(item.PublishedAt); !parsed.IsZero() {
@@ -567,7 +596,6 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		FileName:        videoFile,
 		Title:           title,
 		Author:          author,
-		Tags:            tags,
 		DurationSeconds: item.DurationSeconds,
 		Size:            size,
 		Ext:             strings.TrimPrefix(videoExt, "."),
@@ -667,6 +695,31 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 	if err := c.cfg.Catalog.UpsertVideo(ctx, v); err != nil {
 		_ = os.Remove(videoPath)
 		return false, err
+	}
+	if len(tagAssignments) > 0 {
+		if _, err := c.cfg.Catalog.AddVideoTagAssignments(ctx, v.ID, tagAssignments); err != nil {
+			log.Printf("[scriptcrawler] drive=%s source_id=%s attach tags: %v", c.cfg.Driver.ID(), sourceID, err)
+		} else {
+			for _, a := range tagAssignments {
+				v.Tags = append(v.Tags, a.Label)
+			}
+		}
+	}
+	if crawlerTagLabel != "" {
+		if _, err := c.cfg.Catalog.EnsureCrawlerTagForVideo(ctx, v.ID, crawlerTagLabel); err != nil {
+			log.Printf("[scriptcrawler] drive=%s source_id=%s attach crawler tag %q: %v", c.cfg.Driver.ID(), sourceID, crawlerTagLabel, err)
+		} else {
+			seen := false
+			for _, label := range v.Tags {
+				if strings.EqualFold(label, crawlerTagLabel) {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				v.Tags = append(v.Tags, crawlerTagLabel)
+			}
+		}
 	}
 	if err := c.cfg.Catalog.MarkCrawlerSourceSeen(ctx, Kind, c.cfg.Driver.ID(), sourceID, "imported", v.ID, sampled, size); err != nil {
 		log.Printf("[scriptcrawler] drive=%s source_id=%s mark imported seen: %v", c.cfg.Driver.ID(), sourceID, err)

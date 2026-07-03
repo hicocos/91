@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { Film, RefreshCw } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
@@ -126,6 +126,9 @@ export default function HomePage() {
   const displayCount = isMobile ? MOBILE_COUNT : DESKTOP_COUNT;
   const ranking = rankingVideos.slice(0, displayCount);
   const latest = latestVideos.slice(0, displayCount);
+  const homeLoading = rankingLoading || latestLoading;
+  const hasAnyVideos = ranking.length > 0 || latest.length > 0;
+  const showEmptyHome = !homeLoading && !hasAnyVideos;
 
   return (
     <AppShell mobileAutoHideNav>
@@ -135,20 +138,31 @@ export default function HomePage() {
         <TagCloud />
       </div>
 
-      <div className="container page-section">
-        <SectionHeader title="随机推荐" extra={`随机展示 ${ranking.length} 个作品`} />
-        <VideoGrid
-          videos={ranking}
-          loading={rankingLoading}
-          priorityCount={Math.min(4, displayCount)}
-          skeletonCount={displayCount}
-        />
-      </div>
+      {showEmptyHome ? (
+        <div className="container page-section">
+          <div className="home-empty" role="status">
+            <Film size={30} aria-hidden="true" />
+            <span>当前还没有可播放的视频</span>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="container page-section">
+            <SectionHeader title="随机推荐" extra={`随机展示 ${ranking.length} 个作品`} />
+            <VideoGrid
+              videos={ranking}
+              loading={rankingLoading}
+              priorityCount={Math.min(4, displayCount)}
+              skeletonCount={displayCount}
+            />
+          </div>
 
-      <div className="container page-section">
-        <SectionHeader title="最新视频" extra={latest.length > 0 ? `共 ${latest.length} 个` : undefined} />
-        <VideoGrid videos={latest} loading={latestLoading} skeletonCount={displayCount} />
-      </div>
+          <div className="container page-section">
+            <SectionHeader title="最新视频" extra={latest.length > 0 ? `共 ${latest.length} 个` : undefined} />
+            <VideoGrid videos={latest} loading={latestLoading} skeletonCount={displayCount} />
+          </div>
+        </>
+      )}
 
       <button
         type="button"

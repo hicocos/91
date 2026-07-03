@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Film, Plus, RefreshCw, Search, Tags, Trash2 } from "lucide-react";
+import { Film, Pencil, Plus, RefreshCw, Search, Settings2, Trash2 } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "./ToastContext";
 import { ConfirmModal } from "./ConfirmModal";
+import { Modal } from "./Modal";
 
 const DESKTOP_TAGS_PAGE_SIZE = 25;
 const MOBILE_TAGS_PAGE_SIZE = 8;
 const TAGS_MOBILE_QUERY = "(max-width: 640px)";
+const TAG_SOURCE_FILTERS = ["builtin", "user", "generated"];
 
 type DeleteConfirmState =
   | { kind: "single"; tag: api.AdminTag }
@@ -27,6 +29,12 @@ export function TagsPage() {
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [editingTag, setEditingTag] = useState<api.AdminTag | null>(null);
+  const [retagConfirmOpen, setRetagConfirmOpen] = useState(false);
+  const [jobStatus, setJobStatus] = useState<api.TagJobStatus | null>(null);
+  const [jobStarting, setJobStarting] = useState<"retag" | null>(null);
+  const [autoGenerateTagsEnabled, setAutoGenerateTagsEnabled] = useState(true);
+  const [autoGenerateTagsSaving, setAutoGenerateTagsSaving] = useState(false);
   const pageSize = useTagsPageSize();
   const [page, setPage] = useState(1);
   const { show } = useToast();
@@ -47,7 +55,61 @@ export function TagsPage() {
 
   useEffect(() => {
     refresh();
+    void api.getTagJobStatus().then(setJobStatus).catch(() => undefined);
+    void api
+      .getSettings()
+      .then((settings) => {
+        if (typeof settings.autoGenerateTagsEnabled === "boolean") {
+          setAutoGenerateTagsEnabled(settings.autoGenerateTagsEnabled);
+        }
+      })
+      .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!jobStatus?.running) return;
+    let active = true;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const next = await api.getTagJobStatus();
+        if (!active) return;
+        setJobStatus(next);
+        if (next.running) {
+          timer = window.setTimeout(poll, 1500);
+          return;
+        }
+        show(
+          next.state === "completed"
+            ? `标签整理完成，共处理 ${next.processed} 个视频`
+            : next.lastError || "标签任务未完成",
+          next.state === "completed" ? "success" : "error"
+        );
+        void refresh();
+      } catch {
+        if (active) timer = window.setTimeout(poll, 2000);
+      }
+    };
+    timer = window.setTimeout(poll, 1000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [jobStatus?.running]);
+
+  async function startRetag() {
+    setJobStarting("retag");
+    try {
+      await api.startTagRetag();
+      setRetagConfirmOpen(false);
+      setJobStatus(await api.getTagJobStatus());
+      show("已开始后台重新整理所有标签", "info");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "启动重算失败", "error");
+    } finally {
+      setJobStarting(null);
+    }
+  }
 
   async function handleCreate() {
     const cleanLabel = label.trim();
@@ -66,8 +128,26 @@ export function TagsPage() {
     }
   }
 
+  async function toggleAutoGenerateTags() {
+    const next = !autoGenerateTagsEnabled;
+    const previous = autoGenerateTagsEnabled;
+    setAutoGenerateTagsEnabled(next);
+    setAutoGenerateTagsSaving(true);
+    try {
+      const settings = await api.updateSettings({ autoGenerateTagsEnabled: next });
+      if (typeof settings.autoGenerateTagsEnabled === "boolean") {
+        setAutoGenerateTagsEnabled(settings.autoGenerateTagsEnabled);
+      }
+      show(next ? "已开启自动生成标签" : "已关闭自动生成标签", "success");
+    } catch (e) {
+      setAutoGenerateTagsEnabled(previous);
+      show(e instanceof Error ? e.message : "保存设置失败", "error");
+    } finally {
+      setAutoGenerateTagsSaving(false);
+    }
+  }
+
   function handleDelete(tag: api.AdminTag) {
-    if (tag.source === "system") return;
     setDeleteConfirm({ kind: "single", tag });
   }
 
@@ -112,12 +192,20 @@ export function TagsPage() {
     const ids = deleteConfirm.ids;
     setBulkDeleting(true);
     try {
-      const results = await Promise.allSettled(
-        ids.map((id) => api.deleteTag(id))
+      let success = 0;
+      for (const id of ids) {
+        try {
+          await api.deleteTag(id);
+          success++;
+        } catch {
+          // Keep deleting the rest of the selected tags; report aggregate failure below.
+        }
+      }
+      const failed = ids.length - success;
+      show(
+        failed ? `批量删除完成，成功 ${success} / ${ids.length} 个，失败 ${failed} 个` : `已删除 ${success} 个标签`,
+        failed ? (success > 0 ? "info" : "error") : "success"
       );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      const failed = ids.length - ok;
-      show(failed ? `已删除 ${ok} 个，${failed} 个失败` : `已删除 ${ok} 个标签`, failed ? "error" : "success");
       setSelected(new Set());
       setSelectMode(false);
       setDeleteConfirm(null);
@@ -128,24 +216,14 @@ export function TagsPage() {
   }
 
   const stats = useMemo(() => {
-    let totalVideos = 0;
-    let systemCount = 0;
-    let userCount = 0;
-    let legacyCount = 0;
+    const sourceCounts: Record<string, number> = {};
 
     tags.forEach((t) => {
-      totalVideos += t.count ?? 0;
-      if (t.source === "system") systemCount++;
-      else if (t.source === "user") userCount++;
-      else if (t.source === "legacy") legacyCount++;
+      sourceCounts[t.source] = (sourceCounts[t.source] ?? 0) + 1;
     });
 
     return {
-      totalTags: tags.length,
-      totalVideos,
-      systemCount,
-      userCount,
-      legacyCount,
+      sourceCounts,
     };
   }, [tags]);
 
@@ -181,32 +259,28 @@ export function TagsPage() {
   }, [totalPages]);
 
   const deletablePageTags = useMemo(
-    () => pagedTags.filter((t) => t.source !== "system"),
+    () => pagedTags,
     [pagedTags]
   );
   const allSelected =
     deletablePageTags.length > 0 && deletablePageTags.every((t) => selected.has(t.id));
 
-  function toggleSelectAll() {
+  function selectPageTags() {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (allSelected) deletablePageTags.forEach((t) => next.delete(t.id));
-      else deletablePageTags.forEach((t) => next.add(t.id));
+      deletablePageTags.forEach((t) => next.add(t.id));
       return next;
     });
   }
 
   return (
-    <section>
+    <section className={`admin-tags-page${selectMode ? " has-bulk-actions" : ""}`}>
       <header className="admin-page__header">
         <h1 className="admin-page__title">标签管理</h1>
-        <button type="button" className="admin-btn" onClick={refresh}>
-          <RefreshCw size={13} /> 刷新
-        </button>
       </header>
 
       <div className="admin-tags-layout">
-        {/* 左栏：创建与统计 */}
+        {/* 左栏：创建与策略 */}
         <div>
           <div className="admin-card">
             <div className="admin-card__title">
@@ -249,17 +323,27 @@ export function TagsPage() {
 
           <div className="admin-card">
             <div className="admin-card__title">
-              <Tags size={15} /> 标签总览
+              <Settings2 size={15} /> 标签策略
             </div>
-            <div className="admin-tag-stats-list">
-              <div className="admin-tag-stat-item">
-                <span>总标签数</span>
-                <strong>{stats.totalTags}</strong>
-              </div>
-              <div className="admin-tag-stat-item">
-                <span>关联视频次</span>
-                <strong>{stats.totalVideos}</strong>
-              </div>
+            <div
+              className={`admin-tag-setting-toggle${autoGenerateTagsEnabled ? " is-on" : ""}${
+                autoGenerateTagsSaving ? " is-saving" : ""
+              }`}
+            >
+              <span className="admin-tag-setting-toggle__title">自动生成标签</span>
+              <button
+                type="button"
+                className="admin-tag-setting-toggle__switch"
+                onClick={toggleAutoGenerateTags}
+                disabled={autoGenerateTagsSaving}
+                role="switch"
+                aria-checked={autoGenerateTagsEnabled}
+                aria-label="自动生成标签"
+              >
+                <span className="admin-tag-setting-toggle__switch-text">
+                  {autoGenerateTagsEnabled ? "ON" : "OFF"}
+                </span>
+              </button>
             </div>
           </div>
         </div>
@@ -286,65 +370,41 @@ export function TagsPage() {
               >
                 全部 ({tags.length})
               </button>
-              <button
-                type="button"
-                className={`admin-tags-filter-tab ${filterSource === "system" ? "is-active" : ""}`}
-                onClick={() => setFilterSource("system")}
-              >
-                系统 ({stats.systemCount})
-              </button>
-              <button
-                type="button"
-                className={`admin-tags-filter-tab ${filterSource === "user" ? "is-active" : ""}`}
-                onClick={() => setFilterSource("user")}
-              >
-                用户 ({stats.userCount})
-              </button>
-              {stats.legacyCount > 0 && (
+              {TAG_SOURCE_FILTERS.filter((source) => (stats.sourceCounts[source] ?? 0) > 0).map((source) => (
                 <button
+                  key={source}
                   type="button"
-                  className={`admin-tags-filter-tab ${filterSource === "legacy" ? "is-active" : ""}`}
-                  onClick={() => setFilterSource("legacy")}
+                  className={`admin-tags-filter-tab ${filterSource === source ? "is-active" : ""}`}
+                  onClick={() => setFilterSource(source)}
                 >
-                  旧数据 ({stats.legacyCount})
+                  {sourceLabel(source)} ({stats.sourceCounts[source]})
                 </button>
-              )}
+              ))}
             </div>
 
-            <button
-              type="button"
-              className={`admin-btn ${selectMode ? "is-primary" : ""}`}
-              onClick={toggleSelectMode}
-            >
-              <CheckSquare size={13} /> {selectMode ? "退出批量" : "批量删除"}
-            </button>
-          </div>
-
-          {selectMode && (
-            <div className="admin-tags-bulkbar">
-              <label className="admin-check">
-                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
-                <span>全选本页 ({deletablePageTags.length})</span>
-              </label>
-              <span className="admin-tags-bulkbar__count">已选 {selected.size} 个</span>
+            <div className="admin-tags-toolbar-actions">
+              {jobStatus?.running && (
+                <span className="admin-tags-job-status">
+                  整理标签 {jobStatus.processed}/{jobStatus.total || "?"}
+                </span>
+              )}
               <button
                 type="button"
                 className="admin-btn"
-                onClick={() => setSelected(new Set())}
-                disabled={selected.size === 0}
+                onClick={() => setRetagConfirmOpen(true)}
+                disabled={!!jobStatus?.running || jobStarting !== null}
               >
-                清空
+                <RefreshCw size={13} /> 重新整理所有标签
               </button>
               <button
                 type="button"
-                className="admin-btn is-danger"
-                onClick={handleBulkDelete}
-                disabled={selected.size === 0 || bulkDeleting}
+                className={`admin-btn ${selectMode ? "is-primary" : ""}`}
+                onClick={toggleSelectMode}
               >
-                <Trash2 size={13} /> {bulkDeleting ? "删除中..." : `删除选中 (${selected.size})`}
+                {selectMode ? "退出批量" : "批量删除"}
               </button>
             </div>
-          )}
+          </div>
 
           {loading ? (
             <div className="admin-loading-state">
@@ -367,7 +427,7 @@ export function TagsPage() {
             <>
               <div className="admin-tags-grid">
                 {pagedTags.map((tag) => {
-                  const selectable = selectMode && tag.source !== "system";
+                  const selectable = selectMode;
                   const isSelected = selected.has(tag.id);
                   const cardClass = `admin-tag-card${selectable ? " is-selectable" : ""}${
                     selectable && isSelected ? " is-selected" : ""
@@ -375,17 +435,9 @@ export function TagsPage() {
                   const cardContent = (
                     <>
                       <div className="admin-tag-card__head">
-                        {selectable && (
-                          <input
-                            type="checkbox"
-                            className="admin-tag-card__check"
-                            checked={isSelected}
-                            onChange={() => toggleSelect(tag.id)}
-                          />
-                        )}
                         <span className="admin-tag-card__title">{tag.label}</span>
                         <span className="admin-tag-card__source-badge" data-source={tag.source}>
-                          {sourceLabel(tag.source)}
+                          {sourceLabel(tag.source, tag)}
                         </span>
                       </div>
 
@@ -399,14 +451,25 @@ export function TagsPage() {
                         </div>
                       )}
 
-	                      <div className="admin-tag-card__footer">
+                      <div className="admin-tag-card__footer">
                         <span className="admin-tag-card__count">
                           <Film size={13} />
                           <strong>{tag.count}</strong> 视频
                         </span>
                         <div className="admin-tag-card__footer-actions">
                           <span className="admin-tag-card__id">#{tag.id}</span>
-                          {!selectMode && tag.source !== "system" && (
+                          {!selectMode && (
+                            <button
+                              type="button"
+                              className="admin-tag-card__edit"
+                              onClick={() => setEditingTag(tag)}
+                              aria-label={`编辑标签 ${tag.label}`}
+                            >
+                              <Pencil size={11} />
+                              <span>编辑</span>
+                            </button>
+                          )}
+                          {!selectMode && (
                             <button
                               type="button"
                               className="admin-tag-card__delete"
@@ -418,14 +481,21 @@ export function TagsPage() {
                               <span>{deletingId === tag.id ? "删除中" : "删除"}</span>
                             </button>
                           )}
-	                        </div>
-	                      </div>
-	                    </>
-	                  );
+                        </div>
+                      </div>
+                    </>
+                  );
                   return selectable ? (
-                    <label key={tag.id} className={cardClass}>
+                    <button
+                      key={tag.id}
+                      type="button"
+                      className={cardClass}
+                      onClick={() => toggleSelect(tag.id)}
+                      aria-pressed={isSelected}
+                      aria-label={`${isSelected ? "取消选中" : "选中"}标签 ${tag.label}`}
+                    >
                       {cardContent}
-                    </label>
+                    </button>
                   ) : (
                     <div key={tag.id} className={cardClass}>
                       {cardContent}
@@ -477,6 +547,63 @@ export function TagsPage() {
           )}
         </div>
       </div>
+      {selectMode && (
+        <div className="admin-tags-bulk-toolbar" role="region" aria-label="标签批量操作">
+          <div className="admin-tags-bulk-actions">
+            <span className="admin-tags-bulk-actions__count">已选择 {selected.size} 项</span>
+            <button
+              type="button"
+              className="admin-btn admin-tags-bulk-actions__btn admin-tags-bulk-actions__select-page"
+              onClick={selectPageTags}
+              disabled={deletablePageTags.length === 0 || allSelected}
+            >
+              全选本页
+            </button>
+            <button
+              type="button"
+              className="admin-btn admin-tags-bulk-actions__btn"
+              onClick={() => setSelected(new Set())}
+              disabled={selected.size === 0}
+            >
+              取消选中
+            </button>
+            <button
+              type="button"
+              className="admin-btn is-danger admin-tags-bulk-actions__btn"
+              onClick={handleBulkDelete}
+              disabled={selected.size === 0 || bulkDeleting}
+            >
+              <Trash2 size={13} /> {bulkDeleting ? "删除中..." : "删除选中"}
+            </button>
+          </div>
+        </div>
+      )}
+      {editingTag && (
+        <EditTagModal
+          tag={editingTag}
+          onClose={() => setEditingTag(null)}
+          onSaved={async () => {
+            setEditingTag(null);
+            await refresh();
+          }}
+        />
+      )}
+      <ConfirmModal
+        open={retagConfirmOpen}
+        title="重新整理所有标签"
+        message="将清理普通自动生成标签、自动匹配关系和标签墓碑，再按当前设置重新整理标签。"
+        details={[
+          "会保留自定义、内置和爬虫脚本等非普通自动生成标签；内置标签会在清空墓碑后恢复。",
+          "如果“自动生成标签”已开启，会重新执行自动匹配和番号系列维护；关闭时只执行清理和非自动整理。",
+          "任务在后台分批执行，运行期间不能同时启动另一个标签整理任务。",
+        ]}
+        confirmText="开始整理"
+        loading={jobStarting === "retag"}
+        onCancel={() => {
+          if (jobStarting !== "retag") setRetagConfirmOpen(false);
+        }}
+        onConfirm={startRetag}
+      />
       <ConfirmModal
         open={!!deleteConfirm}
         title={deleteConfirm?.kind === "bulk" ? "删除选中标签" : "删除标签"}
@@ -496,6 +623,113 @@ export function TagsPage() {
         onConfirm={confirmDelete}
       />
     </section>
+  );
+}
+
+function EditTagModal({
+  tag,
+  onClose,
+  onSaved,
+}: {
+  tag: api.AdminTag;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [aliases, setAliases] = useState((tag.aliases ?? []).join(", "));
+  const [keywords, setKeywords] = useState((tag.matchRules?.keywords ?? []).join(", "));
+  const [words, setWords] = useState((tag.matchRules?.words ?? []).join(", "));
+  const [excludes, setExcludes] = useState((tag.matchRules?.excludes ?? []).join(", "));
+  const [matchAvCode, setMatchAvCode] = useState(!!tag.matchRules?.matchAvCode);
+  const [saving, setSaving] = useState(false);
+  const { show } = useToast();
+
+  async function save() {
+    setSaving(true);
+    try {
+      const result = await api.updateTag(tag.id, splitList(aliases), {
+        keywords: splitList(keywords),
+        words: splitList(words),
+        excludes: splitList(excludes),
+        matchAvCode,
+      });
+      show(`规则已保存，新匹配 ${result.classified} 个视频`, "success");
+      await onSaved();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "保存标签规则失败", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      title={`编辑标签：${tag.label}`}
+      className="admin-modal--tag-rules"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="admin-btn" onClick={onClose} disabled={saving}>
+            取消
+          </button>
+          <button type="button" className="admin-btn is-primary" onClick={save} disabled={saving}>
+            {saving ? "保存中..." : "保存规则"}
+          </button>
+        </>
+      }
+    >
+      <div className="admin-form admin-tag-rule-form">
+        <div className="admin-form__row">
+          <label htmlFor="admin-tag-rule-aliases">别名</label>
+          <input
+            id="admin-tag-rule-aliases"
+            value={aliases}
+            onChange={(e) => setAliases(e.target.value)}
+            placeholder="逗号或空格分隔"
+          />
+        </div>
+        <div className="admin-form__row">
+          <label htmlFor="admin-tag-rule-keywords">包含词（子串）</label>
+          <textarea
+            id="admin-tag-rule-keywords"
+            value={keywords}
+            onChange={(e) => setKeywords(e.target.value)}
+            placeholder="例如：蜜桃臀, 翘臀"
+          />
+        </div>
+        <div className="admin-form__row">
+          <label htmlFor="admin-tag-rule-words">整词</label>
+          <textarea
+            id="admin-tag-rule-words"
+            value={words}
+            onChange={(e) => setWords(e.target.value)}
+            placeholder="单字和短 ASCII 词建议放在这里"
+          />
+        </div>
+        <div className="admin-form__row">
+          <label htmlFor="admin-tag-rule-excludes">排除词</label>
+          <textarea
+            id="admin-tag-rule-excludes"
+            value={excludes}
+            onChange={(e) => setExcludes(e.target.value)}
+            placeholder="命中这些词的区域不会触发本标签"
+          />
+        </div>
+        {tag.label.toUpperCase() === "AV" && (
+          <label className="admin-check admin-tag-rule-av">
+            <input
+              type="checkbox"
+              checked={matchAvCode}
+              onChange={(e) => setMatchAvCode(e.target.checked)}
+            />
+            <span>识别文件名和标题中的番号</span>
+          </label>
+        )}
+        <p className="admin-form__help">
+              保存会立即对该标签做增量匹配；如需撤销旧规则产生的自动标签，请运行“重新整理所有标签”。
+        </p>
+      </div>
+    </Modal>
   );
 }
 
@@ -526,8 +760,10 @@ function splitList(s: string): string[] {
     .filter(Boolean);
 }
 
-function sourceLabel(source: string): string {
-  if (source === "system") return "系统";
-  if (source === "legacy") return "旧数据";
-  return "用户";
+function sourceLabel(source: string, tag?: api.AdminTag): string {
+  if (tag?.crawlerOwned) return "爬虫脚本";
+  if (source === "builtin") return "内置";
+  if (source === "user") return "自定义";
+  if (source === "generated") return "自动生成";
+  return source || "未知";
 }

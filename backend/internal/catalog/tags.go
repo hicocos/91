@@ -7,35 +7,55 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/video-site/backend/internal/fixedtags"
+	"github.com/video-site/backend/internal/tagging"
 )
 
 var ErrUnknownTag = errors.New("unknown tag")
-var ErrSystemTag = errors.New("system tag cannot be deleted")
 var ErrDeletedTag = errors.New("tag was previously deleted")
+var ErrAutoTagGenerationDisabled = errors.New("auto tag generation is disabled")
 
 const avTagLabel = "AV"
 
-var (
-	avCodePattern              = regexp.MustCompile(`(?i)^[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	ccAVCodePattern            = regexp.MustCompile(`(?i)^CC[-_ ]?\d{3,8}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	fc2AVCodePattern           = regexp.MustCompile(`(?i)^FC2[-_ ]?(?:PPV[-_ ]?)?\d{4,8}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	numericPrefixAVCodePattern = regexp.MustCompile(`(?i)^\d{2,4}[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	avCodeInTextPattern        = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])((?:[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:CC[-_ ]?\d{3,8}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:FC2[-_ ]?(?:PPV[-_ ]?)?\d{4,8}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:\d{2,4}[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?))(?:$|[^A-Za-z0-9])`)
+var avTagRule = tagging.Rule{MatchAVCode: true}
+
+var avLegacyAliases = map[string]struct{}{
+	"jav": {},
+	"番号":  {},
+	"番號":  {},
+}
+
+// settingTagRulesVersion 是标签规则版本号（settings 表）。任何标签的创建、
+// 规则修改、删除都会 +1；Matcher 缓存据此失效重建。
+const (
+	settingTagRulesVersion         = "tags.rules_version"
+	settingAutoGenerateTagsEnabled = "tags.auto_generate_enabled"
 )
 
 type Tag struct {
-	ID      int64    `json:"id"`
-	Label   string   `json:"label"`
-	Aliases []string `json:"aliases,omitempty"`
-	Source  string   `json:"source"`
-	Count   int      `json:"count"`
+	ID           int64        `json:"id"`
+	Label        string       `json:"label"`
+	Aliases      []string     `json:"aliases,omitempty"`
+	MatchRules   tagging.Rule `json:"matchRules"`
+	Source       string       `json:"source"`
+	Count        int          `json:"count"`
+	CrawlerOwned bool         `json:"crawlerOwned,omitempty"`
+}
+
+// TagAssignment 是一次"给视频挂标签"的完整描述：标签名、来源、命中证据。
+type TagAssignment struct {
+	Label    string
+	Source   string
+	Evidence string
+}
+
+type VideoTagMetadata struct {
+	Source   string `json:"source"`
+	Evidence string `json:"evidence"`
 }
 
 func (c *Catalog) migrate(ctx context.Context) error {
@@ -87,7 +107,24 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "videos", "transcoded_size", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
+	// videos.dir_name：视频所在目录名，扫盘时落库；标签全库重算需要用它做匹配材料。
+	if err := c.addColumnIfMissing(ctx, "videos", "dir_name", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	// tags.match_rules：标签匹配规则 JSON；video_tags.evidence：命中证据。
+	if err := c.addColumnIfMissing(ctx, "tags", "match_rules", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "tags", "origin", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "video_tags", "evidence", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := c.dropColumnIfExists(ctx, "videos", "category"); err != nil {
+		return err
+	}
+	if err := c.dropColumnIfExists(ctx, "videos", "llm_tagged_at"); err != nil {
 		return err
 	}
 	if err := c.ensureBaseVideoIndexes(ctx); err != nil {
@@ -197,16 +234,22 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_signature ON deleted_videos(drive_id, file_name, size_bytes)`); err != nil {
 		return err
 	}
-	if err := c.seedSystemTags(ctx); err != nil {
+	if err := c.normalizeStoredTagSources(ctx); err != nil {
 		return err
 	}
-	if err := c.backfillVideoTags(ctx); err != nil {
+	if err := c.backfillCrawlerTagOrigins(ctx); err != nil {
 		return err
 	}
-	if err := c.collapseAVCodeTags(ctx); err != nil {
+	if err := c.normalizeRetiredVideoTagSources(ctx); err != nil {
 		return err
 	}
-	if err := c.classifySystemTags(ctx); err != nil {
+	if err := c.migrateBuiltinTagLabels(ctx); err != nil {
+		return err
+	}
+	if err := c.demoteRetiredBuiltinTags(ctx); err != nil {
+		return err
+	}
+	if err := c.seedBuiltinTagPack(ctx); err != nil {
 		return err
 	}
 	if err := c.clearVolatileOneDriveThumbnails(ctx); err != nil {
@@ -221,14 +264,288 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if err := c.hideZeroSizeVideosFromKnownDrives(ctx); err != nil {
 		return err
 	}
-	if err := c.pruneOrphanCollectionTags(ctx); err != nil {
-		return err
-	}
 	// admin_sessions.user_id：关联到 users 表，用于区分管理员/普通用户 session
 	if err := c.addColumnIfMissing(ctx, "admin_sessions", "user_id", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
+}
+
+// RunPostStartupTagMaintenance runs legacy tag normalization and add-only
+// classification after the HTTP listener is ready. These operations may scan
+// the full video library, so they must not be called from Open/migrate.
+func (c *Catalog) RunPostStartupTagMaintenance(ctx context.Context) error {
+	if err := c.backfillVideoTags(ctx); err != nil {
+		return fmt.Errorf("backfill legacy video tags: %w", err)
+	}
+	if err := c.collapseAVCodeTags(ctx); err != nil {
+		return fmt.Errorf("collapse AV-code tags: %w", err)
+	}
+	if err := c.classifyAllTagsAddOnly(ctx); err != nil {
+		return fmt.Errorf("classify missing tags: %w", err)
+	}
+	if _, err := c.PruneUnreferencedTags(ctx); err != nil {
+		return fmt.Errorf("prune orphan generated tags: %w", err)
+	}
+	return nil
+}
+
+// normalizeStoredTagSources 把历史标签来源收敛为三类。视频与标签的关联来源
+// video_tags.source 记录具体挂载方式，保留 auto/crawler/series 等细分值。
+func (c *Catalog) normalizeStoredTagSources(ctx context.Context) error {
+	for _, table := range []string{"tags", "deleted_tags"} {
+		if _, err := c.db.ExecContext(ctx, `
+UPDATE `+table+`
+   SET source = CASE
+       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin') THEN 'builtin'
+       WHEN lower(trim(COALESCE(source, ''))) = 'user' THEN 'user'
+       ELSE 'generated'
+   END
+ WHERE source IS NULL
+    OR source != CASE
+       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin') THEN 'builtin'
+       WHEN lower(trim(COALESCE(source, ''))) = 'user' THEN 'user'
+       ELSE 'generated'
+   END`); err != nil {
+			return fmt.Errorf("normalize %s sources: %w", table, err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) backfillCrawlerTagOrigins(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `
+UPDATE tags
+   SET origin = 'crawler'
+ WHERE COALESCE(origin, '') != 'crawler'
+   AND (
+       EXISTS (
+         SELECT 1
+           FROM video_tags vt
+          WHERE vt.tag_id = tags.id
+            AND lower(trim(COALESCE(vt.source, ''))) = 'crawler'
+       )
+       OR EXISTS (
+         SELECT 1
+           FROM drives d
+          WHERE d.kind = 'scriptcrawler'
+            AND d.name = tags.label COLLATE NOCASE
+       )
+   )`)
+	return err
+}
+
+func (c *Catalog) normalizeRetiredVideoTagSources(ctx context.Context) error {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT DISTINCT video_id
+  FROM video_tags
+ WHERE lower(trim(COALESCE(source, ''))) = 'llm'`)
+	if err != nil {
+		return err
+	}
+	var videoIDs []string
+	for rows.Next() {
+		var videoID string
+		if err := rows.Scan(&videoID); err != nil {
+			rows.Close()
+			return err
+		}
+		videoIDs = append(videoIDs, videoID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(videoIDs) == 0 {
+		return nil
+	}
+	if _, err := c.db.ExecContext(ctx, `
+DELETE FROM video_tags
+ WHERE lower(trim(COALESCE(source, ''))) = 'llm'`); err != nil {
+		return err
+	}
+	for _, videoID := range videoIDs {
+		if err := c.syncVideoTagsJSON(ctx, videoID, c.hasManualTags(ctx, videoID)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateBuiltinTagLabels handles builtin-label renames while preserving
+// existing video assignments and deletion tombstones.
+func (c *Catalog) migrateBuiltinTagLabels(ctx context.Context) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	videoIDs, err := mergeBuiltinTagLabelTx(ctx, tx, "臀", "美臀")
+	if err != nil {
+		return err
+	}
+	if err := mergeBuiltinDeletedTagLabelTx(ctx, tx, "臀", "美臀"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, videoID := range uniqueStrings(videoIDs) {
+		if err := c.syncVideoTagsJSON(ctx, videoID, c.hasManualTags(ctx, videoID)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// demoteRetiredBuiltinTags keeps tags.source=builtin limited to fixedtags.All.
+// Retired builtin labels are kept as generated so existing video assignments
+// remain intact, but they no longer appear in the builtin category.
+func (c *Catalog) demoteRetiredBuiltinTags(ctx context.Context) error {
+	labels := fixedtags.Labels
+	if len(labels) == 0 {
+		if _, err := c.db.ExecContext(ctx, `UPDATE tags SET source = 'generated', updated_at = ? WHERE source = 'builtin'`, time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("demote retired builtin tags: %w", err)
+		}
+		if _, err := c.db.ExecContext(ctx, `UPDATE deleted_tags SET source = 'generated' WHERE source = 'builtin'`); err != nil {
+			return fmt.Errorf("demote retired builtin tombstones: %w", err)
+		}
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(labels)), ",")
+	now := time.Now().UnixMilli()
+	tagArgs := make([]any, 0, len(labels)+1)
+	tagArgs = append(tagArgs, now)
+	for _, label := range labels {
+		tagArgs = append(tagArgs, label)
+	}
+	if _, err := c.db.ExecContext(ctx, `
+UPDATE tags
+   SET source = 'generated',
+       updated_at = ?
+ WHERE source = 'builtin'
+   AND label COLLATE NOCASE NOT IN (`+placeholders+`)`, tagArgs...); err != nil {
+		return fmt.Errorf("demote retired builtin tags: %w", err)
+	}
+	tombstoneArgs := make([]any, 0, len(labels))
+	for _, label := range labels {
+		tombstoneArgs = append(tombstoneArgs, label)
+	}
+	if _, err := c.db.ExecContext(ctx, `
+UPDATE deleted_tags
+   SET source = 'generated'
+ WHERE source = 'builtin'
+   AND label COLLATE NOCASE NOT IN (`+placeholders+`)`, tombstoneArgs...); err != nil {
+		return fmt.Errorf("demote retired builtin tombstones: %w", err)
+	}
+	return nil
+}
+
+func mergeBuiltinTagLabelTx(ctx context.Context, tx *sql.Tx, oldLabel, newLabel string) ([]string, error) {
+	var oldID int64
+	var oldSource string
+	err := tx.QueryRowContext(ctx, `SELECT id, source FROM tags WHERE label = ? COLLATE NOCASE`, oldLabel).Scan(&oldID, &oldSource)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if normalizeTagSource(oldSource) != "builtin" {
+		return nil, nil
+	}
+	if deletedTagExistsTx(ctx, tx, newLabel) {
+		return nil, nil
+	}
+
+	videoIDs, err := videoIDsForTagIDTx(ctx, tx, oldID)
+	if err != nil {
+		return nil, err
+	}
+
+	var newID int64
+	var newSource string
+	err = tx.QueryRowContext(ctx, `SELECT id, source FROM tags WHERE label = ? COLLATE NOCASE`, newLabel).Scan(&newID, &newSource)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE tags SET label = ?, source = 'builtin', updated_at = ? WHERE id = ?`,
+			newLabel, time.Now().UnixMilli(), oldID)
+		return videoIDs, err
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if normalizeTagSource(newSource) != "builtin" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tags SET source = 'builtin', updated_at = ? WHERE id = ?`,
+			time.Now().UnixMilli(), newID); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at)
+SELECT video_id, ?, source, evidence, created_at
+  FROM video_tags
+ WHERE tag_id = ?`, newID, oldID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id = ?`, oldID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, oldID); err != nil {
+		return nil, err
+	}
+	return videoIDs, nil
+}
+
+func mergeBuiltinDeletedTagLabelTx(ctx context.Context, tx *sql.Tx, oldLabel, newLabel string) error {
+	var source string
+	err := tx.QueryRowContext(ctx, `SELECT source FROM deleted_tags WHERE label = ? COLLATE NOCASE`, oldLabel).Scan(&source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if normalizeTagSource(source) != "builtin" {
+		return nil
+	}
+	if deletedTagExistsTx(ctx, tx, newLabel) {
+		_, err = tx.ExecContext(ctx, `DELETE FROM deleted_tags WHERE label = ? COLLATE NOCASE`, oldLabel)
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
+		`UPDATE deleted_tags SET label = ?, source = 'builtin' WHERE label = ? COLLATE NOCASE`,
+		newLabel, oldLabel)
+	return err
+}
+
+func deletedTagExistsTx(ctx context.Context, tx *sql.Tx, label string) bool {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM deleted_tags WHERE label = ? COLLATE NOCASE`, label).Scan(&exists)
+	return err == nil
+}
+
+func videoIDsForTagIDTx(ctx context.Context, tx *sql.Tx, tagID int64) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT video_id FROM video_tags WHERE tag_id = ?`, tagID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var videoIDs []string
+	for rows.Next() {
+		var videoID string
+		if err := rows.Scan(&videoID); err != nil {
+			return nil, err
+		}
+		videoIDs = append(videoIDs, videoID)
+	}
+	return videoIDs, rows.Err()
 }
 
 func (c *Catalog) purgeLegacySourceDeletedTombstones(ctx context.Context) error {
@@ -275,8 +592,8 @@ func (c *Catalog) dropColumnIfExists(ctx context.Context, table, column string) 
 	if _, err = c.db.ExecContext(ctx, `ALTER TABLE `+table+` DROP COLUMN `+column); err == nil {
 		return nil
 	}
-	if table == "videos" && strings.EqualFold(column, "category") {
-		log.Printf("[catalog] native drop column videos.category failed, rebuilding videos table without category: %v", err)
+	if table == "videos" && (strings.EqualFold(column, "category") || strings.EqualFold(column, "llm_tagged_at")) {
+		log.Printf("[catalog] native drop column videos.%s failed, rebuilding videos table with current columns: %v", column, err)
 		return c.rebuildVideosTableWithoutCategory(ctx)
 	}
 	return err
@@ -305,6 +622,7 @@ var currentVideoColumnNames = []string{
 	"fingerprint_status",
 	"fingerprint_error",
 	"parent_id",
+	"dir_name",
 	"title",
 	"author",
 	"tags",
@@ -349,6 +667,7 @@ CREATE TABLE videos_category_drop_new (
     fingerprint_status TEXT DEFAULT 'pending',
     fingerprint_error  TEXT DEFAULT '',
     parent_id          TEXT,
+    dir_name           TEXT DEFAULT '',
     title              TEXT NOT NULL,
     author             TEXT,
     tags               TEXT,
@@ -631,32 +950,147 @@ UPDATE videos
 	return err
 }
 
-func (c *Catalog) seedSystemTags(ctx context.Context) error {
-	for _, label := range fixedtags.Labels {
-		if _, err := c.ensureTag(ctx, label, fixedtags.AliasesFor(label), "system"); err != nil {
+// seedBuiltinTagPack 写入内置标签包。builtin 标签被管理员删除过
+// （deleted_tags 有记录）时会跳过，不再自动重建。
+// 已存在的标签只在 match_rules 为空时回填默认规则，不覆盖管理员的修改。
+func (c *Catalog) seedBuiltinTagPack(ctx context.Context) error {
+	for _, t := range fixedtags.All() {
+		_, err := c.ensureTagWithRules(ctx, t.Label, t.Aliases, t.Rule, t.Source)
+		if err != nil {
+			if errors.Is(err, ErrDeletedTag) {
+				continue
+			}
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Catalog) classifySystemTags(ctx context.Context) error {
+// classifyAllTagsAddOnly 用当前标签池对全库做一次"只增不减"的分类：
+// 给每个非人工锁定视频补上缺失的命中标签，不移除任何已有标签。
+// HTTP 监听完成后在后台执行，保证新加的内置标签对存量视频生效且不阻塞启动；
+// 完整的重算走 retag job。
+func (c *Catalog) classifyAllTagsAddOnly(ctx context.Context) error {
+	matcher, err := c.Matcher(ctx)
+	if err != nil {
+		return err
+	}
+	if len(matcher.Labels()) == 0 {
+		return nil
+	}
+
+	existing, err := c.loadVideoTagLabelSets(ctx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := c.db.QueryContext(ctx, `
+SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_name, ''), COALESCE(tags_manual, 0)
+FROM videos`)
+	if err != nil {
+		return err
+	}
+	type pendingVideo struct {
+		id      string
+		matches []tagging.Match
+	}
+	var pending []pendingVideo
+	for rows.Next() {
+		var videoID, title, author, fileName, dirName string
+		var manual int
+		if err := rows.Scan(&videoID, &title, &author, &fileName, &dirName, &manual); err != nil {
+			rows.Close()
+			return err
+		}
+		if manual == 1 {
+			continue
+		}
+		matches := matcher.Match(matchFields(title, fileName, author, dirName)...)
+		if len(matches) == 0 {
+			continue
+		}
+		have := existing[videoID]
+		var missing []tagging.Match
+		for _, m := range matches {
+			if _, ok := have[strings.ToLower(m.Label)]; !ok {
+				missing = append(missing, m)
+			}
+		}
+		if len(missing) > 0 {
+			pending = append(pending, pendingVideo{id: videoID, matches: missing})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
 	total := 0
-	for _, label := range fixedtags.Labels {
-		tag, err := c.getTagByLabel(ctx, label)
-		if err != nil {
-			return err
+	for _, p := range pending {
+		changed := false
+		for _, m := range p.matches {
+			tag, err := c.getTagByLabel(ctx, m.Label)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return err
+			}
+			if err := c.insertVideoTag(ctx, p.id, tag.ID, "auto", m.Evidence()); err != nil {
+				return err
+			}
+			changed = true
+			total++
 		}
-		classified, err := c.classifyTag(ctx, tag)
-		if err != nil {
-			return err
+		if changed {
+			if err := c.syncVideoTagsJSON(ctx, p.id, false); err != nil {
+				return err
+			}
 		}
-		total += classified
 	}
 	if total > 0 {
-		log.Printf("[catalog] classified %d existing video tag(s) using system tags", total)
+		log.Printf("[catalog] classified %d missing video tag(s) in post-startup background job", total)
 	}
 	return nil
+}
+
+// matchFields 组装匹配材料，顺序即证据优先级。
+func matchFields(title, fileName, author, dirName string) []tagging.Field {
+	return []tagging.Field{
+		{Name: "标题", Text: title},
+		{Name: "文件名", Text: fileName},
+		{Name: "作者", Text: author},
+		{Name: "目录", Text: dirName},
+	}
+}
+
+// loadVideoTagLabelSets 一次性载入全部视频当前已挂标签（video_id → 小写 label 集合）。
+func (c *Catalog) loadVideoTagLabelSets(ctx context.Context) (map[string]map[string]struct{}, error) {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT vt.video_id, t.label
+FROM video_tags vt
+JOIN tags t ON t.id = vt.tag_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]struct{}{}
+	for rows.Next() {
+		var videoID, label string
+		if err := rows.Scan(&videoID, &label); err != nil {
+			return nil, err
+		}
+		set := out[videoID]
+		if set == nil {
+			set = map[string]struct{}{}
+			out[videoID] = set
+		}
+		set[strings.ToLower(label)] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 func (c *Catalog) backfillVideoTags(ctx context.Context) error {
@@ -706,20 +1140,72 @@ func (c *Catalog) CreateTagAndClassify(ctx context.Context, label string, aliase
 	return c.classifyTag(ctx, tag)
 }
 
+// UpdateTag 更新标签的展示别名与匹配规则（管理后台"编辑标签"）。
+// 返回更新后的标签；调用方通常随后再跑一次 classifyTag 做增量分类。
+func (c *Catalog) UpdateTag(ctx context.Context, tagID int64, aliases []string, rule tagging.Rule) (Tag, error) {
+	tag, err := c.getTagByID(ctx, tagID)
+	if err != nil {
+		return Tag{}, err
+	}
+	aliases = cleanAliases(aliases, tag.Label)
+	aliasesJSON, _ := json.Marshal(aliases)
+	rulesJSON, _ := json.Marshal(rule)
+	if _, err := c.db.ExecContext(ctx,
+		`UPDATE tags SET aliases = ?, match_rules = ?, updated_at = ? WHERE id = ?`,
+		string(aliasesJSON), string(rulesJSON), time.Now().UnixMilli(), tagID); err != nil {
+		return Tag{}, err
+	}
+	if err := c.bumpTagRulesVersion(ctx); err != nil {
+		return Tag{}, err
+	}
+	return c.getTagByID(ctx, tagID)
+}
+
+// ClassifyTagByID applies one tag's current rule to matching unlocked videos.
+// It is intentionally add-only; a full retag job owns removal of stale
+// auto/legacy assignments.
+func (c *Catalog) ClassifyTagByID(ctx context.Context, tagID int64) (int, error) {
+	tag, err := c.getTagByID(ctx, tagID)
+	if err != nil {
+		return 0, err
+	}
+	return c.classifyTag(ctx, tag)
+}
+
 func (c *Catalog) EnsureTagForVideoIDPrefix(ctx context.Context, prefix, label string, aliases []string, source string) (int, error) {
+	return c.ensureTagForVideoIDPrefix(ctx, prefix, label, aliases, source, true)
+}
+
+func (c *Catalog) EnsureCrawlerTagForVideoIDPrefix(ctx context.Context, prefix, label string) (int, error) {
+	tag, err := c.EnsureCrawlerTag(ctx, label)
+	if err != nil {
+		return 0, err
+	}
+	return c.addTagForVideoIDPrefix(ctx, prefix, tag, false)
+}
+
+func (c *Catalog) ensureTagForVideoIDPrefix(ctx context.Context, prefix, label string, aliases []string, source string, respectAutoGenerateSetting bool) (int, error) {
+	tag, err := c.ensureTagWithRulesInternal(ctx, label, aliases, tagging.Rule{}, source, respectAutoGenerateSetting)
+	if err != nil {
+		return 0, err
+	}
+	return c.addTagForVideoIDPrefix(ctx, prefix, tag, true)
+}
+
+func (c *Catalog) addTagForVideoIDPrefix(ctx context.Context, prefix string, tag Tag, skipManual bool) (int, error) {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return 0, errors.New("video id prefix is required")
 	}
-	tag, err := c.ensureTag(ctx, label, aliases, source)
-	if err != nil {
-		return 0, err
+	manualWhere := ""
+	if skipManual {
+		manualWhere = "   AND COALESCE(v.tags_manual, 0) = 0\n"
 	}
 	rows, err := c.db.QueryContext(ctx, `
 SELECT v.id
   FROM videos v
  WHERE v.id LIKE ? || '%'
-   AND COALESCE(v.tags_manual, 0) = 0
+`+manualWhere+`
    AND NOT EXISTS (
 	 SELECT 1
 	   FROM video_tags vt
@@ -747,10 +1233,10 @@ SELECT v.id
 		return 0, err
 	}
 	for _, videoID := range videoIDs {
-		if err := c.insertVideoTag(ctx, videoID, tag.ID, "auto"); err != nil {
+		if err := c.insertVideoTag(ctx, videoID, tag.ID, "crawler", "爬虫:"+tag.Label); err != nil {
 			return 0, err
 		}
-		if err := c.syncVideoTagsJSON(ctx, videoID, false); err != nil {
+		if err := c.syncVideoTagsJSON(ctx, videoID, c.hasManualTags(ctx, videoID)); err != nil {
 			return 0, err
 		}
 	}
@@ -768,10 +1254,6 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if tag.Source == "system" {
-		return 0, ErrSystemTag
-	}
-
 	rows, err := tx.QueryContext(ctx, `SELECT video_id FROM video_tags WHERE tag_id = ?`, tagID)
 	if err != nil {
 		return 0, err
@@ -811,6 +1293,9 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 	}
 
 	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if err := c.bumpTagRulesVersion(ctx); err != nil {
 		return 0, err
 	}
 	return len(videoIDs), nil
@@ -872,13 +1357,28 @@ tag_candidates AS (
 	  FROM tagged_tags
 	 WHERE file_name != '' AND size_bytes > 0
 )
-SELECT t.id, t.label, t.aliases, t.source, COUNT(DISTINCT videos.id) AS cnt
+SELECT t.id,
+       t.label,
+       t.aliases,
+       COALESCE(t.match_rules, '{}'),
+       t.source,
+       COUNT(DISTINCT videos.id) AS cnt,
+       CASE
+         WHEN COALESCE(t.origin, '') = 'crawler'
+           OR EXISTS (
+             SELECT 1
+               FROM video_tags vt_origin
+              WHERE vt_origin.tag_id = t.id
+                AND lower(trim(COALESCE(vt_origin.source, ''))) = 'crawler'
+           )
+         THEN 1 ELSE 0
+       END AS crawler_owned
 FROM tags t
 LEFT JOIN tag_candidates tc ON tc.tag_id = t.id AND tc.video_id IS NOT NULL
 LEFT JOIN videos ON videos.id = tc.video_id
 	AND COALESCE(videos.hidden, 0) = 0
 	AND `+uniqueVideoWhereSQL+`
-GROUP BY t.id, t.label, t.aliases, t.source
+GROUP BY t.id, t.label, t.aliases, t.match_rules, t.source, t.origin
 ORDER BY cnt DESC, t.label ASC`)
 	if err != nil {
 		return nil, err
@@ -886,10 +1386,15 @@ ORDER BY cnt DESC, t.label ASC`)
 	defer rows.Close()
 	var out []Tag
 	for rows.Next() {
-		tag, err := scanTag(rows)
-		if err != nil {
+		var tag Tag
+		var aliasesJSON, rulesJSON string
+		var crawlerOwned int
+		if err := rows.Scan(&tag.ID, &tag.Label, &aliasesJSON, &rulesJSON, &tag.Source, &tag.Count, &crawlerOwned); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(aliasesJSON), &tag.Aliases)
+		_ = json.Unmarshal([]byte(rulesJSON), &tag.MatchRules)
+		tag.CrawlerOwned = crawlerOwned != 0
 		out = append(out, tag)
 	}
 	return out, nil
@@ -962,36 +1467,255 @@ func (c *Catalog) SetManualVideoTags(ctx context.Context, videoID string, labels
 	return c.replaceVideoTags(ctx, videoID, labels, "manual", true, false)
 }
 
+// SetAutoVideoTags 用引擎结果覆盖视频的 auto/legacy 标签行；其余来源
+// （crawler/series/propagated/manual）不受影响。
 func (c *Catalog) SetAutoVideoTags(ctx context.Context, videoID string, labels []string) error {
-	if c.hasManualTags(ctx, videoID) {
-		return nil
+	assignments := make([]TagAssignment, 0, len(labels))
+	for _, label := range labels {
+		assignments = append(assignments, TagAssignment{Label: label, Source: "auto"})
 	}
-	return c.replaceVideoTags(ctx, videoID, labels, "auto", false, false)
+	_, err := c.ReplaceAutoVideoTags(ctx, videoID, assignments)
+	return err
 }
 
-func (c *Catalog) MatchTags(ctx context.Context, text string) ([]string, error) {
-	tags, err := c.ListTags(ctx)
+// ---------- 匹配引擎入口 ----------
+
+// Matcher 返回按当前标签池编译的匹配器；带版本号缓存，标签变更后自动重建。
+func (c *Catalog) Matcher(ctx context.Context) (*tagging.Matcher, error) {
+	version, err := c.tagRulesVersion(ctx)
 	if err != nil {
 		return nil, err
 	}
-	matcher := normalizeTagText(text)
-	out := make([]string, 0, len(tags))
-	if ContainsAVCode(text) {
-		out = append(out, avTagLabel)
+	c.matcherMu.Lock()
+	if c.matcher != nil && c.matcherVersion == version {
+		m := c.matcher
+		c.matcherMu.Unlock()
+		return m, nil
 	}
-	for _, tag := range tags {
-		candidates := append([]string{tag.Label}, tag.Aliases...)
-		for _, candidate := range candidates {
-			if matcher.contains(candidate) {
-				out = append(out, tag.Label)
-				break
-			}
+	c.matcherMu.Unlock()
+
+	m, err := c.buildMatcher(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.matcherMu.Lock()
+	c.matcher = m
+	c.matcherVersion = version
+	c.matcherMu.Unlock()
+	return m, nil
+}
+
+func (c *Catalog) buildMatcher(ctx context.Context) (*tagging.Matcher, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT label, aliases, COALESCE(match_rules, '{}') FROM tags ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tagRules []tagging.TagRule
+	for rows.Next() {
+		var label, aliasesJSON, rulesJSON string
+		if err := rows.Scan(&label, &aliasesJSON, &rulesJSON); err != nil {
+			return nil, err
+		}
+		var aliases []string
+		_ = json.Unmarshal([]byte(aliasesJSON), &aliases)
+		var rule tagging.Rule
+		_ = json.Unmarshal([]byte(rulesJSON), &rule)
+		tagRules = append(tagRules, tagging.TagRule{Label: label, Rule: effectiveRule(label, aliases, rule)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tagging.NewMatcher(tagRules), nil
+}
+
+// effectiveRule 计算标签的生效规则：无显式规则时按 label+aliases 兜底；
+// 有显式规则时通常确保 label 自身也参与匹配。AV 标签例外：它只按番号规则识别，
+// 避免 "AV/JAV/番号" 这类普通描述误触发。
+func effectiveRule(label string, aliases []string, rule tagging.Rule) tagging.Rule {
+	if strings.EqualFold(label, avTagLabel) {
+		return avTagRule
+	}
+	if rule.IsEmpty() {
+		return tagging.RuleFromAliases(label, aliases)
+	}
+	labelRule := tagging.RuleFromAliases(label, nil)
+	seen := map[string]struct{}{}
+	for _, term := range append(append([]string{}, rule.Keywords...), rule.Words...) {
+		seen[strings.ToLower(strings.TrimSpace(term))] = struct{}{}
+	}
+	for _, kw := range labelRule.Keywords {
+		if _, ok := seen[strings.ToLower(kw)]; !ok {
+			rule.Keywords = append(rule.Keywords, kw)
 		}
 	}
-	return sortLabelsByTagOrder(tags, uniqueStrings(out)), nil
+	for _, w := range labelRule.Words {
+		if _, ok := seen[strings.ToLower(w)]; !ok {
+			rule.Words = append(rule.Words, w)
+		}
+	}
+	return rule
+}
+
+func (c *Catalog) tagRulesVersion(ctx context.Context) (int64, error) {
+	raw, err := c.GetSetting(ctx, settingTagRulesVersion, "0")
+	if err != nil {
+		return 0, err
+	}
+	version, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, nil
+	}
+	return version, nil
+}
+
+func (c *Catalog) bumpTagRulesVersion(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `
+INSERT INTO settings (key, value, updated_at) VALUES (?, '1', ?)
+ON CONFLICT(key) DO UPDATE SET
+  value = CAST(CAST(settings.value AS INTEGER) + 1 AS TEXT),
+  updated_at = excluded.updated_at`, settingTagRulesVersion, time.Now().UnixMilli())
+	return err
+}
+
+// LookupTagLabel 查询某个标签是否已存在（大小写不敏感），返回库中的规范写法。
+func (c *Catalog) LookupTagLabel(ctx context.Context, label string) (string, bool, error) {
+	label = cleanTagLabel(label)
+	if label == "" {
+		return "", false, nil
+	}
+	tag, err := c.getTagByLabel(ctx, label)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return tag.Label, true, nil
+}
+
+// MatchTags 对一段文本运行标签匹配，返回命中的标签名。
+func (c *Catalog) MatchTags(ctx context.Context, text string) ([]string, error) {
+	matcher, err := c.Matcher(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return matcher.MatchLabels(text), nil
+}
+
+// MatchTagAssignments 对分字段材料运行匹配，返回带证据的 auto 来源分配。
+func (c *Catalog) MatchTagAssignments(ctx context.Context, title, fileName, author, dirName string) ([]TagAssignment, error) {
+	matcher, err := c.Matcher(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fields := matchFields(title, fileName, author, dirName)
+	matches := matcher.Match(fields...)
+	out := make([]TagAssignment, 0, len(matches))
+	seen := make(map[string]bool, len(matches)+1)
+	for _, m := range matches {
+		seen[strings.ToLower(m.Label)] = true
+		out = append(out, TagAssignment{Label: m.Label, Source: "auto", Evidence: m.Evidence()})
+	}
+	if !seen[strings.ToLower(avTagLabel)] {
+		for _, field := range fields {
+			code := tagging.FindAVCode(field.Text)
+			if code == "" {
+				continue
+			}
+			if _, err := c.ensureTagWithRules(ctx, avTagLabel, nil, avTagRule, fixedtags.SourceBuiltin); err != nil {
+				if errors.Is(err, ErrDeletedTag) {
+					return out, nil
+				}
+				return nil, err
+			}
+			out = append(out, TagAssignment{Label: avTagLabel, Source: "auto", Evidence: tagging.Match{
+				Label: avTagLabel,
+				Field: field.Name,
+				Term:  code,
+			}.Evidence()})
+			break
+		}
+	}
+	return out, nil
 }
 
 func (c *Catalog) ensureTag(ctx context.Context, label string, aliases []string, source string) (Tag, error) {
+	return c.ensureTagWithRules(ctx, label, aliases, tagging.Rule{}, source)
+}
+
+// EnsureTag ensures that a tag exists and returns its canonical database row.
+// Automatic sources (including builtin/generated) respect deleted_tags
+// tombstones; only an explicit user-created tag restores a deleted label.
+func (c *Catalog) EnsureTag(ctx context.Context, label, source string) (Tag, error) {
+	return c.ensureTag(ctx, label, nil, source)
+}
+
+// EnsureCrawlerTag ensures the crawler ownership tag exists. Crawler tags are
+// source provenance, so they are not blocked by tags.auto_generate_enabled.
+// Importing or saving a crawler is an explicit user action, so a same-name
+// tombstone is restored.
+func (c *Catalog) EnsureCrawlerTag(ctx context.Context, label string) (Tag, error) {
+	label = cleanTagLabel(label)
+	if err := c.restoreDeletedTag(ctx, label); err != nil {
+		return Tag{}, err
+	}
+	tag, err := c.ensureTagWithRulesInternal(ctx, label, nil, tagging.Rule{}, "generated", false)
+	if err != nil {
+		return Tag{}, err
+	}
+	if err := c.markTagOrigin(ctx, tag.ID, "crawler"); err != nil {
+		return Tag{}, err
+	}
+	tag.CrawlerOwned = true
+	return tag, nil
+}
+
+func (c *Catalog) markTagOrigin(ctx context.Context, tagID int64, origin string) error {
+	origin = strings.TrimSpace(strings.ToLower(origin))
+	if origin != "crawler" {
+		origin = ""
+	}
+	_, err := c.db.ExecContext(ctx, `
+UPDATE tags
+   SET origin = ?, updated_at = ?
+ WHERE id = ?
+   AND COALESCE(origin, '') != ?`, origin, time.Now().UnixMilli(), tagID, origin)
+	return err
+}
+
+// EnsureCrawlerTagForVideo ensures a single crawler-owned video carries its
+// crawler provenance tag. Unlike ordinary auto tags, this bypasses the
+// auto-generation setting and does not skip manually curated videos.
+func (c *Catalog) EnsureCrawlerTagForVideo(ctx context.Context, videoID, label string) (bool, error) {
+	videoID = strings.TrimSpace(videoID)
+	if videoID == "" {
+		return false, errors.New("video id is required")
+	}
+	tag, err := c.EnsureCrawlerTag(ctx, label)
+	if err != nil {
+		return false, err
+	}
+	changed, labelAdded, err := c.upsertVideoTagAssignment(ctx, videoID, tag.ID, "crawler", "爬虫:"+tag.Label)
+	if err != nil {
+		return false, err
+	}
+	if labelAdded {
+		if err := c.syncVideoTagsJSON(ctx, videoID, c.hasManualTags(ctx, videoID)); err != nil {
+			return changed, err
+		}
+	}
+	return changed, nil
+}
+
+// ensureTagWithRules 建标签（存在则复用）。规则只在两种情况下写入：
+// 新建时、或已有行的 match_rules 为空时（升级回填）；不会覆盖管理员显式改过的规则。
+func (c *Catalog) ensureTagWithRules(ctx context.Context, label string, aliases []string, rule tagging.Rule, source string) (Tag, error) {
+	return c.ensureTagWithRulesInternal(ctx, label, aliases, rule, source, true)
+}
+
+func (c *Catalog) ensureTagWithRulesInternal(ctx context.Context, label string, aliases []string, rule tagging.Rule, source string, respectAutoGenerateSetting bool) (Tag, error) {
 	label = cleanTagLabel(label)
 	if label == "" {
 		return Tag{}, errors.New("tag label is required")
@@ -999,93 +1723,194 @@ func (c *Catalog) ensureTag(ctx context.Context, label string, aliases []string,
 	if isAVCodePollutedLabel(label) {
 		label = avTagLabel
 		aliases = fixedtags.AliasesFor(avTagLabel)
-		source = "system"
+		rule = avTagRule
+		source = fixedtags.SourceBuiltin
 	}
 	if source == "" {
 		source = "user"
 	}
-	if source != "system" && source != "user" && c.tagDeleted(ctx, label) {
+	source = normalizeTagSource(source)
+	if source == "builtin" && !fixedtags.IsBuiltinLabel(label) {
+		source = "generated"
+	}
+	if source == "generated" {
+		tag, err := c.getTagByLabel(ctx, label)
+		if err == nil {
+			return tag, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Tag{}, err
+		}
+		if respectAutoGenerateSetting {
+			enabled, err := c.AutoGenerateTagsEnabled(ctx)
+			if err != nil {
+				return Tag{}, err
+			}
+			if !enabled {
+				return Tag{}, ErrAutoTagGenerationDisabled
+			}
+		}
+	}
+	if source != "user" && c.tagDeleted(ctx, label) {
 		return Tag{}, ErrDeletedTag
 	}
-	if source == "system" || source == "user" {
+	if source == "user" {
 		if err := c.restoreDeletedTag(ctx, label); err != nil {
 			return Tag{}, err
 		}
 	}
 	aliases = cleanAliases(aliases, label)
 	aliasesJSON, _ := json.Marshal(aliases)
+	rulesJSON, _ := json.Marshal(rule)
 	now := time.Now().UnixMilli()
-	if _, err := c.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO tags (label, aliases, source, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)`, label, string(aliasesJSON), source, now, now); err != nil {
+	res, err := c.db.ExecContext(ctx, `
+INSERT OR IGNORE INTO tags (label, aliases, match_rules, source, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`, label, string(aliasesJSON), string(rulesJSON), source, now, now)
+	if err != nil {
 		return Tag{}, err
 	}
-	if len(aliases) > 0 {
-		if _, err := c.db.ExecContext(ctx,
-			`UPDATE tags SET aliases = ?, updated_at = ? WHERE label = ? COLLATE NOCASE`,
-			string(aliasesJSON), now, label); err != nil {
+	inserted := false
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		inserted = true
+	}
+	changed := inserted
+	if !inserted {
+		if source == fixedtags.SourceBuiltin {
+			res, err := c.db.ExecContext(ctx, `
+UPDATE tags
+   SET source = ?, updated_at = ?
+ WHERE label = ? COLLATE NOCASE
+   AND source != ?
+   AND source != 'user'`,
+				source, now, label, source)
+			if err != nil {
+				return Tag{}, err
+			}
+			if n, err := res.RowsAffected(); err == nil && n > 0 {
+				changed = true
+			}
+		}
+		if strings.EqualFold(label, avTagLabel) && source == fixedtags.SourceBuiltin {
+			res, err := c.db.ExecContext(ctx, `
+UPDATE tags
+   SET aliases = ?, match_rules = ?, updated_at = ?
+ WHERE label = ? COLLATE NOCASE
+   AND (COALESCE(aliases, '[]') != ? OR COALESCE(match_rules, '{}') != ?)`,
+				string(aliasesJSON), string(rulesJSON), now, label, string(aliasesJSON), string(rulesJSON))
+			if err != nil {
+				return Tag{}, err
+			}
+			if n, err := res.RowsAffected(); err == nil && n > 0 {
+				changed = true
+			}
+		}
+		if len(aliases) > 0 {
+			res, err := c.db.ExecContext(ctx,
+				`UPDATE tags SET aliases = ?, updated_at = ? WHERE label = ? COLLATE NOCASE AND COALESCE(aliases, '[]') != ?`,
+				string(aliasesJSON), now, label, string(aliasesJSON))
+			if err != nil {
+				return Tag{}, err
+			}
+			if n, err := res.RowsAffected(); err == nil && n > 0 {
+				changed = true
+			}
+		}
+		if !rule.IsEmpty() {
+			// 升级回填：已有行没有显式规则时补上默认规则。
+			res, err := c.db.ExecContext(ctx, `
+UPDATE tags SET match_rules = ?, updated_at = ?
+ WHERE label = ? COLLATE NOCASE
+   AND COALESCE(match_rules, '{}') IN ('', '{}', 'null')`,
+				string(rulesJSON), now, label)
+			if err != nil {
+				return Tag{}, err
+			}
+			if n, err := res.RowsAffected(); err == nil && n > 0 {
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if err := c.bumpTagRulesVersion(ctx); err != nil {
 			return Tag{}, err
 		}
 	}
 	return c.getTagByLabel(ctx, label)
 }
 
+const tagSelectCols = `id, label, aliases, COALESCE(match_rules, '{}'), source, 0`
+
 func (c *Catalog) getTagByLabel(ctx context.Context, label string) (Tag, error) {
 	row := c.db.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE label = ? COLLATE NOCASE`,
+		`SELECT `+tagSelectCols+` FROM tags WHERE label = ? COLLATE NOCASE`,
 		label)
 	return scanTag(row)
 }
 
+func (c *Catalog) getTagByID(ctx context.Context, id int64) (Tag, error) {
+	row := c.db.QueryRowContext(ctx,
+		`SELECT `+tagSelectCols+` FROM tags WHERE id = ?`,
+		id)
+	return scanTag(row)
+}
+
+// classifyTag 用单个标签的规则对全库做"只增"分类（新建/编辑标签后调用）。
 func (c *Catalog) classifyTag(ctx context.Context, tag Tag) (int, error) {
-	existingIDs, err := c.videoIDSetForTagID(ctx, tag.ID)
-	if err != nil {
-		return 0, err
-	}
+	matcher := tagging.NewMatcher([]tagging.TagRule{
+		{Label: tag.Label, Rule: effectiveRule(tag.Label, tag.Aliases, tag.MatchRules)},
+	})
 	rows, err := c.db.QueryContext(ctx, `
-SELECT id, title, COALESCE(author, ''), COALESCE(tags_manual, 0)
+SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_name, ''), COALESCE(tags_manual, 0)
 FROM videos`)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 
-	classified := 0
+	type hit struct {
+		videoID  string
+		evidence string
+	}
+	var hits []hit
 	for rows.Next() {
-		var videoID, title, author string
+		var videoID, title, author, fileName, dirName string
 		var manual int
-		if err := rows.Scan(&videoID, &title, &author, &manual); err != nil {
+		if err := rows.Scan(&videoID, &title, &author, &fileName, &dirName, &manual); err != nil {
+			rows.Close()
 			return 0, err
 		}
 		if manual == 1 {
 			continue
 		}
-		matcher := normalizeTagText(title + " " + author)
-		if !matcher.contains(tag.Label) {
-			matchedAlias := false
-			for _, alias := range tag.Aliases {
-				if matcher.contains(alias) {
-					matchedAlias = true
-					break
-				}
-			}
-			if !matchedAlias {
-				continue
-			}
-		}
-		if existingIDs[videoID] {
+		matches := matcher.Match(matchFields(title, fileName, author, dirName)...)
+		if len(matches) == 0 {
 			continue
 		}
-		if err := c.insertVideoTag(ctx, videoID, tag.ID, "auto"); err != nil {
+		hits = append(hits, hit{videoID: videoID, evidence: matches[0].Evidence()})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	changedCount := 0
+	for _, h := range hits {
+		changed, labelAdded, err := c.upsertVideoTagAssignment(ctx, h.videoID, tag.ID, "auto", h.evidence)
+		if err != nil {
 			return 0, err
 		}
-		existingIDs[videoID] = true
-		classified++
-		if err := c.syncVideoTagsJSON(ctx, videoID, false); err != nil {
-			return 0, err
+		if changed {
+			changedCount++
+			if labelAdded {
+				if err := c.syncVideoTagsJSON(ctx, h.videoID, false); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
-	return classified, nil
+	return changedCount, nil
 }
 
 func (c *Catalog) replaceVideoTags(ctx context.Context, videoID string, labels []string, source string, manual bool, createMissing bool) error {
@@ -1122,7 +1947,7 @@ func (c *Catalog) replaceVideoTags(ctx context.Context, videoID string, labels [
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, created_at) VALUES (?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at) VALUES (?, ?, ?, '', ?)`,
 			videoID, tag.ID, source, now); err != nil {
 			return err
 		}
@@ -1138,6 +1963,313 @@ func (c *Catalog) replaceVideoTags(ctx context.Context, videoID string, labels [
 		return err
 	}
 	return c.syncVideoTagsJSON(ctx, videoID, manual)
+}
+
+// ReplaceAutoVideoTags 用给定分配覆盖视频的引擎标签（source IN auto/legacy），
+// 其它来源的行保留。人工锁定视频直接跳过。返回是否发生了变更。
+func (c *Catalog) ReplaceAutoVideoTags(ctx context.Context, videoID string, assignments []TagAssignment) (bool, error) {
+	if c.hasManualTags(ctx, videoID) {
+		return false, nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	changed, err := replaceAutoVideoTagsTx(ctx, tx, videoID, assignments)
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := syncVideoTagsJSONTx(ctx, tx, videoID, false); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+type videoTagAssignmentRow struct {
+	tagID    int64
+	label    string
+	source   string
+	evidence string
+}
+
+type desiredVideoTagAssignment struct {
+	tagID    int64
+	label    string
+	source   string
+	evidence string
+}
+
+// replaceAutoVideoTagsTx 是 ReplaceAutoVideoTags 的事务内实现，供批量重算复用。
+// 返回是否有实际变更（用于跳过无谓的 JSON 同步）。
+func replaceAutoVideoTagsTx(ctx context.Context, tx *sql.Tx, videoID string, assignments []TagAssignment) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT t.id, t.label, COALESCE(vt.source, ''), COALESCE(vt.evidence, '')
+  FROM video_tags vt
+  JOIN tags t ON t.id = vt.tag_id
+ WHERE vt.video_id = ?`, videoID)
+	if err != nil {
+		return false, err
+	}
+	current := map[string]videoTagAssignmentRow{}
+	for rows.Next() {
+		var row videoTagAssignmentRow
+		if err := rows.Scan(&row.tagID, &row.label, &row.source, &row.evidence); err != nil {
+			rows.Close()
+			return false, err
+		}
+		current[strings.ToLower(row.label)] = row
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	desired := map[string]desiredVideoTagAssignment{}
+	for _, a := range assignments {
+		label := cleanTagLabel(a.Label)
+		if label == "" {
+			continue
+		}
+		tag, err := getTagByLabelTxRaw(ctx, tx, label)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return false, err
+		}
+		source := normalizeVideoTagSource(a.Source)
+		desired[strings.ToLower(tag.Label)] = desiredVideoTagAssignment{
+			tagID:    tag.ID,
+			label:    tag.Label,
+			source:   source,
+			evidence: a.Evidence,
+		}
+	}
+
+	changed := false
+	now := time.Now().UnixMilli()
+	for key, existing := range current {
+		if _, ok := desired[key]; ok {
+			continue
+		}
+		if existing.source != "auto" && existing.source != "legacy" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM video_tags WHERE video_id = ? AND tag_id = ? AND source IN ('auto', 'legacy')`,
+			videoID, existing.tagID); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+
+	for key, desiredRow := range desired {
+		if existing, ok := current[key]; ok {
+			if !shouldReplaceVideoTagAssignment(existing.source, desiredRow.source) {
+				continue
+			}
+			evidence := desiredRow.evidence
+			if evidence == "" {
+				evidence = existing.evidence
+			}
+			if normalizeVideoTagSource(existing.source) == desiredRow.source && existing.evidence == evidence {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE video_tags SET source = ?, evidence = ? WHERE video_id = ? AND tag_id = ?`,
+				desiredRow.source, evidence, videoID, desiredRow.tagID); err != nil {
+				return false, err
+			}
+			changed = true
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at) VALUES (?, ?, ?, ?, ?)`,
+			videoID, desiredRow.tagID, desiredRow.source, desiredRow.evidence, now); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// AddVideoTagAssignments 给视频追加标签（series/propagated/crawler 等来源）。
+// 只挂已存在的标签；人工锁定视频跳过。返回实际新增或来源/证据更新数。
+func (c *Catalog) AddVideoTagAssignments(ctx context.Context, videoID string, assignments []TagAssignment) (int, error) {
+	if len(assignments) == 0 {
+		return 0, nil
+	}
+	if c.hasManualTags(ctx, videoID) {
+		return 0, nil
+	}
+	changedCount := 0
+	labelAdded := false
+	for _, a := range assignments {
+		label := cleanTagLabel(a.Label)
+		if label == "" {
+			continue
+		}
+		tag, err := c.getTagByLabel(ctx, label)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return changedCount, err
+		}
+		source := normalizeVideoTagSource(a.Source)
+		changed, labelWasAdded, err := c.upsertVideoTagAssignment(ctx, videoID, tag.ID, source, a.Evidence)
+		if err != nil {
+			return changedCount, err
+		}
+		if changed {
+			changedCount++
+		}
+		if labelWasAdded {
+			labelAdded = true
+		}
+	}
+	if labelAdded {
+		if err := c.syncVideoTagsJSON(ctx, videoID, false); err != nil {
+			return changedCount, err
+		}
+	}
+	return changedCount, nil
+}
+
+func (c *Catalog) upsertVideoTagAssignment(ctx context.Context, videoID string, tagID int64, source, evidence string) (bool, bool, error) {
+	source = normalizeVideoTagSource(source)
+	var existingSource, existingEvidence string
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COALESCE(source, ''), COALESCE(evidence, '') FROM video_tags WHERE video_id = ? AND tag_id = ?`,
+		videoID, tagID).Scan(&existingSource, &existingEvidence)
+	if errors.Is(err, sql.ErrNoRows) {
+		res, err := c.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at) VALUES (?, ?, ?, ?, ?)`,
+			videoID, tagID, source, evidence, time.Now().UnixMilli())
+		if err != nil {
+			return false, false, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return true, true, nil
+		}
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !shouldReplaceVideoTagAssignment(existingSource, source) {
+		return false, false, nil
+	}
+	if evidence == "" {
+		evidence = existingEvidence
+	}
+	if normalizeVideoTagSource(existingSource) == source && existingEvidence == evidence {
+		return false, false, nil
+	}
+	_, err = c.db.ExecContext(ctx,
+		`UPDATE video_tags SET source = ?, evidence = ? WHERE video_id = ? AND tag_id = ?`,
+		source, evidence, videoID, tagID)
+	if err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+func normalizeVideoTagSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "manual":
+		return "manual"
+	case "crawler":
+		return "crawler"
+	case "series":
+		return "series"
+	case "propagated":
+		return "propagated"
+	case "legacy":
+		return "legacy"
+	case "auto", "":
+		return "auto"
+	default:
+		return "auto"
+	}
+}
+
+func shouldReplaceVideoTagAssignment(existingSource, incomingSource string) bool {
+	existingSource = normalizeVideoTagSource(existingSource)
+	incomingSource = normalizeVideoTagSource(incomingSource)
+	if existingSource == incomingSource {
+		return true
+	}
+	return videoTagAssignmentPriority(incomingSource) > videoTagAssignmentPriority(existingSource)
+}
+
+func videoTagAssignmentPriority(source string) int {
+	switch normalizeVideoTagSource(source) {
+	case "manual":
+		return 100
+	case "crawler":
+		return 90
+	case "series":
+		return 80
+	case "auto":
+		return 60
+	case "propagated":
+		return 50
+	case "legacy":
+		return 40
+	default:
+		return 0
+	}
+}
+
+// ListVideoTagMetadata returns assignment source/evidence for the requested
+// videos in one query. Keys are video ID, then canonical tag label.
+func (c *Catalog) ListVideoTagMetadata(ctx context.Context, videoIDs []string) (map[string]map[string]VideoTagMetadata, error) {
+	out := make(map[string]map[string]VideoTagMetadata)
+	seen := make(map[string]bool, len(videoIDs))
+	args := make([]any, 0, len(videoIDs))
+	for _, videoID := range videoIDs {
+		videoID = strings.TrimSpace(videoID)
+		if videoID == "" || seen[videoID] {
+			continue
+		}
+		seen[videoID] = true
+		args = append(args, videoID)
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := c.db.QueryContext(ctx, `
+SELECT vt.video_id, t.label, COALESCE(vt.source, ''), COALESCE(vt.evidence, '')
+  FROM video_tags vt
+  JOIN tags t ON t.id = vt.tag_id
+ WHERE vt.video_id IN (`+placeholders+`)
+ ORDER BY vt.video_id, t.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var videoID, label string
+		var metadata VideoTagMetadata
+		if err := rows.Scan(&videoID, &label, &metadata.Source, &metadata.Evidence); err != nil {
+			return nil, err
+		}
+		if out[videoID] == nil {
+			out[videoID] = make(map[string]VideoTagMetadata)
+		}
+		out[videoID][label] = metadata
+	}
+	return out, rows.Err()
 }
 
 func (c *Catalog) addVideoTags(ctx context.Context, videoID string, labels []string, source string, createMissing bool) (bool, error) {
@@ -1176,7 +2308,7 @@ func (c *Catalog) addVideoTag(ctx context.Context, videoID, label, source string
 	}
 	now := time.Now().UnixMilli()
 	res, err := c.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at) VALUES (?, ?, ?, '', ?)`,
 		videoID, tag.ID, source, now)
 	if err != nil {
 		return false, err
@@ -1185,16 +2317,26 @@ func (c *Catalog) addVideoTag(ctx context.Context, videoID, label, source string
 	return n > 0, nil
 }
 
-func (c *Catalog) insertVideoTag(ctx context.Context, videoID string, tagID int64, source string) error {
+func (c *Catalog) insertVideoTag(ctx context.Context, videoID string, tagID int64, source, evidence string) error {
 	_, err := c.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, created_at) VALUES (?, ?, ?, ?)`,
-		videoID, tagID, source, time.Now().UnixMilli())
+		`INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at) VALUES (?, ?, ?, ?, ?)`,
+		videoID, tagID, source, evidence, time.Now().UnixMilli())
 	return err
 }
 
 func (c *Catalog) collapseAVCodeTags(ctx context.Context) error {
-	if _, err := c.ensureTag(ctx, avTagLabel, fixedtags.AliasesFor(avTagLabel), "system"); err != nil {
-		return err
+	avEnabled := true
+	if _, err := c.ensureTagWithRules(ctx, avTagLabel, fixedtags.AliasesFor(avTagLabel), avTagRule, fixedtags.SourceBuiltin); err != nil {
+		if errors.Is(err, ErrDeletedTag) {
+			avEnabled = false
+		} else {
+			return err
+		}
+	}
+	if avEnabled {
+		if err := c.removeAVLegacyAliases(ctx); err != nil {
+			return err
+		}
 	}
 
 	rows, err := c.db.QueryContext(ctx, `SELECT id, label FROM tags`)
@@ -1229,9 +2371,11 @@ func (c *Catalog) collapseAVCodeTags(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		for _, videoID := range videoIDs {
-			if _, err := c.addVideoTag(ctx, videoID, avTagLabel, "auto", false); err != nil {
-				return err
+		if avEnabled {
+			for _, videoID := range videoIDs {
+				if _, err := c.addVideoTag(ctx, videoID, avTagLabel, "auto", false); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := c.db.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id = ?`, tag.id); err != nil {
@@ -1245,6 +2389,43 @@ func (c *Catalog) collapseAVCodeTags(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (c *Catalog) removeAVLegacyAliases(ctx context.Context) error {
+	tag, err := c.getTagByLabel(ctx, avTagLabel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	aliases := tag.Aliases
+	if len(aliases) == 0 {
+		return nil
+	}
+	filtered := aliases[:0]
+	removed := false
+	for _, alias := range aliases {
+		if _, ok := avLegacyAliases[strings.ToLower(strings.TrimSpace(alias))]; ok {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, alias)
+	}
+	if !removed {
+		return nil
+	}
+	aliasesJSON, _ := json.Marshal(filtered)
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE tags SET aliases = ?, updated_at = ? WHERE id = ?`,
+		string(aliasesJSON), time.Now().UnixMilli(), tag.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return c.bumpTagRulesVersion(ctx)
 	}
 	return nil
 }
@@ -1382,15 +2563,19 @@ func (c *Catalog) restoreDeletedTag(ctx context.Context, label string) error {
 }
 
 func (c *Catalog) getTagByLabelTx(ctx context.Context, tx *sql.Tx, label string) (Tag, error) {
+	return getTagByLabelTxRaw(ctx, tx, label)
+}
+
+func getTagByLabelTxRaw(ctx context.Context, tx *sql.Tx, label string) (Tag, error) {
 	row := tx.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE label = ? COLLATE NOCASE`,
+		`SELECT `+tagSelectCols+` FROM tags WHERE label = ? COLLATE NOCASE`,
 		label)
 	return scanTag(row)
 }
 
 func (c *Catalog) getTagByIDTx(ctx context.Context, tx *sql.Tx, id int64) (Tag, error) {
 	row := tx.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE id = ?`,
+		`SELECT `+tagSelectCols+` FROM tags WHERE id = ?`,
 		id)
 	return scanTag(row)
 }
@@ -1459,87 +2644,22 @@ type tagRowScanner interface {
 
 func scanTag(row tagRowScanner) (Tag, error) {
 	var tag Tag
-	var aliasesJSON string
-	if err := row.Scan(&tag.ID, &tag.Label, &aliasesJSON, &tag.Source, &tag.Count); err != nil {
+	var aliasesJSON, rulesJSON string
+	if err := row.Scan(&tag.ID, &tag.Label, &aliasesJSON, &rulesJSON, &tag.Source, &tag.Count); err != nil {
 		return Tag{}, err
 	}
 	_ = json.Unmarshal([]byte(aliasesJSON), &tag.Aliases)
+	_ = json.Unmarshal([]byte(rulesJSON), &tag.MatchRules)
 	return tag, nil
 }
 
-type normalizedTagText struct {
-	lower   string
-	compact string
-	tokens  map[string]struct{}
-}
-
-func normalizeTagText(s string) normalizedTagText {
-	lower := strings.ToLower(s)
-	var compact strings.Builder
-	var spaced strings.Builder
-	for _, r := range lower {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			compact.WriteRune(r)
-			spaced.WriteRune(r)
-			continue
-		}
-		spaced.WriteByte(' ')
-	}
-	tokens := make(map[string]struct{})
-	for _, token := range strings.Fields(spaced.String()) {
-		tokens[token] = struct{}{}
-	}
-	return normalizedTagText{lower: lower, compact: compact.String(), tokens: tokens}
-}
-
-func (n normalizedTagText) contains(alias string) bool {
-	lowerAlias := strings.ToLower(strings.TrimSpace(alias))
-	compactAlias := compactTagText(lowerAlias)
-	if compactAlias == "" {
-		return false
-	}
-	if isShortASCIIWord(compactAlias) && compactAlias == lowerAlias {
-		_, ok := n.tokens[compactAlias]
-		return ok
-	}
-	if strings.Contains(n.lower, lowerAlias) {
-		return true
-	}
-	return strings.Contains(n.compact, compactAlias)
-}
-
-func compactTagText(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-func isShortASCIIWord(s string) bool {
-	if len(s) > 3 {
-		return false
-	}
-	for _, r := range s {
-		if r > unicode.MaxASCII || (!unicode.IsLetter(r) && !unicode.IsDigit(r)) {
-			return false
-		}
-	}
-	return true
-}
-
+// IsAVCode / ContainsAVCode 委托给 tagging 包（历史实现已迁移）。
 func IsAVCode(label string) bool {
-	label = cleanTagLabel(label)
-	if label == "" {
-		return false
-	}
-	return avCodePattern.MatchString(label) || ccAVCodePattern.MatchString(label) || fc2AVCodePattern.MatchString(label) || numericPrefixAVCodePattern.MatchString(label)
+	return tagging.IsAVCode(cleanTagLabel(label))
 }
 
 func ContainsAVCode(text string) bool {
-	return avCodeInTextPattern.MatchString(text)
+	return tagging.ContainsAVCode(text)
 }
 
 func isAVCodePollutedLabel(label string) bool {
@@ -1547,7 +2667,7 @@ func isAVCodePollutedLabel(label string) bool {
 	if label == "" {
 		return false
 	}
-	return IsAVCode(label) || ContainsAVCode(label)
+	return tagging.IsAVCode(label) || tagging.ContainsAVCode(label)
 }
 
 func cleanLabels(labels []string) []string {
@@ -1566,6 +2686,30 @@ func cleanLabels(labels []string) []string {
 
 func cleanTagLabel(label string) string {
 	return strings.TrimSpace(label)
+}
+
+// normalizeTagSource 只用于 tags.source。video_tags.source 是标签挂载来源，
+// 需要继续保留 auto/manual/crawler/series/propagated/legacy 等细分值。
+func normalizeTagSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "system", "builtin":
+		return "builtin"
+	case "user":
+		return "user"
+	default:
+		return "generated"
+	}
+}
+
+func parseSettingBool(value string, defaultValue bool) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on", "enabled":
+		return true
+	case "0", "false", "no", "n", "off", "disabled":
+		return false
+	default:
+		return defaultValue
+	}
 }
 
 func cleanAliases(aliases []string, label string) []string {
@@ -1600,28 +2744,8 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func sortLabelsByTagOrder(tags []Tag, labels []string) []string {
-	order := make(map[string]int, len(tags))
-	for i, tag := range tags {
-		order[strings.ToLower(tag.Label)] = i
-	}
-	sort.SliceStable(labels, func(i, j int) bool {
-		return order[strings.ToLower(labels[i])] < order[strings.ToLower(labels[j])]
-	})
-	return labels
-}
-
-// pruneOrphanCollectionTags 删除旧版本生成的 source='collection' 孤儿标签。
-func (c *Catalog) pruneOrphanCollectionTags(ctx context.Context) error {
-	_, err := c.db.ExecContext(ctx, `
-DELETE FROM tags
- WHERE source = 'collection'
-   AND id NOT IN (SELECT tag_id FROM video_tags)`)
-	return err
-}
-
-// pruneOrphanCollectionTagsByID 在事务里检查并删除旧版本生成的孤儿 collection 标签。
-func pruneOrphanCollectionTagsByID(ctx context.Context, tx *sql.Tx, tagIDs []int64) error {
+// pruneOrphanGeneratedTagsByID 在事务里检查并删除不再被引用的自动生成标签。
+func pruneOrphanGeneratedTagsByID(ctx context.Context, tx *sql.Tx, tagIDs []int64) error {
 	for _, tagID := range tagIDs {
 		var src string
 		err := tx.QueryRowContext(ctx, `SELECT source FROM tags WHERE id = ?`, tagID).Scan(&src)
@@ -1631,7 +2755,7 @@ func pruneOrphanCollectionTagsByID(ctx context.Context, tx *sql.Tx, tagIDs []int
 		if err != nil {
 			return err
 		}
-		if src != "collection" {
+		if normalizeTagSource(src) != "generated" {
 			continue
 		}
 		var refCount int

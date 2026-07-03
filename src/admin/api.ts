@@ -519,6 +519,8 @@ export type AdminVideo = {
   title: string;
   author: string;
   tags: string[];
+  tagSources?: Record<string, string>;
+  tagEvidence?: Record<string, string>;
   durationSeconds: number;
   size: number;
   ext: string;
@@ -683,6 +685,26 @@ export type AdminTag = {
   aliases?: string[];
   source: string;
   count: number;
+  crawlerOwned?: boolean;
+  matchRules?: TagMatchRules;
+};
+
+export type TagMatchRules = {
+  keywords?: string[];
+  words?: string[];
+  excludes?: string[];
+  matchAvCode?: boolean;
+};
+
+export type TagJobStatus = {
+  state: "idle" | "running" | "completed" | "failed" | "canceled";
+  running: boolean;
+  kind?: "retag";
+  total: number;
+  processed: number;
+  lastError?: string;
+  startedAt?: string;
+  lastFinishedAt?: string;
 };
 
 export function listTags() {
@@ -696,11 +718,29 @@ export function createTag(label: string, aliases: string[]) {
   });
 }
 
+export function updateTag(id: number, aliases: string[], matchRules: TagMatchRules) {
+  return request<{ tag: AdminTag; classified: number }>(
+    `/tags/${encodeURIComponent(String(id))}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ aliases, matchRules }),
+    }
+  );
+}
+
 export function deleteTag(id: number) {
   return request<{ ok: boolean; removedVideos: number }>(
     `/tags/${encodeURIComponent(String(id))}`,
     { method: "DELETE" }
   );
+}
+
+export function startTagRetag() {
+  return request<{ accepted: boolean }>("/tags/retag", { method: "POST" });
+}
+
+export function getTagJobStatus() {
+  return request<TagJobStatus>("/tags/jobs/status");
 }
 
 // ---------- Settings ----------
@@ -709,6 +749,7 @@ export type Theme = "dark" | "pink" | "sky";
 
 export type Settings = {
   theme: Theme;
+  autoGenerateTagsEnabled: boolean;
 };
 
 export function getSettings() {
