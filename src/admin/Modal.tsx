@@ -10,16 +10,28 @@ type Props = {
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
+  restoreFocus?: boolean;
 };
 
-export function Modal({ open, title, ariaLabel, onClose, children, footer, className = "" }: Props) {
+export function Modal({
+  open,
+  title,
+  ariaLabel,
+  onClose,
+  children,
+  footer,
+  className = "",
+  restoreFocus = true,
+}: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
+  const restoreFocusRef = useRef(restoreFocus);
   const titleId = useId();
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    restoreFocusRef.current = restoreFocus;
+  }, [onClose, restoreFocus]);
 
   useEffect(() => {
     if (!open) return;
@@ -69,7 +81,7 @@ export function Modal({ open, title, ariaLabel, onClose, children, footer, class
     return () => {
       window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", onKeyDown);
-      if (previousFocus?.isConnected) {
+      if (restoreFocusRef.current && previousFocus?.isConnected) {
         previousFocus.focus();
       }
     };

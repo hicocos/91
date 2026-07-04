@@ -25,7 +25,6 @@ import (
 	"github.com/video-site/backend/internal/drives/p123"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/wopan"
-	"github.com/video-site/backend/internal/tagging"
 )
 
 type AdminServer struct {
@@ -971,10 +970,6 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := a.ensureCrawlerNameTag(r.Context(), name); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 	if existing != nil && existing.TeaserEnabled != teaserEnabled && a.OnTeaserEnabledChanged != nil {
 		a.OnTeaserEnabledChanged(id, teaserEnabled)
 	}
@@ -1125,10 +1120,6 @@ func (a *AdminServer) handleImportCrawlerScriptFile(w http.ResponseWriter, r *ht
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := a.ensureCrawlerNameTag(r.Context(), meta.Name); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"scriptPath": scriptPath, "name": meta.Name})
 }
 
@@ -1197,23 +1188,7 @@ func (a *AdminServer) handleImportCrawlerScriptURL(w http.ResponseWriter, r *htt
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := a.ensureCrawlerNameTag(r.Context(), meta.Name); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"scriptPath": scriptPath, "name": meta.Name, "sourceUrl": downloadURL.String()})
-}
-
-func (a *AdminServer) ensureCrawlerNameTag(ctx context.Context, name string) error {
-	if a == nil || a.Catalog == nil {
-		return nil
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil
-	}
-	_, err := a.Catalog.EnsureCrawlerTag(ctx, name)
-	return err
 }
 
 func crawlerScriptDownloadURL(u *url.URL) *url.URL {
@@ -2574,8 +2549,7 @@ type createTagReq struct {
 }
 
 type updateTagReq struct {
-	Aliases    []string     `json:"aliases"`
-	MatchRules tagging.Rule `json:"matchRules"`
+	Aliases []string `json:"aliases"`
 }
 
 func (a *AdminServer) handleCreateTag(w http.ResponseWriter, r *http.Request) {
@@ -2606,7 +2580,7 @@ func (a *AdminServer) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	tag, err := a.Catalog.UpdateTag(r.Context(), id, body.Aliases, body.MatchRules)
+	tag, err := a.Catalog.UpdateTag(r.Context(), id, body.Aliases)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, err)
@@ -2617,7 +2591,7 @@ func (a *AdminServer) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
 	}
 	classified, err := a.Catalog.ClassifyTagByID(r.Context(), id)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tag": tag, "classified": classified})
@@ -2625,7 +2599,7 @@ func (a *AdminServer) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
 
 func (a *AdminServer) handleStartTagRetag(w http.ResponseWriter, _ *http.Request) {
 	if a.OnStartTagRetag == nil {
-		writeErr(w, http.StatusNotImplemented, errors.New("tag retag job is not configured"))
+		writeErr(w, http.StatusNotImplemented, errors.New("tag maintenance is not configured"))
 		return
 	}
 	if !a.OnStartTagRetag() {
@@ -2925,7 +2899,7 @@ func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) 
 			theme = v
 		}
 	}
-	autoGenerateTagsEnabled := true
+	autoGenerateTagsEnabled := false
 	if a.Catalog != nil {
 		enabled, err := a.Catalog.AutoGenerateTagsEnabled(r.Context())
 		if err != nil {
@@ -2973,7 +2947,7 @@ func (a *AdminServer) handlePutSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 回显当前值
-	resp := settingsDTO{AutoGenerateTagsEnabled: true}
+	resp := settingsDTO{AutoGenerateTagsEnabled: false}
 	if a.GetTheme != nil {
 		resp.Theme = a.GetTheme()
 	}

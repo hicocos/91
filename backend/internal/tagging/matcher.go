@@ -16,16 +16,18 @@ import (
 //     "人妻" 配置排除词"老婆饼"后，"老婆饼测评"不会再因"老婆"命中。
 //   - MatchAVCode：识别文本中的番号（如 ABP-123、FC2-PPV-1234567）。通常由 AV
 //     归并标签开启；其它标签一般不需要。
+//   - AVCodePrefixes：MatchAVCode 开启时使用的车牌前缀列表；为空时使用内置列表。
 type Rule struct {
-	Keywords    []string `json:"keywords,omitempty"`
-	Words       []string `json:"words,omitempty"`
-	Excludes    []string `json:"excludes,omitempty"`
-	MatchAVCode bool     `json:"matchAvCode,omitempty"`
+	Keywords       []string `json:"keywords,omitempty"`
+	Words          []string `json:"words,omitempty"`
+	Excludes       []string `json:"excludes,omitempty"`
+	MatchAVCode    bool     `json:"matchAvCode,omitempty"`
+	AVCodePrefixes []string `json:"avCodePrefixes,omitempty"`
 }
 
 // IsEmpty 表示该规则没有任何显式配置（此时匹配器退化为按 label+aliases 匹配）。
 func (r Rule) IsEmpty() bool {
-	return len(r.Keywords) == 0 && len(r.Words) == 0 && len(r.Excludes) == 0 && !r.MatchAVCode
+	return len(r.Keywords) == 0 && len(r.Words) == 0 && len(r.Excludes) == 0 && len(r.AVCodePrefixes) == 0 && !r.MatchAVCode
 }
 
 // RuleFromAliases 把"标签名 + 展示别名"转换成规则：单字与 ≤3 字符 ASCII 词
@@ -92,6 +94,7 @@ type compiledRule struct {
 	words       []compiledTerm // 整词（整段）匹配
 	excludes    []compiledTerm
 	matchAVCode bool
+	avCodes     *AVCodeMatcher
 }
 
 // Matcher 是把全部标签规则一次性编译后的匹配器。构建一次可对任意多段文本
@@ -115,6 +118,13 @@ func NewMatcher(tagRules []TagRule) *Matcher {
 		}
 		seen[key] = struct{}{}
 		cr := compiledRule{label: label, matchAVCode: tr.Rule.MatchAVCode}
+		if cr.matchAVCode {
+			prefixes := tr.Rule.AVCodePrefixes
+			if len(prefixes) == 0 {
+				prefixes = DefaultAVCodePrefixes()
+			}
+			cr.avCodes = NewAVCodeMatcher(prefixes)
+		}
 		for _, kw := range tr.Rule.Keywords {
 			term, ok := compileTerm(kw)
 			if !ok {
@@ -197,7 +207,7 @@ func (m *Matcher) MatchLabels(text string) []string {
 
 func (r compiledRule) matchField(raw string, norm normText) (string, bool) {
 	if r.matchAVCode {
-		if code := FindAVCode(raw); code != "" {
+		if code := r.avCodes.Find(raw); code != "" {
 			return code, true
 		}
 	}

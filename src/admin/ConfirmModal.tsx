@@ -13,6 +13,7 @@ type ConfirmModalProps = {
   centerMessage?: boolean;
   modalClassName?: string;
   loading?: boolean;
+  restoreFocus?: boolean;
   children?: ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
@@ -29,6 +30,7 @@ export function ConfirmModal({
   centerMessage = false,
   modalClassName = "",
   loading = false,
+  restoreFocus = true,
   children,
   onCancel,
   onConfirm,
@@ -39,6 +41,7 @@ export function ConfirmModal({
       title={title}
       onClose={onCancel}
       className={modalClassName}
+      restoreFocus={restoreFocus}
       footer={
         <>
           <button type="button" className="admin-btn" onClick={onCancel} disabled={loading}>

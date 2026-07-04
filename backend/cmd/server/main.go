@@ -330,7 +330,7 @@ func main() {
 	//   Phase 2 脚本爬虫 + 入队预览视频
 	//   Phase 3 爬虫本地视频 → 云盘上传
 	//   Phase 4 全库重复视频维护：精确指纹去重 + 标题/时长/封面近似去重
-	//   Phase 5 标签维护：增量重打、系列同步和同类传播
+	//   Phase 5 标签维护：仅用现有标签池重算视频匹配，不生成新标签
 	// 也响应 admin "扫描所有网盘" 按钮（POST /admin/api/jobs/nightly/run → TriggerNow）。
 	app.nightlyRunner = nightly.New(nightly.Config{
 		Settings:              cat,
@@ -361,11 +361,9 @@ func main() {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
-	// One-time tag upgrade work starts only after the listener is bound.
-	// Completed upgrades do not rerun tag maintenance on normal restarts.
-	app.startPostStartupTagMaintenance(ctx)
 	go app.attachExistingDrives(ctx)
 	go app.migrateHiddenVideosToTombstone(ctx)
+	go app.startPostStartupTagMaintenance(ctx)
 
 	// 等待退出信号
 	sigs := make(chan os.Signal, 1)

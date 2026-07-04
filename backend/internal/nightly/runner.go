@@ -14,7 +14,8 @@
 //	         honored within this call)
 //	Phase 4: full-library duplicate video maintenance:
 //	         exact size+sampled_sha256 dedupe, then title/duration/thumbnail dedupe
-//	Phase 5: tag maintenance
+//	Phase 5: tag maintenance:
+//	         refresh video assignments from the existing tag pool only
 //
 // A 6h soft deadline guards each pipeline run; phases check deadline at their
 // boundaries and exit cleanly if exceeded (no in-flight ffmpeg / upload is
@@ -93,8 +94,8 @@ type Config struct {
 	// deletes cloud source files.
 	RunDedupeAssetCleanup func(ctx context.Context) error
 
-	// RunTagMaintenance performs incremental retagging, series synchronization,
-	// propagation after dedupe maintenance.
+	// RunTagMaintenance refreshes existing tag matches. It must not create tag
+	// definitions from titles or filenames.
 	RunTagMaintenance func(ctx context.Context) error
 
 	// Now is injected for tests; nil → time.Now.

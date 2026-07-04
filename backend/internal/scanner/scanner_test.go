@@ -384,7 +384,7 @@ func TestRunSyncsRenamedExistingVideoMetadata(t *testing.T) {
 	}
 }
 
-func TestRunReplacesExistingVideoTagsWithFixedFilenameTags(t *testing.T) {
+func TestRunPreservesExistingManualTagsInsteadOfFilenameTags(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -429,7 +429,7 @@ func TestRunReplacesExistingVideoTagsWithFixedFilenameTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	want := []string{"女大", "后入"}
+	want := []string{"sunny", "kenny"}
 	if !sameStrings(got.Tags, want) {
 		t.Fatalf("tags = %#v, want %#v", got.Tags, want)
 	}
@@ -492,7 +492,7 @@ func TestRunDoesNotCreateTagFromDirectoryName(t *testing.T) {
 	}
 }
 
-func TestRunMapsAVCodeDirectoryToAVTag(t *testing.T) {
+func TestRunMapsAVCodeDirectoryToExistingAVTag(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -522,7 +522,7 @@ func TestRunMapsAVCodeDirectoryToAVTag(t *testing.T) {
 		entries: map[string][]drives.Entry{
 			"root": {{
 				ID:    "dir-1",
-				Name:  "cc-1750027",
+				Name:  "SSNI-001",
 				IsDir: true,
 			}},
 			"dir-1": {{
@@ -544,8 +544,8 @@ func TestRunMapsAVCodeDirectoryToAVTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	if !sameStrings(got.Tags, []string{"AV"}) {
-		t.Fatalf("tags = %#v, want AV", got.Tags)
+	if !sameStrings(got.Tags, []string{"AV", "SSNI"}) {
+		t.Fatalf("tags = %#v, want AV + SSNI", got.Tags)
 	}
 }
 

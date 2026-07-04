@@ -542,9 +542,9 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		author = c.cfg.Driver.ID()
 	}
 	// 标签策略：
-	//   1. 规则引擎按标题/文件名/作者匹配站内标签池 → source=auto；
-	//   2. 脚本返回的 tags 只挂已存在的标签，不再自动创建新标签（治理长尾）→ source=crawler；
-	//   3. 爬虫名标签总是确保存在并强制挂载（不受自动生成开关和人工锁定影响）。
+	//   1. 脚本返回的 tags 只挂已存在的标签，不自动创建新标签 → source=crawler；
+	//   2. 规则引擎按标题/文件名/作者匹配已有标签池 → source=auto；
+	//   3. 视频成功入库后才确保并强制挂载爬虫名标签（不受人工锁定影响）。
 	var tagAssignments []catalog.TagAssignment
 	tagLabelSeen := map[string]bool{}
 	crawlerTagLabel := ""
@@ -556,11 +556,6 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		tagLabelSeen[key] = true
 		tagAssignments = append(tagAssignments, a)
 	}
-	if matched, err := c.cfg.Catalog.MatchTagAssignments(ctx, title, videoFile, author, ""); err == nil {
-		for _, a := range matched {
-			appendAssignment(a)
-		}
-	}
 	for _, scriptTag := range cleanStringList(item.Tags) {
 		label, ok, err := c.cfg.Catalog.LookupTagLabel(ctx, scriptTag)
 		if err != nil || !ok {
@@ -568,15 +563,12 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		}
 		appendAssignment(catalog.TagAssignment{Label: label, Source: "crawler", Evidence: "脚本标签"})
 	}
-	if crawlerTag := c.crawlerTagName(); crawlerTag != "" {
-		tag, err := c.cfg.Catalog.EnsureCrawlerTag(ctx, crawlerTag)
-		switch {
-		case err == nil:
-			crawlerTagLabel = tag.Label
-		default:
-			log.Printf("[scriptcrawler] ensure crawler tag %q: %v", crawlerTag, err)
+	if matched, err := c.cfg.Catalog.MatchTagAssignments(ctx, title, videoFile, author, ""); err == nil {
+		for _, a := range matched {
+			appendAssignment(a)
 		}
 	}
+	crawlerTagLabel = c.crawlerTagName()
 	publishedAt := now
 	if parsed := parsePublishedAt(item.PublishedAt); !parsed.IsZero() {
 		publishedAt = parsed

@@ -683,28 +683,13 @@ export type AdminTag = {
   id: number;
   label: string;
   aliases?: string[];
+  matchRules?: {
+    matchAvCode?: boolean;
+    avCodePrefixes?: string[];
+  };
   source: string;
   count: number;
   crawlerOwned?: boolean;
-  matchRules?: TagMatchRules;
-};
-
-export type TagMatchRules = {
-  keywords?: string[];
-  words?: string[];
-  excludes?: string[];
-  matchAvCode?: boolean;
-};
-
-export type TagJobStatus = {
-  state: "idle" | "running" | "completed" | "failed" | "canceled";
-  running: boolean;
-  kind?: "retag";
-  total: number;
-  processed: number;
-  lastError?: string;
-  startedAt?: string;
-  lastFinishedAt?: string;
 };
 
 export function listTags() {
@@ -718,12 +703,12 @@ export function createTag(label: string, aliases: string[]) {
   });
 }
 
-export function updateTag(id: number, aliases: string[], matchRules: TagMatchRules) {
+export function updateTag(id: number, aliases: string[]) {
   return request<{ tag: AdminTag; classified: number }>(
     `/tags/${encodeURIComponent(String(id))}`,
     {
       method: "PUT",
-      body: JSON.stringify({ aliases, matchRules }),
+      body: JSON.stringify({ aliases }),
     }
   );
 }
@@ -735,21 +720,12 @@ export function deleteTag(id: number) {
   );
 }
 
-export function startTagRetag() {
-  return request<{ accepted: boolean }>("/tags/retag", { method: "POST" });
-}
-
-export function getTagJobStatus() {
-  return request<TagJobStatus>("/tags/jobs/status");
-}
-
 // ---------- Settings ----------
 
 export type Theme = "dark" | "pink" | "sky";
 
 export type Settings = {
   theme: Theme;
-  autoGenerateTagsEnabled: boolean;
 };
 
 export function getSettings() {

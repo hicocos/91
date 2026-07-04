@@ -107,10 +107,8 @@ func TestMatcherAVCodeRule(t *testing.T) {
 		text string
 		term string
 	}{
-		{"[44x.me]IDBD-786 中文字幕.mp4", "IDBD-786"},
 		{"FC2PPV-3259498.mp4", "FC2PPV-3259498"},
 		{"hhd800.com@FC2-PPV-4745791.mp4", "FC2-PPV-4745791"},
-		{"Carib-041515-853-FHD.mp4", "Carib-041515-853-FHD"},
 		{"MIMK-284D.mp4", "MIMK-284D"},
 	}
 	for _, c := range cases {
@@ -124,6 +122,22 @@ func TestMatcherAVCodeRule(t *testing.T) {
 	}
 	if got := m.MatchLabels("没有番号的标题"); len(got) != 0 {
 		t.Fatalf("误报番号: %#v", got)
+	}
+	for _, text := range []string{"[44x.me]IDBD-786 中文字幕.mp4", "Carib-041515-853-FHD.mp4", "cc-1750027.mp4", "390JAC-233.mp4"} {
+		if got := m.MatchLabels(text); len(got) != 0 {
+			t.Fatalf("MatchLabels(%q) = %#v, want no AV match", text, got)
+		}
+	}
+}
+
+func TestMatcherAVCodeCustomPrefixes(t *testing.T) {
+	m := NewMatcher([]TagRule{
+		{Label: "AV", Rule: Rule{MatchAVCode: true, AVCodePrefixes: append(DefaultAVCodePrefixes(), "IDBD", "JAC")}},
+	})
+	for _, text := range []string{"[44x.me]IDBD-786 中文字幕.mp4", "JAC-233.mp4"} {
+		if got := m.MatchLabels(text); !reflect.DeepEqual(got, []string{"AV"}) {
+			t.Fatalf("MatchLabels(%q) = %#v, want [AV]", text, got)
+		}
 	}
 }
 
@@ -169,16 +183,16 @@ func TestSeriesExtraction(t *testing.T) {
 		want string
 	}{
 		{"ABP-123 完整版", "ABP"},
-		{"[44x.me]idbd-786", "IDBD"},
-		{"390JAC-233", "JAC"},
 		{"FC2-PPV-1234567", "FC2PPV"},
 		{"FC2PPV-4162750", "FC2PPV"},
 		{"hhd800.com@FC2-PPV-4745791", "FC2PPV"},
-		{"Carib-041515-853-FHD", "CARIB"},
 		{"MIMK-284D", "MIMK"},
 		{"300MIUM-873", "300MIUM"},
 		{"259LUXU-1823", "259LUXU"},
-		{"cc-1750027", "CC"},
+		{"[44x.me]idbd-786", ""},
+		{"390JAC-233", ""},
+		{"Carib-041515-853-FHD", ""},
+		{"cc-1750027", ""},
 		{"没有番号", ""},
 	}
 	for _, c := range cases {
@@ -188,24 +202,42 @@ func TestSeriesExtraction(t *testing.T) {
 	}
 }
 
+func TestAutoSeriesExtractionUsesCuratedPrefixes(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{"ABP-123", "ABP"},
+		{"FC2PPV-4162750", "FC2PPV"},
+		{"ADN-778-FHD", ""},
+		{"390JAC-233", ""},
+		{"FC2-1234567", ""},
+		{"cc-1750027", ""},
+		{"IMG_1234", ""},
+		{"FINAL168045", ""},
+		{"MOV202405", ""},
+	}
+	for _, c := range cases {
+		if got := AutoSeriesOf(c.code); got != c.want {
+			t.Errorf("AutoSeriesOf(%q) = %q, want %q", c.code, got, c.want)
+		}
+	}
+}
+
 func TestIsAVCode(t *testing.T) {
 	for _, code := range []string{
 		"ABP-123",
-		"cc-1750027",
 		"FC2-PPV-1234567",
 		"FC2PPV-3259498",
-		"Carib-041515-853-FHD",
 		"MIMK-284D",
 		"300MIUM-873",
 		"259LUXU-1823",
-		"390JAC-233",
-		"ADN-778-FHD",
 	} {
 		if !IsAVCode(code) {
 			t.Errorf("IsAVCode(%q) = false, want true", code)
 		}
 	}
-	for _, text := range []string{"普通标题", "av", "2024-01"} {
+	for _, text := range []string{"普通标题", "av", "2024-01", "cc-1750027", "Carib-041515-853-FHD", "390JAC-233", "ADN-778-FHD"} {
 		if IsAVCode(text) {
 			t.Errorf("IsAVCode(%q) = true, want false", text)
 		}

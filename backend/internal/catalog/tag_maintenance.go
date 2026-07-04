@@ -14,18 +14,18 @@ import (
 
 // retagVideoRow 是重算时读取的最小视频行。
 type retagVideoRow struct {
-	id       string
-	title    string
-	author   string
-	fileName string
-	dirName  string
-	manual   bool
+	id          string
+	title       string
+	author      string
+	fileName    string
+	dirName     string
+	manual      bool
+	assignments []TagAssignment
 }
 
 type TagStateResetResult struct {
 	RemovedAssignments int
 	RemovedTags        int
-	ClearedTombstones  int
 }
 
 func (c *Catalog) CountVideosForRetag(ctx context.Context, sinceMs int64) (int, error) {
@@ -40,9 +40,10 @@ func (c *Catalog) CountVideosForRetag(ctx context.Context, sinceMs int64) (int, 
 	return count, err
 }
 
-// RetagVideosBatch 用匹配器重算一批视频的引擎标签（source IN auto/legacy 整组替换，
-// 其它来源保留）。keyset 分页：处理 id > afterID 的前 limit 条，按 id 升序。
-// sinceMs > 0 时只处理 updated_at >= sinceMs 的视频（夜间增量用）。
+// RetagVideosBatch recalculates engine-managed assignments for one page of
+// videos using the existing tag matcher. It may create AV series labels while
+// the built-in AV matching mechanism is enabled; other automatic label
+// generation remains disabled.
 // 返回 (本批处理数, 最后一个 id, 是否已到结尾)。
 func (c *Catalog) RetagVideosBatch(ctx context.Context, matcher *tagging.Matcher, afterID string, limit int, sinceMs int64) (int, string, bool, error) {
 	if limit <= 0 {
@@ -85,7 +86,16 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 	if len(batch) == 0 {
 		return 0, afterID, true, nil
 	}
-
+	for i := range batch {
+		if batch[i].manual {
+			continue
+		}
+		assignments, err := c.matchTagAssignmentsWithMatcher(ctx, matcher, batch[i].title, batch[i].fileName, batch[i].author, batch[i].dirName)
+		if err != nil {
+			return 0, afterID, false, err
+		}
+		batch[i].assignments = assignments
+	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, afterID, false, err
@@ -95,12 +105,7 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 		if row.manual {
 			continue
 		}
-		matches := matcher.Match(matchFields(row.title, row.fileName, row.author, row.dirName)...)
-		assignments := make([]TagAssignment, 0, len(matches))
-		for _, m := range matches {
-			assignments = append(assignments, TagAssignment{Label: m.Label, Source: "auto", Evidence: m.Evidence()})
-		}
-		changed, err := replaceAutoVideoTagsTx(ctx, tx, row.id, assignments)
+		changed, err := replaceAutoVideoTagsTx(ctx, tx, row.id, row.assignments)
 		if err != nil {
 			return 0, afterID, false, err
 		}
@@ -118,7 +123,7 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 }
 
 // ResetGeneratedTagState clears ordinary generated tags, engine-managed
-// assignments, and deleted tag tombstones. Crawler ownership tags are preserved
+// assignments. Crawler ownership tags are preserved
 // because they represent source provenance, not automatic content matching.
 func (c *Catalog) ResetGeneratedTagState(ctx context.Context) (TagStateResetResult, error) {
 	var result TagStateResetResult
@@ -132,7 +137,7 @@ func (c *Catalog) ResetGeneratedTagState(ctx context.Context) (TagStateResetResu
 SELECT DISTINCT vt.video_id
   FROM video_tags vt
   LEFT JOIN tags t ON t.id = vt.tag_id
- WHERE lower(trim(COALESCE(vt.source, ''))) IN ('auto', 'legacy', 'series')
+ WHERE lower(trim(COALESCE(vt.source, ''))) IN ('auto', 'legacy', 'series', 'propagated')
     OR (
        lower(trim(COALESCE(t.source, ''))) = 'generated'
        AND lower(trim(COALESCE(t.origin, ''))) != 'crawler'
@@ -165,7 +170,7 @@ SELECT DISTINCT vt.video_id
 
 	res, err := tx.ExecContext(ctx, `
 DELETE FROM video_tags
- WHERE lower(trim(COALESCE(source, ''))) IN ('auto', 'legacy', 'series')`)
+ WHERE lower(trim(COALESCE(source, ''))) IN ('auto', 'legacy', 'series', 'propagated')`)
 	if err != nil {
 		return result, err
 	}
@@ -199,14 +204,6 @@ SELECT t.id
 		result.RemovedTags = int(n)
 	}
 
-	res, err = tx.ExecContext(ctx, `DELETE FROM deleted_tags`)
-	if err != nil {
-		return result, err
-	}
-	if n, err := res.RowsAffected(); err == nil {
-		result.ClearedTombstones = int(n)
-	}
-
 	for _, videoID := range affectedVideoIDs {
 		manual := hasManualTagsTx(ctx, tx, videoID)
 		if err := syncVideoTagsJSONTx(ctx, tx, videoID, manual); err != nil {
@@ -225,14 +222,14 @@ SELECT t.id
 	return result, nil
 }
 
-// ReconcileBuiltinTags restores the built-in tag pack after tombstones are
-// cleared. Existing administrator-edited rules are not overwritten.
+// ReconcileBuiltinTags restores the built-in tag pack. Existing
+// administrator-edited rules are not overwritten.
 func (c *Catalog) ReconcileBuiltinTags(ctx context.Context) error {
 	return c.seedBuiltinTagPack(ctx)
 }
 
-// PruneUnreferencedTags 删除零引用的自动生成标签。
-// builtin / user 标签即使零引用也保留（人工维护语义）。不写墓碑。
+// PruneUnreferencedTags 删除零引用的 generated 标签，包括没有任何视频引用的
+// 爬虫来源标签。builtin / user 标签即使零引用也保留（人工维护语义）。
 func (c *Catalog) PruneUnreferencedTags(ctx context.Context) (int, error) {
 	res, err := c.db.ExecContext(ctx, `
 DELETE FROM tags
@@ -251,28 +248,20 @@ DELETE FROM tags
 }
 
 func (c *Catalog) AutoGenerateTagsEnabled(ctx context.Context) (bool, error) {
-	raw, err := c.GetSetting(ctx, settingAutoGenerateTagsEnabled, "true")
-	if err != nil {
-		return true, err
-	}
-	return parseSettingBool(raw, true), nil
+	return false, nil
 }
 
 func (c *Catalog) SetAutoGenerateTagsEnabled(ctx context.Context, enabled bool) error {
-	value := "false"
-	if enabled {
-		value = "true"
-	}
-	return c.SetSetting(ctx, settingAutoGenerateTagsEnabled, value)
+	return c.SetSetting(ctx, settingAutoGenerateTagsEnabled, "false")
 }
 
-// SyncSeriesTags 按番号车牌前缀维护 series 标签：
-//   - 同一系列 ≥ minVideos 个视频时创建（或复用）series 标签并挂到这些视频；
-//   - 不再成立的 series 行删除；
-//   - 零引用的 series 标签回收。
-//
-// 被管理员删除过的系列（deleted_tags 墓碑）不会重建。返回新增的挂载行数。
+// SyncSeriesTags is retained for older callers. Series tags were part of the
+// retired automatic tagging model, so this no longer creates or attaches them.
 func (c *Catalog) SyncSeriesTags(ctx context.Context, minVideos int) (int, error) {
+	return 0, nil
+}
+
+func (c *Catalog) syncSeriesTagsRetired(ctx context.Context, minVideos int) (int, error) {
 	if minVideos <= 0 {
 		minVideos = 3
 	}
@@ -340,7 +329,7 @@ SELECT id, title, COALESCE(file_name, ''), COALESCE(tags_manual, 0)
 	for series := range desired {
 		tag, err := c.ensureTag(ctx, series, nil, "generated")
 		if err != nil {
-			if errors.Is(err, ErrDeletedTag) || errors.Is(err, ErrAutoTagGenerationDisabled) {
+			if errors.Is(err, ErrAutoTagGenerationDisabled) {
 				delete(desired, series)
 				continue
 			}
@@ -467,9 +456,13 @@ func (c *Catalog) ClearPropagatedTags(ctx context.Context) (int, error) {
 	return len(videoIDs), nil
 }
 
-// PropagateTagsAcrossDuplicates 在 size+sampled_sha256 完全相同的视频组内取标签
-// 并集，把缺失的标签补给未锁定成员（source=propagated）。返回新增行数。
+// PropagateTagsAcrossDuplicates is retained for older callers. Propagated
+// assignments were part of automatic tagging, so no new rows are created.
 func (c *Catalog) PropagateTagsAcrossDuplicates(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
+func (c *Catalog) propagateTagsAcrossDuplicatesRetired(ctx context.Context) (int, error) {
 	rows, err := c.db.QueryContext(ctx, `
 SELECT v.id, v.size_bytes, v.sampled_sha256, COALESCE(v.tags_manual, 0)
   FROM videos v

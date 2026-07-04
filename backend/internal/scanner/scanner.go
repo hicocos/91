@@ -182,8 +182,6 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 		if parsed.Title == "" {
 			parsed.Title = strings.TrimSuffix(e.Name, ext)
 		}
-		// 标签走统一匹配引擎（catalog 内部按规则版本缓存编译结果，
-		// 不再像旧版那样每个文件跑一次全量标签查询）。
 		assignments, err := s.Catalog.MatchTagAssignments(ctx, parsed.Title, e.Name, parsed.Author, dirName)
 		if err != nil {
 			assignments = nil
@@ -230,8 +228,6 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			// 引擎标签整组替换（内部先比对，无变化时不落盘）；
-			// 人工锁定和爬虫/系列/传播来源的行不受影响。
 			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, id, assignments); err != nil {
 				log.Printf("[scanner] retag %s error: %v", id, err)
 			}
@@ -274,7 +270,9 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			log.Printf("[scanner] upsert %s error: %v", v.Title, err)
 			continue
 		}
-		// 标签行（带命中证据）在 upsert 后统一落库。
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(assignments) > 0 {
 			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, v.ID, assignments); err != nil {
 				log.Printf("[scanner] tag %s error: %v", v.ID, err)

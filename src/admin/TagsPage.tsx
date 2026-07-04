@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Film, Pencil, Plus, RefreshCw, Search, Settings2, Trash2 } from "lucide-react";
+import { Film, RefreshCw, Search, Trash2 } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "./ToastContext";
 import { ConfirmModal } from "./ConfirmModal";
@@ -9,6 +9,12 @@ const DESKTOP_TAGS_PAGE_SIZE = 25;
 const MOBILE_TAGS_PAGE_SIZE = 8;
 const TAGS_MOBILE_QUERY = "(max-width: 640px)";
 const TAG_SOURCE_FILTERS = ["builtin", "user", "generated"];
+const TAG_DISPLAY_GROUP_ORDER: Record<string, number> = {
+  builtin: 0,
+  user: 1,
+  crawler: 2,
+  av: 3,
+};
 
 type DeleteConfirmState =
   | { kind: "single"; tag: api.AdminTag }
@@ -30,11 +36,7 @@ export function TagsPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [editingTag, setEditingTag] = useState<api.AdminTag | null>(null);
-  const [retagConfirmOpen, setRetagConfirmOpen] = useState(false);
-  const [jobStatus, setJobStatus] = useState<api.TagJobStatus | null>(null);
-  const [jobStarting, setJobStarting] = useState<"retag" | null>(null);
-  const [autoGenerateTagsEnabled, setAutoGenerateTagsEnabled] = useState(true);
-  const [autoGenerateTagsSaving, setAutoGenerateTagsSaving] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const pageSize = useTagsPageSize();
   const [page, setPage] = useState(1);
   const { show } = useToast();
@@ -55,61 +57,7 @@ export function TagsPage() {
 
   useEffect(() => {
     refresh();
-    void api.getTagJobStatus().then(setJobStatus).catch(() => undefined);
-    void api
-      .getSettings()
-      .then((settings) => {
-        if (typeof settings.autoGenerateTagsEnabled === "boolean") {
-          setAutoGenerateTagsEnabled(settings.autoGenerateTagsEnabled);
-        }
-      })
-      .catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    if (!jobStatus?.running) return;
-    let active = true;
-    let timer = 0;
-    const poll = async () => {
-      try {
-        const next = await api.getTagJobStatus();
-        if (!active) return;
-        setJobStatus(next);
-        if (next.running) {
-          timer = window.setTimeout(poll, 1500);
-          return;
-        }
-        show(
-          next.state === "completed"
-            ? `标签整理完成，共处理 ${next.processed} 个视频`
-            : next.lastError || "标签任务未完成",
-          next.state === "completed" ? "success" : "error"
-        );
-        void refresh();
-      } catch {
-        if (active) timer = window.setTimeout(poll, 2000);
-      }
-    };
-    timer = window.setTimeout(poll, 1000);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [jobStatus?.running]);
-
-  async function startRetag() {
-    setJobStarting("retag");
-    try {
-      await api.startTagRetag();
-      setRetagConfirmOpen(false);
-      setJobStatus(await api.getTagJobStatus());
-      show("已开始后台重新整理所有标签", "info");
-    } catch (e) {
-      show(e instanceof Error ? e.message : "启动重算失败", "error");
-    } finally {
-      setJobStarting(null);
-    }
-  }
 
   async function handleCreate() {
     const cleanLabel = label.trim();
@@ -117,9 +65,10 @@ export function TagsPage() {
     setSaving(true);
     try {
       const r = await api.createTag(cleanLabel, splitList(aliases));
-      show(`已添加标签，自动匹配 ${r.classified} 个视频`, "success");
+      show(`已添加标签「${r.label}」`, "success");
       setLabel("");
       setAliases("");
+      setCreateModalOpen(false);
       await refresh();
     } catch (e) {
       show(e instanceof Error ? e.message : "添加标签失败", "error");
@@ -128,27 +77,14 @@ export function TagsPage() {
     }
   }
 
-  async function toggleAutoGenerateTags() {
-    const next = !autoGenerateTagsEnabled;
-    const previous = autoGenerateTagsEnabled;
-    setAutoGenerateTagsEnabled(next);
-    setAutoGenerateTagsSaving(true);
-    try {
-      const settings = await api.updateSettings({ autoGenerateTagsEnabled: next });
-      if (typeof settings.autoGenerateTagsEnabled === "boolean") {
-        setAutoGenerateTagsEnabled(settings.autoGenerateTagsEnabled);
-      }
-      show(next ? "已开启自动生成标签" : "已关闭自动生成标签", "success");
-    } catch (e) {
-      setAutoGenerateTagsEnabled(previous);
-      show(e instanceof Error ? e.message : "保存设置失败", "error");
-    } finally {
-      setAutoGenerateTagsSaving(false);
-    }
-  }
-
   function handleDelete(tag: api.AdminTag) {
     setDeleteConfirm({ kind: "single", tag });
+  }
+
+  function openCreateModal() {
+    setLabel("");
+    setAliases("");
+    setCreateModalOpen(true);
   }
 
   function toggleSelectMode() {
@@ -217,26 +153,42 @@ export function TagsPage() {
 
   const stats = useMemo(() => {
     const sourceCounts: Record<string, number> = {};
+    let total = 0;
 
     tags.forEach((t) => {
-      sourceCounts[t.source] = (sourceCounts[t.source] ?? 0) + 1;
+      if (!isSupportedTag(t)) return;
+      total++;
+      const key = tagSourceKey(t);
+      sourceCounts[key] = (sourceCounts[key] ?? 0) + 1;
     });
 
     return {
+      total,
       sourceCounts,
     };
   }, [tags]);
 
   const filteredTags = useMemo(() => {
-    return tags.filter((t) => {
-      const query = searchQuery.trim().toLowerCase();
+    const query = searchQuery.trim().toLowerCase();
+    const matches = tags.filter((t) => {
+      if (!isSupportedTag(t)) return false;
       const matchesSearch =
         !query ||
         t.label.toLowerCase().includes(query) ||
         (t.aliases ?? []).some((a) => a.toLowerCase().includes(query));
-      const matchesSource = filterSource === "all" || t.source === filterSource;
+      const matchesSource = filterSource === "all" || tagSourceKey(t) === filterSource;
       return matchesSearch && matchesSource;
     });
+
+    if (filterSource !== "all") return matches;
+
+    return matches
+      .map((tag, index) => ({ tag, index }))
+      .sort((a, b) => {
+        const rankDelta = tagDisplayGroupRank(a.tag) - tagDisplayGroupRank(b.tag);
+        return rankDelta || a.index - b.index;
+      })
+      .map(({ tag }) => tag);
   }, [tags, searchQuery, filterSource]);
 
   const totalPages = Math.max(1, Math.ceil(filteredTags.length / pageSize));
@@ -275,81 +227,8 @@ export function TagsPage() {
 
   return (
     <section className={`admin-tags-page${selectMode ? " has-bulk-actions" : ""}`}>
-      <header className="admin-page__header">
-        <h1 className="admin-page__title">标签管理</h1>
-      </header>
-
       <div className="admin-tags-layout">
-        {/* 左栏：创建与策略 */}
-        <div>
-          <div className="admin-card">
-            <div className="admin-card__title">
-              <Plus size={15} /> 新增标签
-            </div>
-            <form
-              className="admin-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleCreate();
-              }}
-            >
-              <div className="admin-form__row">
-                <label htmlFor="admin-tag-label">标签名</label>
-                <input
-                  id="admin-tag-label"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  placeholder="例如：清纯"
-                />
-              </div>
-              <div className="admin-form__row">
-                <label htmlFor="admin-tag-aliases">别名</label>
-                <input
-                  id="admin-tag-aliases"
-                  value={aliases}
-                  onChange={(e) => setAliases(e.target.value)}
-                  placeholder="逗号分隔，例如：纯欲, 清新"
-                />
-              </div>
-              <button
-                type="submit"
-                className="admin-btn is-primary"
-                disabled={saving || !label.trim()}
-              >
-                <Plus size={13} /> {saving ? "添加中..." : "添加并自动匹配"}
-              </button>
-            </form>
-          </div>
-
-          <div className="admin-card">
-            <div className="admin-card__title">
-              <Settings2 size={15} /> 标签策略
-            </div>
-            <div
-              className={`admin-tag-setting-toggle${autoGenerateTagsEnabled ? " is-on" : ""}${
-                autoGenerateTagsSaving ? " is-saving" : ""
-              }`}
-            >
-              <span className="admin-tag-setting-toggle__title">自动生成标签</span>
-              <button
-                type="button"
-                className="admin-tag-setting-toggle__switch"
-                onClick={toggleAutoGenerateTags}
-                disabled={autoGenerateTagsSaving}
-                role="switch"
-                aria-checked={autoGenerateTagsEnabled}
-                aria-label="自动生成标签"
-              >
-                <span className="admin-tag-setting-toggle__switch-text">
-                  {autoGenerateTagsEnabled ? "ON" : "OFF"}
-                </span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* 右栏：看板网格与搜索栏 */}
-        <div>
+        <div className="admin-tags-main">
           <div className="admin-tags-toolbar">
             <div className="admin-tags-search">
               <Search className="admin-tags-search__icon" size={14} />
@@ -362,39 +241,40 @@ export function TagsPage() {
               />
             </div>
 
-            <div className="admin-tags-filter-tabs">
-              <button
-                type="button"
-                className={`admin-tags-filter-tab ${filterSource === "all" ? "is-active" : ""}`}
-                onClick={() => setFilterSource("all")}
-              >
-                全部 ({tags.length})
-              </button>
-              {TAG_SOURCE_FILTERS.filter((source) => (stats.sourceCounts[source] ?? 0) > 0).map((source) => (
+            <aside className="admin-tags-filter-panel" aria-label="标签分类">
+              <div className="admin-tags-filter-tabs">
                 <button
-                  key={source}
                   type="button"
-                  className={`admin-tags-filter-tab ${filterSource === source ? "is-active" : ""}`}
-                  onClick={() => setFilterSource(source)}
+                  className={`admin-tags-filter-tab ${filterSource === "all" ? "is-active" : ""}`}
+                  onClick={() => setFilterSource("all")}
+                  aria-label="全部"
                 >
-                  {sourceLabel(source)} ({stats.sourceCounts[source]})
+                  <span className="admin-tags-filter-tab__text">全部</span>
                 </button>
-              ))}
-            </div>
+                {TAG_SOURCE_FILTERS.filter((source) => (stats.sourceCounts[source] ?? 0) > 0).map((source) => {
+                  const label = sourceLabel(source);
+                  return (
+                    <button
+                      key={source}
+                      type="button"
+                      className={`admin-tags-filter-tab ${filterSource === source ? "is-active" : ""}`}
+                      onClick={() => setFilterSource(source)}
+                      aria-label={label}
+                    >
+                      <span className="admin-tags-filter-tab__text">{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
 
             <div className="admin-tags-toolbar-actions">
-              {jobStatus?.running && (
-                <span className="admin-tags-job-status">
-                  整理标签 {jobStatus.processed}/{jobStatus.total || "?"}
-                </span>
-              )}
               <button
                 type="button"
                 className="admin-btn"
-                onClick={() => setRetagConfirmOpen(true)}
-                disabled={!!jobStatus?.running || jobStarting !== null}
+                onClick={openCreateModal}
               >
-                <RefreshCw size={13} /> 重新整理所有标签
+                新增标签
               </button>
               <button
                 type="button"
@@ -406,145 +286,136 @@ export function TagsPage() {
             </div>
           </div>
 
-          {loading ? (
-            <div className="admin-loading-state">
-              <RefreshCw size={20} className="admin-spin" />
-              <span>加载中...</span>
-            </div>
-          ) : loadError ? (
-            <div className="admin-error-state">
-              <strong>标签加载失败</strong>
-              <span>{loadError}</span>
-              <button type="button" className="admin-btn" onClick={refresh}>
-                <RefreshCw size={13} /> 重试
-              </button>
-            </div>
-          ) : filteredTags.length === 0 ? (
-            <div className="admin-card admin-empty">
-              没有找到匹配的标签。
-            </div>
-          ) : (
-            <>
-              <div className="admin-tags-grid">
-                {pagedTags.map((tag) => {
-                  const selectable = selectMode;
-                  const isSelected = selected.has(tag.id);
-                  const cardClass = `admin-tag-card${selectable ? " is-selectable" : ""}${
-                    selectable && isSelected ? " is-selected" : ""
-                  }`;
-                  const cardContent = (
-                    <>
-                      <div className="admin-tag-card__head">
-                        <span className="admin-tag-card__title">{tag.label}</span>
-                        <span className="admin-tag-card__source-badge" data-source={tag.source}>
-                          {sourceLabel(tag.source, tag)}
-                        </span>
-                      </div>
-
-                      {tag.aliases && tag.aliases.length > 0 && (
-                        <div className="admin-tag-card__aliases">
-                          {tag.aliases.map((alias) => (
-                            <span key={alias} className="admin-tag-card__alias-pill">
-                              {alias}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className="admin-tag-card__footer">
-                        <span className="admin-tag-card__count">
-                          <Film size={13} />
-                          <strong>{tag.count}</strong> 视频
-                        </span>
-                        <div className="admin-tag-card__footer-actions">
-                          <span className="admin-tag-card__id">#{tag.id}</span>
-                          {!selectMode && (
-                            <button
-                              type="button"
-                              className="admin-tag-card__edit"
-                              onClick={() => setEditingTag(tag)}
-                              aria-label={`编辑标签 ${tag.label}`}
-                            >
-                              <Pencil size={11} />
-                              <span>编辑</span>
-                            </button>
-                          )}
-                          {!selectMode && (
-                            <button
-                              type="button"
-                              className="admin-tag-card__delete"
-                              onClick={() => handleDelete(tag)}
-                              disabled={deletingId === tag.id}
-                              aria-label={`删除标签 ${tag.label}`}
-                            >
-                              <Trash2 size={11} />
-                              <span>{deletingId === tag.id ? "删除中" : "删除"}</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  );
-                  return selectable ? (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      className={cardClass}
-                      onClick={() => toggleSelect(tag.id)}
-                      aria-pressed={isSelected}
-                      aria-label={`${isSelected ? "取消选中" : "选中"}标签 ${tag.label}`}
-                    >
-                      {cardContent}
-                    </button>
-                  ) : (
-                    <div key={tag.id} className={cardClass}>
-                      {cardContent}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {totalPages > 1 && (
-                <div className="admin-table-pagination admin-tags-pagination">
-                  <button
-                    type="button"
-                    className="admin-btn"
-                    onClick={() => setPage(1)}
-                    disabled={currentPage <= 1}
-                  >
-                    首页
-                  </button>
-                  <button
-                    type="button"
-                    className="admin-btn"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={currentPage <= 1}
-                  >
-                    上一页
-                  </button>
-                  <span className="admin-table-pagination__info">
-                    第 {currentPage} / {totalPages} 页，显示 {pageStart}-{pageEnd} / {filteredTags.length}，每页 {pageSize} 个
-                  </span>
-                  <button
-                    type="button"
-                    className="admin-btn"
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={currentPage >= totalPages}
-                  >
-                    下一页
-                  </button>
-                  <button
-                    type="button"
-                    className="admin-btn"
-                    onClick={() => setPage(totalPages)}
-                    disabled={currentPage >= totalPages}
-                  >
-                    末页
+          <div className="admin-tags-board">
+            <div className="admin-tags-cards">
+              {loading ? (
+                <div className="admin-loading-state">
+                  <RefreshCw size={20} className="admin-spin" />
+                  <span>加载中...</span>
+                </div>
+              ) : loadError ? (
+                <div className="admin-error-state">
+                  <strong>标签加载失败</strong>
+                  <span>{loadError}</span>
+                  <button type="button" className="admin-btn" onClick={refresh}>
+                    <RefreshCw size={13} /> 重试
                   </button>
                 </div>
+              ) : filteredTags.length === 0 ? (
+                <div className="admin-card admin-empty">
+                  没有找到匹配的标签。
+                </div>
+              ) : (
+                <>
+                  <div className="admin-tags-grid">
+                    {pagedTags.map((tag) => {
+                      const selectable = selectMode;
+                      const isSelected = selected.has(tag.id);
+                      const cardClass = `admin-tag-card${selectable ? " is-selectable" : ""}${
+                        selectable && isSelected ? " is-selected" : ""
+                      }`;
+                      const cardContent = (
+                        <>
+                          <div className="admin-tag-card__head">
+                            <span className="admin-tag-card__title">{tag.label}</span>
+                            <span className="admin-tag-card__source-badge" data-source={tagSourceKey(tag)}>
+                              {tagCardSourceLabel(tag)}
+                            </span>
+                          </div>
+
+                          <div className="admin-tag-card__footer">
+                            <span className="admin-tag-card__count">
+                              <Film size={13} />
+                              <strong>{tag.count}</strong> 视频
+                            </span>
+                            <div className="admin-tag-card__footer-actions">
+                              {!selectMode && (
+                                <button
+                                  type="button"
+                                  className="admin-tag-card__delete"
+                                  onClick={() => handleDelete(tag)}
+                                  disabled={deletingId === tag.id}
+                                  aria-label={`删除标签 ${tag.label}`}
+                                >
+                                  <span>{deletingId === tag.id ? "删除中" : "删除"}</span>
+                                </button>
+                              )}
+                              {!selectMode && (
+                                <button
+                                  type="button"
+                                  className="admin-tag-card__edit"
+                                  onClick={() => setEditingTag(tag)}
+                                  aria-label={`编辑标签 ${tag.label}`}
+                                >
+                                  <span>编辑</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      );
+                      return selectable ? (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          className={cardClass}
+                          onClick={() => toggleSelect(tag.id)}
+                          aria-pressed={isSelected}
+                          aria-label={`${isSelected ? "取消选中" : "选中"}标签 ${tag.label}`}
+                        >
+                          {cardContent}
+                        </button>
+                      ) : (
+                        <div key={tag.id} className={cardClass}>
+                          {cardContent}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {totalPages > 1 && (
+                    <div className="admin-table-pagination admin-tags-pagination">
+                      <button
+                        type="button"
+                        className="admin-btn"
+                        onClick={() => setPage(1)}
+                        disabled={currentPage <= 1}
+                      >
+                        首页
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-btn"
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage <= 1}
+                      >
+                        上一页
+                      </button>
+                      <span className="admin-table-pagination__info">
+                        第 {currentPage} / {totalPages} 页，显示 {pageStart}-{pageEnd} / {filteredTags.length}，每页 {pageSize} 个
+                      </span>
+                      <button
+                        type="button"
+                        className="admin-btn"
+                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={currentPage >= totalPages}
+                      >
+                        下一页
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-btn"
+                        onClick={() => setPage(totalPages)}
+                        disabled={currentPage >= totalPages}
+                      >
+                        末页
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
-            </>
-          )}
+            </div>
+          </div>
         </div>
       </div>
       {selectMode && (
@@ -578,6 +449,62 @@ export function TagsPage() {
           </div>
         </div>
       )}
+      <Modal
+        open={createModalOpen}
+        title="新增标签"
+        className="admin-modal--tag-rules admin-modal--tag-dialog"
+        onClose={() => {
+          if (!saving) setCreateModalOpen(false);
+        }}
+        footer={
+          <>
+            <button
+              type="button"
+              className="admin-btn"
+              onClick={() => setCreateModalOpen(false)}
+              disabled={saving}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              form="admin-create-tag-form"
+              className="admin-btn is-primary"
+              disabled={saving || !label.trim()}
+            >
+              {saving ? "添加中..." : "添加标签"}
+            </button>
+          </>
+        }
+      >
+        <form
+          id="admin-create-tag-form"
+          className="admin-form admin-tag-rule-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleCreate();
+          }}
+        >
+          <div className="admin-form__row">
+            <label htmlFor="admin-tag-label">标签名</label>
+            <input
+              id="admin-tag-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="例如：清纯"
+            />
+          </div>
+          <div className="admin-form__row">
+            <label htmlFor="admin-tag-aliases">别名</label>
+            <input
+              id="admin-tag-aliases"
+              value={aliases}
+              onChange={(e) => setAliases(e.target.value)}
+              placeholder="逗号分隔，例如：纯欲, 清新"
+            />
+          </div>
+        </form>
+      </Modal>
       {editingTag && (
         <EditTagModal
           tag={editingTag}
@@ -589,22 +516,6 @@ export function TagsPage() {
         />
       )}
       <ConfirmModal
-        open={retagConfirmOpen}
-        title="重新整理所有标签"
-        message="将清理普通自动生成标签、自动匹配关系和标签墓碑，再按当前设置重新整理标签。"
-        details={[
-          "会保留自定义、内置和爬虫脚本等非普通自动生成标签；内置标签会在清空墓碑后恢复。",
-          "如果“自动生成标签”已开启，会重新执行自动匹配和番号系列维护；关闭时只执行清理和非自动整理。",
-          "任务在后台分批执行，运行期间不能同时启动另一个标签整理任务。",
-        ]}
-        confirmText="开始整理"
-        loading={jobStarting === "retag"}
-        onCancel={() => {
-          if (jobStarting !== "retag") setRetagConfirmOpen(false);
-        }}
-        onConfirm={startRetag}
-      />
-      <ConfirmModal
         open={!!deleteConfirm}
         title={deleteConfirm?.kind === "bulk" ? "删除选中标签" : "删除标签"}
         message={
@@ -615,8 +526,9 @@ export function TagsPage() {
         confirmText="确认删除"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--tag-dialog admin-modal--tag-delete-confirm"
         loading={deletingId !== null || bulkDeleting}
+        restoreFocus={false}
         onCancel={() => {
           if (deletingId === null && !bulkDeleting) setDeleteConfirm(null);
         }}
@@ -635,99 +547,110 @@ function EditTagModal({
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
-  const [aliases, setAliases] = useState((tag.aliases ?? []).join(", "));
-  const [keywords, setKeywords] = useState((tag.matchRules?.keywords ?? []).join(", "));
-  const [words, setWords] = useState((tag.matchRules?.words ?? []).join(", "));
-  const [excludes, setExcludes] = useState((tag.matchRules?.excludes ?? []).join(", "));
-  const [matchAvCode, setMatchAvCode] = useState(!!tag.matchRules?.matchAvCode);
+  const [aliases, setAliases] = useState(() => editTagAliases(tag));
+  const [aliasDraft, setAliasDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const { show } = useToast();
+  const aliasAdditions = pendingAliasAdditions(aliasDraft, tag.label, aliases);
+  const duplicateAliases = duplicateAliasInputs(aliasDraft, tag.label, aliases);
 
   async function save() {
     setSaving(true);
     try {
-      const result = await api.updateTag(tag.id, splitList(aliases), {
-        keywords: splitList(keywords),
-        words: splitList(words),
-        excludes: splitList(excludes),
-        matchAvCode,
-      });
-      show(`规则已保存，新匹配 ${result.classified} 个视频`, "success");
+      await api.updateTag(tag.id, aliases);
+      show("标签已保存", "success");
       await onSaved();
     } catch (e) {
-      show(e instanceof Error ? e.message : "保存标签规则失败", "error");
+      show(e instanceof Error ? e.message : "保存标签失败", "error");
     } finally {
       setSaving(false);
     }
   }
 
+  function addAliases(raw: string) {
+    const additions = pendingAliasAdditions(raw, tag.label, aliases);
+    if (additions.length === 0) return;
+    setAliases((current) => normalizeAliasList([...current, ...additions], tag.label));
+    setAliasDraft("");
+  }
+
+  function removeAlias(alias: string) {
+    setAliases((current) => current.filter((item) => item !== alias));
+  }
+
   return (
     <Modal
       open
-      title={`编辑标签：${tag.label}`}
-      className="admin-modal--tag-rules"
+      title={tag.label}
+      className="admin-modal--tag-rules admin-modal--tag-dialog"
       onClose={onClose}
+      restoreFocus={false}
       footer={
         <>
           <button type="button" className="admin-btn" onClick={onClose} disabled={saving}>
             取消
           </button>
           <button type="button" className="admin-btn is-primary" onClick={save} disabled={saving}>
-            {saving ? "保存中..." : "保存规则"}
+            {saving ? "保存中..." : "保存"}
           </button>
         </>
       }
     >
       <div className="admin-form admin-tag-rule-form">
         <div className="admin-form__row">
-          <label htmlFor="admin-tag-rule-aliases">别名</label>
-          <input
-            id="admin-tag-rule-aliases"
-            value={aliases}
-            onChange={(e) => setAliases(e.target.value)}
-            placeholder="逗号或空格分隔"
-          />
+          <span className="admin-form__label" id="admin-tag-aliases-current-label">
+            已有别名
+          </span>
+          <div className="admin-tag-alias-list" aria-labelledby="admin-tag-aliases-current-label">
+            {aliases.length > 0 ? (
+              aliases.map((alias) => (
+                <span key={alias} className="admin-tag-alias-pill">
+                  <span>{alias}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAlias(alias)}
+                    disabled={saving}
+                    aria-label={`移除别名 ${alias}`}
+                  >
+                    移除
+                  </button>
+                </span>
+              ))
+            ) : (
+              <span className="admin-tag-alias-empty">暂无别名</span>
+            )}
+          </div>
         </div>
         <div className="admin-form__row">
-          <label htmlFor="admin-tag-rule-keywords">包含词（子串）</label>
-          <textarea
-            id="admin-tag-rule-keywords"
-            value={keywords}
-            onChange={(e) => setKeywords(e.target.value)}
-            placeholder="例如：蜜桃臀, 翘臀"
-          />
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor="admin-tag-rule-words">整词</label>
-          <textarea
-            id="admin-tag-rule-words"
-            value={words}
-            onChange={(e) => setWords(e.target.value)}
-            placeholder="单字和短 ASCII 词建议放在这里"
-          />
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor="admin-tag-rule-excludes">排除词</label>
-          <textarea
-            id="admin-tag-rule-excludes"
-            value={excludes}
-            onChange={(e) => setExcludes(e.target.value)}
-            placeholder="命中这些词的区域不会触发本标签"
-          />
-        </div>
-        {tag.label.toUpperCase() === "AV" && (
-          <label className="admin-check admin-tag-rule-av">
+          <label htmlFor="admin-tag-rule-aliases">新增别名</label>
+          <div className="admin-tag-alias-input-row">
             <input
-              type="checkbox"
-              checked={matchAvCode}
-              onChange={(e) => setMatchAvCode(e.target.checked)}
+              id="admin-tag-rule-aliases"
+              value={aliasDraft}
+              onChange={(e) => setAliasDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                addAliases(aliasDraft);
+              }}
+              placeholder="输入别名"
+              aria-describedby={duplicateAliases.length > 0 ? "admin-tag-alias-warning" : undefined}
             />
-            <span>识别文件名和标题中的番号</span>
-          </label>
-        )}
-        <p className="admin-form__help">
-              保存会立即对该标签做增量匹配；如需撤销旧规则产生的自动标签，请运行“重新整理所有标签”。
-        </p>
+            <button
+              type="button"
+              className="admin-btn"
+              onClick={() => addAliases(aliasDraft)}
+              disabled={saving || aliasAdditions.length === 0}
+            >
+              添加
+            </button>
+          </div>
+          {duplicateAliases.length > 0 && (
+            <span className="admin-tag-alias-warning" id="admin-tag-alias-warning">
+              当前标签已存在
+            </span>
+          )}
+        </div>
       </div>
     </Modal>
   );
@@ -760,10 +683,89 @@ function splitList(s: string): string[] {
     .filter(Boolean);
 }
 
-function sourceLabel(source: string, tag?: api.AdminTag): string {
-  if (tag?.crawlerOwned) return "爬虫脚本";
+function normalizeAliasList(aliases: string[], label: string): string[] {
+  const labelKey = label.trim().toLowerCase();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const alias of aliases) {
+    const clean = alias.trim();
+    const key = clean.toLowerCase();
+    if (!clean || key === labelKey || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function editTagAliases(tag: api.AdminTag): string[] {
+  if (tag.label.trim().toUpperCase() === "AV") {
+    return normalizeAliasList(
+      [...(tag.matchRules?.avCodePrefixes ?? []), ...(tag.aliases ?? [])],
+      tag.label
+    );
+  }
+  return normalizeAliasList(tag.aliases ?? [], tag.label);
+}
+
+function pendingAliasAdditions(raw: string, label: string, existingAliases: string[]): string[] {
+  const existingKeys = new Set(existingAliases.map((alias) => alias.trim().toLowerCase()));
+  return normalizeAliasList(splitList(raw), label).filter(
+    (alias) => !existingKeys.has(alias.toLowerCase())
+  );
+}
+
+function duplicateAliasInputs(raw: string, label: string, existingAliases: string[]): string[] {
+  const labelKey = label.trim().toLowerCase();
+  const existingKeys = new Set(existingAliases.map((alias) => alias.trim().toLowerCase()));
+  const inputKeys = new Set<string>();
+  const duplicateKeys = new Set<string>();
+  const duplicates: string[] = [];
+
+  for (const alias of splitList(raw)) {
+    const clean = alias.trim();
+    const key = clean.toLowerCase();
+    if (!clean) continue;
+    if (key === labelKey || existingKeys.has(key) || inputKeys.has(key)) {
+      if (!duplicateKeys.has(key)) {
+        duplicateKeys.add(key);
+        duplicates.push(clean);
+      }
+      continue;
+    }
+    inputKeys.add(key);
+  }
+
+  return duplicates;
+}
+
+function sourceLabel(source: string): string {
+  if (source === "crawler" || source === "generated") return "自动生成";
   if (source === "builtin") return "内置";
   if (source === "user") return "自定义";
-  if (source === "generated") return "自动生成";
   return source || "未知";
+}
+
+function tagCardSourceLabel(tag: api.AdminTag): string {
+  if (tag.crawlerOwned || tag.source === "crawler") return "爬虫脚本";
+  if (tag.source === "generated") return "AV";
+  return sourceLabel(tag.source);
+}
+
+function tagDisplayGroupKey(tag: api.AdminTag): string {
+  if (tag.source === "builtin" || tag.source === "user") return tag.source;
+  if (tag.crawlerOwned || tag.source === "crawler") return "crawler";
+  if (tag.source === "generated") return "av";
+  return tag.source || "";
+}
+
+function tagDisplayGroupRank(tag: api.AdminTag): number {
+  return TAG_DISPLAY_GROUP_ORDER[tagDisplayGroupKey(tag)] ?? 99;
+}
+
+function tagSourceKey(tag: api.AdminTag): string {
+  return tag.crawlerOwned || tag.source === "generated" ? "generated" : tag.source;
+}
+
+function isSupportedTag(tag: api.AdminTag): boolean {
+  return tag.source === "builtin" || tag.source === "user" || tag.source === "generated" || tag.crawlerOwned === true;
 }

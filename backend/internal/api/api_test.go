@@ -996,6 +996,9 @@ func TestHandleTagsReturnsUnifiedTagPool(t *testing.T) {
 	if _, err := cat.CreateTagAndClassify(ctx, "清纯", nil, "user"); err != nil {
 		t.Fatalf("create tag: %v", err)
 	}
+	if err := cat.SetManualVideoTags(ctx, "video-1", []string{"后入", "女大", "清纯"}); err != nil {
+		t.Fatalf("set manual tags: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
 	rr := httptest.NewRecorder()

@@ -75,14 +75,6 @@ CREATE TABLE IF NOT EXISTS video_tags (
 CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_video_tags_video ON video_tags(video_id);
 
--- 用户手动删除过的标签（包含 builtin/user/generated）。自动扫描/迁移不再重新创建同名标签；
--- 管理员手动新建同名标签时会移除这里的记录。
-CREATE TABLE IF NOT EXISTS deleted_tags (
-    label      TEXT PRIMARY KEY COLLATE NOCASE,
-    source     TEXT NOT NULL DEFAULT '',
-    deleted_at INTEGER NOT NULL
-);
-
 -- 被拉黑、删除或自动去重的视频。用于防止后续扫描 / 爬虫把同一个源文件
 -- 再次入库；source_deleted 是旧版本兼容字段，源文件删除成功后会清除墓碑。
 CREATE TABLE IF NOT EXISTS deleted_videos (

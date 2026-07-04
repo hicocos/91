@@ -20,6 +20,7 @@ const (
 	tagMaintenanceLastRunSetting = "tags.maintenance.last_run_ms"
 	tagRetagBatchSize            = 500
 	tagClusterTitleThreshold     = 0.85
+	tagMaintenanceStartupRetries = 8
 )
 
 func (a *App) beginTagJob(kind string) bool {
@@ -80,14 +81,6 @@ func (a *App) startPostStartupTagMaintenance(ctx context.Context) {
 	if a == nil || a.cat == nil {
 		return
 	}
-	marker, err := a.cat.GetSetting(ctx, tagRetagUpgradeMarker, "")
-	if err != nil {
-		log.Printf("[tag-retag] post-startup maintenance skipped because upgrade marker cannot be read: %v", err)
-		return
-	}
-	if marker == "1" {
-		return
-	}
 	if !a.beginTagJob("retag") {
 		log.Printf("[tag-retag] post-startup maintenance not started because another tag job is running")
 		return
@@ -99,11 +92,6 @@ func (a *App) runPostStartupTagMaintenance(ctx context.Context) {
 	a.tagMaintenanceMu.Lock()
 	defer a.tagMaintenanceMu.Unlock()
 
-	marker, err := a.cat.GetSetting(ctx, tagRetagUpgradeMarker, "")
-	if err != nil {
-		a.finishTagJob("failed", err)
-		return
-	}
 	total, err := a.cat.CountVideosForRetag(ctx, 0)
 	if err != nil {
 		a.finishTagJob("failed", err)
@@ -114,18 +102,13 @@ func (a *App) runPostStartupTagMaintenance(ctx context.Context) {
 	a.tagJobMu.Unlock()
 
 	log.Printf("[tag-retag] post-startup tag maintenance started")
-	if err := a.cat.RunPostStartupTagMaintenance(ctx); err != nil {
-		a.finishTagJob("failed", err)
+	if err := a.runPostStartupTagMaintenanceWithRetry(ctx); err != nil {
+		state := "failed"
+		if ctx.Err() != nil {
+			state = "canceled"
+		}
+		a.finishTagJob(state, err)
 		log.Printf("[tag-retag] post-startup tag maintenance failed: %v", err)
-		return
-	}
-	if marker != "1" {
-		// The first upgrade run performs the authoritative auto/legacy rebuild
-		// after legacy relations have been normalized.
-		a.tagJobMu.Lock()
-		a.tagJobState.Processed = 0
-		a.tagJobMu.Unlock()
-		a.runTagRetagLocked(ctx, true, false)
 		return
 	}
 	a.tagJobMu.Lock()
@@ -133,6 +116,52 @@ func (a *App) runPostStartupTagMaintenance(ctx context.Context) {
 	a.tagJobMu.Unlock()
 	a.finishTagJob("completed", nil)
 	log.Printf("[tag-retag] post-startup tag maintenance completed")
+}
+
+func (a *App) runPostStartupTagMaintenanceWithRetry(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= tagMaintenanceStartupRetries; attempt++ {
+		if err = a.runPostStartupTagMaintenanceAttempt(ctx); err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !isTransientSQLiteLock(err) || attempt == tagMaintenanceStartupRetries {
+			return err
+		}
+		delay := time.Duration(attempt) * 2 * time.Second
+		log.Printf("[tag-retag] post-startup tag maintenance waiting for database lock to clear (attempt %d/%d): %v", attempt, tagMaintenanceStartupRetries, err)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (a *App) runPostStartupTagMaintenanceAttempt(ctx context.Context) error {
+	if err := a.cat.RunPostStartupTagMaintenance(ctx); err != nil {
+		return err
+	}
+	if err := a.ensureAllScriptCrawlerNameTags(ctx); err != nil {
+		log.Printf("[tag-retag] ensure crawler name tags: %v", err)
+	}
+	return a.cat.SetSetting(ctx, tagRetagUpgradeMarker, "1")
+}
+
+func isTransientSQLiteLock(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "sqlite_locked")
 }
 
 func (a *App) runTagRetag(ctx context.Context, writeUpgradeMarker bool) {
@@ -151,65 +180,16 @@ func (a *App) runTagRetagLocked(ctx context.Context, writeUpgradeMarker bool, re
 	a.tagJobState.Total = total
 	a.tagJobMu.Unlock()
 
-	autoGenerateEnabled := true
-	if resetGeneratedState {
-		enabled, err := a.cat.AutoGenerateTagsEnabled(ctx)
-		if err != nil {
-			a.finishTagJob("failed", err)
-			return
-		}
-		autoGenerateEnabled = enabled
-		if _, err := a.cat.ResetGeneratedTagState(ctx); err != nil {
-			a.finishTagJob("failed", err)
-			return
-		}
-		if err := a.cat.ReconcileBuiltinTags(ctx); err != nil {
-			a.finishTagJob("failed", err)
-			return
-		}
+	if err := ctx.Err(); err != nil {
+		a.finishTagJob("canceled", err)
+		return
 	}
-
-	if autoGenerateEnabled {
-		matcher, err := a.cat.Matcher(ctx)
-		if err != nil {
-			a.finishTagJob("failed", err)
-			return
-		}
-		lastID := ""
-		for {
-			if err := ctx.Err(); err != nil {
-				a.finishTagJob("canceled", err)
-				return
-			}
-			processed, nextID, done, err := a.cat.RetagVideosBatch(ctx, matcher, lastID, tagRetagBatchSize, 0)
-			if err != nil {
-				a.finishTagJob("failed", err)
-				return
-			}
-			a.tagJobMu.Lock()
-			a.tagJobState.Processed += processed
-			a.tagJobMu.Unlock()
-			lastID = nextID
-			if done {
-				break
-			}
-		}
-	} else {
-		a.tagJobMu.Lock()
-		a.tagJobState.Processed = total
-		a.tagJobMu.Unlock()
+	if err := a.cat.RunPostStartupTagMaintenance(ctx); err != nil {
+		a.finishTagJob("failed", err)
+		return
 	}
-
 	if err := a.ensureAllScriptCrawlerNameTags(ctx); err != nil {
 		log.Printf("[tag-retag] ensure crawler name tags: %v", err)
-	}
-	if autoGenerateEnabled {
-		if added, err := a.cat.SyncSeriesTags(ctx, 3); err != nil {
-			a.finishTagJob("failed", err)
-			return
-		} else if added > 0 {
-			log.Printf("[tag-retag] series tags added=%d", added)
-		}
 	}
 	if _, err := a.cat.PruneUnreferencedTags(ctx); err != nil {
 		a.finishTagJob("failed", err)
@@ -221,6 +201,9 @@ func (a *App) runTagRetagLocked(ctx context.Context, writeUpgradeMarker bool, re
 			return
 		}
 	}
+	a.tagJobMu.Lock()
+	a.tagJobState.Processed = total
+	a.tagJobMu.Unlock()
 	a.finishTagJob("completed", nil)
 }
 
@@ -267,50 +250,17 @@ func (a *App) runNightlyTagMaintenance(ctx context.Context) error {
 		}
 	}
 
-	runStep("incremental retag", func() error {
-		raw, err := a.cat.GetSetting(ctx, tagMaintenanceLastRunSetting, "0")
-		if err != nil {
+	runStep("refresh existing tag matches", func() error {
+		if err := a.cat.RunPostStartupTagMaintenance(ctx); err != nil {
 			return err
 		}
-		since, _ := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		highWaterMark := time.Now().UnixMilli()
-		matcher, err := a.cat.Matcher(ctx)
-		if err != nil {
-			return err
-		}
-		lastID := ""
-		for {
-			_, nextID, done, err := a.cat.RetagVideosBatch(ctx, matcher, lastID, tagRetagBatchSize, since)
-			if err != nil {
-				return err
-			}
-			lastID = nextID
-			if done {
-				break
-			}
-		}
-		// Persist the start-of-step high-water mark. Updates that race this pass
-		// are intentionally eligible for the next nightly run.
-		return a.cat.SetSetting(ctx, tagMaintenanceLastRunSetting, strconv.FormatInt(highWaterMark, 10))
+		return a.cat.SetSetting(ctx, tagMaintenanceLastRunSetting, strconv.FormatInt(time.Now().UnixMilli(), 10))
 	})
-	runStep("series tags", func() error {
-		added, err := a.cat.SyncSeriesTags(ctx, 3)
-		log.Printf("[tag-maintenance] series tags added=%d", added)
-		return err
+	runStep("crawler name tags", func() error {
+		return a.ensureAllScriptCrawlerNameTags(ctx)
 	})
-	runStep("clear propagated tags", func() error {
-		affected, err := a.cat.ClearPropagatedTags(ctx)
-		log.Printf("[tag-maintenance] propagated tags cleared_from=%d", affected)
-		return err
-	})
-	runStep("duplicate propagation", func() error {
-		added, err := a.cat.PropagateTagsAcrossDuplicates(ctx)
-		log.Printf("[tag-maintenance] duplicate propagation added=%d", added)
-		return err
-	})
-	runStep("title cluster propagation", func() error {
-		added, err := a.propagateTagsAcrossTitleClusters(ctx)
-		log.Printf("[tag-maintenance] title cluster propagation added=%d", added)
+	runStep("prune retired generated tags", func() error {
+		_, err := a.cat.PruneUnreferencedTags(ctx)
 		return err
 	})
 	if ctx.Err() != nil {
@@ -406,6 +356,10 @@ func tagClusterTitlePrefilter(left, right tagClusterCandidate) bool {
 }
 
 func (a *App) propagateTagsAcrossTitleClusters(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
+func (a *App) propagateTagsAcrossTitleClustersRetired(ctx context.Context) (int, error) {
 	videos, err := a.cat.ListVideoMaintenanceCandidates(ctx)
 	if err != nil {
 		return 0, err

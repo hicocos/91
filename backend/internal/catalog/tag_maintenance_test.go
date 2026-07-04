@@ -168,7 +168,7 @@ func TestReplaceAutoVideoTagsRespectsSourcePriorityAndRefreshesEvidence(t *testi
 	}
 }
 
-func TestRetagVideosBatchRemovesLegacyAndProtectsManualVideos(t *testing.T) {
+func TestRetagVideosBatchRefreshesExistingTagMatches(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "a-auto", "fresh-keyword clip", "a.mp4")
 	seedTagMaintenanceVideo(t, cat, "b-manual", "fresh-keyword clip", "b.mp4")
@@ -204,7 +204,7 @@ func TestRetagVideosBatchRemovesLegacyAndProtectsManualVideos(t *testing.T) {
 	}
 	autoVideo, _ := cat.GetVideo(ctx, "a-auto")
 	if !sameStrings(autoVideo.Tags, []string{"fresh-keyword"}) {
-		t.Fatalf("auto tags = %#v", autoVideo.Tags)
+		t.Fatalf("auto tags = %#v, want fresh-keyword", autoVideo.Tags)
 	}
 	manualVideo, _ := cat.GetVideo(ctx, "b-manual")
 	if !sameStrings(manualVideo.Tags, []string{"stale-tag"}) {
@@ -217,7 +217,7 @@ func TestRetagVideosBatchRemovesLegacyAndProtectsManualVideos(t *testing.T) {
 	}
 }
 
-func TestResetGeneratedTagStateClearsGeneratedTagsAndTombstones(t *testing.T) {
+func TestResetGeneratedTagStateClearsGeneratedTags(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "reset-auto", "ordinary", "reset-auto.mp4")
 	seedTagMaintenanceVideo(t, cat, "reset-crawler", "ordinary", "reset-crawler.mp4")
@@ -228,10 +228,10 @@ func TestResetGeneratedTagStateClearsGeneratedTagsAndTombstones(t *testing.T) {
 			t.Fatalf("ensure %s: %v", label, err)
 		}
 	}
-	if _, err := cat.EnsureTag(ctx, "generated-manual", "generated"); err != nil {
+	if _, err := cat.ensureTagWithRulesInternal(ctx, "generated-manual", nil, tagging.Rule{}, "generated", false); err != nil {
 		t.Fatalf("ensure generated-manual: %v", err)
 	}
-	if _, err := cat.EnsureTag(ctx, "SERIESRESET", "generated"); err != nil {
+	if _, err := cat.ensureTagWithRulesInternal(ctx, "SERIESRESET", nil, tagging.Rule{}, "generated", false); err != nil {
 		t.Fatalf("ensure series: %v", err)
 	}
 	if _, err := cat.EnsureCrawlerTag(ctx, "Crawler Owner"); err != nil {
@@ -254,19 +254,12 @@ func TestResetGeneratedTagStateClearsGeneratedTagsAndTombstones(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("seed propagated assignment: %v", err)
 	}
-	if _, err := cat.db.ExecContext(ctx,
-		`INSERT INTO deleted_tags (label, source, deleted_at) VALUES ('deleted-generated', 'generated', ?)`,
-		time.Now().UnixMilli(),
-	); err != nil {
-		t.Fatalf("seed tombstone: %v", err)
-	}
-
 	result, err := cat.ResetGeneratedTagState(ctx)
 	if err != nil {
 		t.Fatalf("reset generated state: %v", err)
 	}
-	if result.RemovedTags != 2 || result.ClearedTombstones != 1 {
-		t.Fatalf("reset result = %#v, want 2 tags and 1 tombstone", result)
+	if result.RemovedTags != 2 {
+		t.Fatalf("reset result = %#v, want 2 tags", result)
 	}
 	resetAuto, _ := cat.GetVideo(ctx, "reset-auto")
 	if len(resetAuto.Tags) != 0 {
@@ -277,8 +270,8 @@ func TestResetGeneratedTagStateClearsGeneratedTagsAndTombstones(t *testing.T) {
 		t.Fatalf("crawler tags = %#v", resetCrawler.Tags)
 	}
 	resetPropagated, _ := cat.GetVideo(ctx, "reset-propagated")
-	if !sameStrings(resetPropagated.Tags, []string{"propagated-user"}) {
-		t.Fatalf("propagated tags = %#v", resetPropagated.Tags)
+	if len(resetPropagated.Tags) != 0 {
+		t.Fatalf("propagated tags = %#v, want none", resetPropagated.Tags)
 	}
 	tags := mustListTags(t, ctx, cat)
 	if hasTagLabel(tags, "generated-manual") || hasTagLabel(tags, "SERIESRESET") {
@@ -286,13 +279,6 @@ func TestResetGeneratedTagStateClearsGeneratedTagsAndTombstones(t *testing.T) {
 	}
 	if !hasTagLabel(tags, "Crawler Owner") {
 		t.Fatalf("crawler tag was removed: %#v", tags)
-	}
-	var tombstones int
-	if err := cat.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_tags`).Scan(&tombstones); err != nil {
-		t.Fatalf("count tombstones: %v", err)
-	}
-	if tombstones != 0 {
-		t.Fatalf("tombstones = %d, want 0", tombstones)
 	}
 }
 
@@ -305,7 +291,7 @@ func hasTagLabel(tags []Tag, label string) bool {
 	return false
 }
 
-func TestSyncSeriesTagsCreatesRevokesAndRespectsTombstone(t *testing.T) {
+func TestSyncSeriesTagsNoLongerCreatesTags(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	for i, code := range []string{"ABP-101", "ABP-102", "ABP-103"} {
 		seedTagMaintenanceVideo(t, cat, "series-"+string(rune('a'+i)), code, code+".mp4")
@@ -314,54 +300,21 @@ func TestSyncSeriesTagsCreatesRevokesAndRespectsTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync series: %v", err)
 	}
-	if added != 3 {
-		t.Fatalf("series rows added = %d, want 3", added)
-	}
-	tag, err := cat.getTagByLabel(ctx, "ABP")
-	if err != nil {
-		t.Fatalf("get series tag: %v", err)
-	}
-	if tag.Source != "generated" {
-		t.Fatalf("series tag source = %q, want generated", tag.Source)
-	}
-
-	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET title = 'other', file_name = 'other.mp4' WHERE id = 'series-c'`); err != nil {
-		t.Fatalf("change series member: %v", err)
-	}
-	if _, err := cat.SyncSeriesTags(ctx, 3); err != nil {
-		t.Fatalf("revoke series: %v", err)
+	if added != 0 {
+		t.Fatalf("series rows added = %d, want 0", added)
 	}
 	for _, id := range []string{"series-a", "series-b", "series-c"} {
 		video, _ := cat.GetVideo(ctx, id)
-		for _, label := range video.Tags {
-			if label == "ABP" {
-				t.Fatalf("%s retained revoked ABP tag: %#v", id, video.Tags)
-			}
+		if len(video.Tags) != 0 {
+			t.Fatalf("%s tags = %#v, want none", id, video.Tags)
 		}
 	}
-
-	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET title = 'ABP-103', file_name = 'ABP-103.mp4' WHERE id = 'series-c'`); err != nil {
-		t.Fatalf("restore series member: %v", err)
-	}
-	if _, err := cat.SyncSeriesTags(ctx, 3); err != nil {
-		t.Fatalf("restore series: %v", err)
-	}
-	tag, err = cat.getTagByLabel(ctx, "ABP")
-	if err != nil {
-		t.Fatalf("get restored series tag: %v", err)
-	}
-	if _, err := cat.DeleteTag(ctx, tag.ID); err != nil {
-		t.Fatalf("delete series tag: %v", err)
-	}
-	if added, err := cat.SyncSeriesTags(ctx, 3); err != nil || added != 0 {
-		t.Fatalf("tombstoned series sync = %d, %v", added, err)
-	}
 	if _, err := cat.getTagByLabel(ctx, "ABP"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("tombstoned series was recreated: %v", err)
+		t.Fatalf("series tag was created: %v", err)
 	}
 }
 
-func TestSyncSeriesTagsRespectsAutoGenerateSetting(t *testing.T) {
+func TestSyncSeriesTagsDoesNotAttachExistingUserTag(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	if err := cat.SetAutoGenerateTagsEnabled(ctx, false); err != nil {
 		t.Fatalf("disable auto-generate tags: %v", err)
@@ -379,8 +332,8 @@ func TestSyncSeriesTagsRespectsAutoGenerateSetting(t *testing.T) {
 	if _, err := cat.EnsureTag(ctx, "ABP", "user"); err != nil {
 		t.Fatalf("seed existing ABP tag: %v", err)
 	}
-	if added, err := cat.SyncSeriesTags(ctx, 3); err != nil || added != 3 {
-		t.Fatalf("existing series sync = %d, %v; want 3, nil", added, err)
+	if added, err := cat.SyncSeriesTags(ctx, 3); err != nil || added != 0 {
+		t.Fatalf("existing series sync = %d, %v; want 0, nil", added, err)
 	}
 	for i := range []string{"ABP-201", "ABP-202", "ABP-203"} {
 		id := "series-disabled-" + string(rune('a'+i))
@@ -388,13 +341,13 @@ func TestSyncSeriesTagsRespectsAutoGenerateSetting(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)
 		}
-		if !hasTag(video.Tags, "ABP") {
-			t.Fatalf("%s tags = %#v, want existing ABP", id, video.Tags)
+		if hasTag(video.Tags, "ABP") {
+			t.Fatalf("%s tags = %#v, want no ABP", id, video.Tags)
 		}
 	}
 }
 
-func TestAVCodesGetAVAndKnownSeriesTags(t *testing.T) {
+func TestAVCodesGenerateSeriesTagsWhileAVEnabled(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	codes := []string{"FC2PPV-3259498", "FC2PPV-4162750", "FC2PPV-4768873"}
 	for i, code := range codes {
@@ -404,19 +357,14 @@ func TestAVCodesGetAVAndKnownSeriesTags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("match assignments for %s: %v", code, err)
 		}
+		if !sameStrings(assignmentLabels(assignments), []string{"AV", "FC2PPV"}) {
+			t.Fatalf("assignments for %s = %#v, want AV + FC2PPV", code, assignments)
+		}
 		if _, err := cat.ReplaceAutoVideoTags(ctx, id, assignments); err != nil {
-			t.Fatalf("attach AV tag for %s: %v", id, err)
+			t.Fatalf("attach AV tags for %s: %v", id, err)
 		}
 	}
-	if _, err := cat.EnsureTag(ctx, "FC2PPV", "generated"); err != nil {
-		t.Fatalf("ensure FC2PPV tag: %v", err)
-	}
-	if _, err := cat.AddVideoTagAssignments(ctx, "fc2ppv-a", []TagAssignment{{
-		Label: "FC2PPV", Source: "auto", Evidence: "文件名:FC2PPV",
-	}}); err != nil {
-		t.Fatalf("seed auto FC2PPV source: %v", err)
-	}
-	if added, err := cat.SyncSeriesTags(ctx, 3); err != nil || added != 3 {
+	if added, err := cat.SyncSeriesTags(ctx, 3); err != nil || added != 0 {
 		t.Fatalf("sync FC2PPV series = %d, %v", added, err)
 	}
 	for i := range codes {
@@ -425,16 +373,90 @@ func TestAVCodesGetAVAndKnownSeriesTags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)
 		}
-		if !hasTag(video.Tags, "AV") || !hasTag(video.Tags, "FC2PPV") {
-			t.Fatalf("%s tags = %#v, want AV and FC2PPV", id, video.Tags)
+		if !hasTag(video.Tags, "AV") {
+			t.Fatalf("%s tags = %#v, want AV", id, video.Tags)
+		}
+		if !hasTag(video.Tags, "FC2PPV") {
+			t.Fatalf("%s tags = %#v, want FC2PPV", id, video.Tags)
 		}
 	}
 	metadata, err := cat.ListVideoTagMetadata(ctx, []string{"fc2ppv-a"})
 	if err != nil {
 		t.Fatalf("FC2PPV metadata: %v", err)
 	}
-	if got := metadata["fc2ppv-a"]["FC2PPV"]; got.Source != "series" {
-		t.Fatalf("FC2PPV source = %#v, want series", got)
+	if got := metadata["fc2ppv-a"]["FC2PPV"]; got.Source != "auto" || got.Evidence != "标题:FC2PPV-3259498" {
+		t.Fatalf("FC2PPV metadata = %#v, want auto title evidence", got)
+	}
+	var source, origin string
+	if err := cat.db.QueryRowContext(ctx,
+		`SELECT source, origin FROM tags WHERE label = 'FC2PPV'`).Scan(&source, &origin); err != nil {
+		t.Fatalf("read FC2PPV tag: %v", err)
+	}
+	if source != "generated" || origin != avSeriesOrigin {
+		t.Fatalf("FC2PPV tag source/origin = %q/%q, want generated/%s", source, origin, avSeriesOrigin)
+	}
+}
+
+func TestDeletingAVTagDisablesAVCodeSeriesGeneration(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	seedTagMaintenanceVideo(t, cat, "disabled-av", "FC2PPV-4162750", "FC2PPV-4162750.mp4")
+	av := mustTagByLabel(t, ctx, cat, "AV")
+	if _, err := cat.DeleteTag(ctx, av.ID); err != nil {
+		t.Fatalf("delete AV tag: %v", err)
+	}
+
+	assignments, err := cat.MatchTagAssignments(ctx, "FC2PPV-4162750", "FC2PPV-4162750.mp4", "", "")
+	if err != nil {
+		t.Fatalf("match disabled AV assignments: %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("assignments = %#v, want none after deleting AV", assignments)
+	}
+	if _, err := cat.getTagByLabel(ctx, "FC2PPV"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("FC2PPV tag exists after disabled AV matching: %v", err)
+	}
+	if err := cat.RunPostStartupTagMaintenance(ctx); err != nil {
+		t.Fatalf("post-startup maintenance with deleted AV: %v", err)
+	}
+	video, err := cat.GetVideo(ctx, "disabled-av")
+	if err != nil {
+		t.Fatalf("get disabled AV video: %v", err)
+	}
+	if len(video.Tags) != 0 {
+		t.Fatalf("disabled AV video tags = %#v, want none", video.Tags)
+	}
+	if _, err := cat.getTagByLabel(ctx, "AV"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("AV tag was reseeded after delete: %v", err)
+	}
+	if _, err := cat.getTagByLabel(ctx, "FC2PPV"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("FC2PPV tag was generated after AV delete: %v", err)
+	}
+}
+
+func TestPostStartupMaintenanceRemovesInvalidAVSeriesTags(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	seedTagMaintenanceVideo(t, cat, "invalid-av-series", "ordinary title", "ordinary.mp4")
+	if _, err := cat.ensureAVSeriesTag(ctx, "FINAL"); err != nil {
+		t.Fatalf("ensure invalid AV series tag: %v", err)
+	}
+	if _, err := cat.AddVideoTagAssignments(ctx, "invalid-av-series", []TagAssignment{{
+		Label: "FINAL", Source: "auto", Evidence: "旧版本误生成",
+	}}); err != nil {
+		t.Fatalf("seed invalid AV series assignment: %v", err)
+	}
+
+	if err := cat.RunPostStartupTagMaintenance(ctx); err != nil {
+		t.Fatalf("post-startup maintenance: %v", err)
+	}
+	if _, err := cat.getTagByLabel(ctx, "FINAL"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("invalid AV series tag retained: %v", err)
+	}
+	video, err := cat.GetVideo(ctx, "invalid-av-series")
+	if err != nil {
+		t.Fatalf("get invalid AV series video: %v", err)
+	}
+	if len(video.Tags) != 0 {
+		t.Fatalf("invalid AV series video tags = %#v, want none", video.Tags)
 	}
 }
 
@@ -469,12 +491,12 @@ func TestDuplicatePropagationAndClearAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("propagate duplicates: %v", err)
 	}
-	if added != 3 {
-		t.Fatalf("propagated rows = %d, want 3", added)
+	if added != 0 {
+		t.Fatalf("propagated rows = %d, want 0", added)
 	}
 	recipient, _ := cat.GetVideo(ctx, "dup-b")
-	if !sameStrings(recipient.Tags, []string{"origin-tag", "manual-tag"}) {
-		t.Fatalf("recipient tags = %#v", recipient.Tags)
+	if len(recipient.Tags) != 0 {
+		t.Fatalf("recipient tags = %#v, want none", recipient.Tags)
 	}
 	manual, _ := cat.GetVideo(ctx, "dup-manual")
 	if !sameStrings(manual.Tags, []string{"manual-tag"}) {
@@ -485,8 +507,8 @@ func TestDuplicatePropagationAndClearAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clear propagation: %v", err)
 	}
-	if affected != 2 {
-		t.Fatalf("cleared videos = %d, want 2", affected)
+	if affected != 0 {
+		t.Fatalf("cleared videos = %d, want 0", affected)
 	}
 	recipient, _ = cat.GetVideo(ctx, "dup-b")
 	if len(recipient.Tags) != 0 {
@@ -498,19 +520,19 @@ func TestDuplicatePropagationAndClearAreReversible(t *testing.T) {
 	}
 }
 
-func TestUpdateTagClassifiesWithNewRuleAndPrunesOnlyAutomaticSources(t *testing.T) {
+func TestUpdateTagSavesAliasesAndClassifiesExistingVideos(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "rule-video", "special phrase", "rule.mp4")
 	userTag, err := cat.EnsureTag(ctx, "display-label", "user")
 	if err != nil {
 		t.Fatalf("ensure user tag: %v", err)
 	}
-	updated, err := cat.UpdateTag(ctx, userTag.ID, []string{"alias"}, tagging.Rule{Keywords: []string{"special phrase"}})
+	updated, err := cat.UpdateTag(ctx, userTag.ID, []string{"special phrase"})
 	if err != nil {
 		t.Fatalf("update tag: %v", err)
 	}
-	if len(updated.MatchRules.Keywords) != 1 {
-		t.Fatalf("updated rules = %#v", updated.MatchRules)
+	if len(updated.MatchRules.Keywords) != 0 || len(updated.Aliases) != 1 {
+		t.Fatalf("updated tag = %#v", updated)
 	}
 	classified, err := cat.ClassifyTagByID(ctx, userTag.ID)
 	if err != nil || classified != 1 {
@@ -518,11 +540,14 @@ func TestUpdateTagClassifiesWithNewRuleAndPrunesOnlyAutomaticSources(t *testing.
 	}
 	video, _ := cat.GetVideo(ctx, "rule-video")
 	if !sameStrings(video.Tags, []string{"display-label"}) {
-		t.Fatalf("classified tags = %#v", video.Tags)
+		t.Fatalf("classified tags = %#v, want display-label", video.Tags)
 	}
 
-	if _, err := cat.EnsureTag(ctx, "orphan-auto", "generated"); err != nil {
+	if _, err := cat.ensureTagWithRulesInternal(ctx, "orphan-auto", nil, tagging.Rule{}, "generated", false); err != nil {
 		t.Fatalf("ensure automatic orphan: %v", err)
+	}
+	if _, err := cat.EnsureCrawlerTag(ctx, "orphan-crawler"); err != nil {
+		t.Fatalf("ensure crawler orphan: %v", err)
 	}
 	if _, err := cat.EnsureTag(ctx, "orphan-user", "user"); err != nil {
 		t.Fatalf("ensure user orphan: %v", err)
@@ -531,11 +556,14 @@ func TestUpdateTagClassifiesWithNewRuleAndPrunesOnlyAutomaticSources(t *testing.
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if pruned != 1 {
-		t.Fatalf("pruned = %d, want generated orphan only", pruned)
+	if pruned != 2 {
+		t.Fatalf("pruned = %d, want generated and crawler orphan", pruned)
 	}
 	if _, err := cat.getTagByLabel(ctx, "orphan-user"); err != nil {
 		t.Fatalf("user orphan was pruned: %v", err)
+	}
+	if _, err := cat.getTagByLabel(ctx, "orphan-crawler"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("crawler orphan was retained: %v", err)
 	}
 }
 
@@ -546,4 +574,12 @@ func hasTag(labels []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assignmentLabels(assignments []TagAssignment) []string {
+	labels := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		labels = append(labels, assignment.Label)
+	}
+	return labels
 }

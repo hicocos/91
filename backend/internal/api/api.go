@@ -753,6 +753,22 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if len(tags) > 0 {
+		canonicalTags := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			label, ok, err := s.Catalog.LookupTagLabel(r.Context(), tag)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !ok {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown upload tag: %s", tag))
+				return
+			}
+			canonicalTags = append(canonicalTags, label)
+		}
+		tags = canonicalTags
+	}
 
 	now := time.Now()
 	title := strings.TrimSpace(r.FormValue("title"))
@@ -806,7 +822,6 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		FileName:      originalName,
 		Title:         title,
 		Author:        "用户上传",
-		Tags:          tags,
 		Size:          size,
 		Ext:           strings.TrimPrefix(ext, "."),
 		PreviewStatus: "pending",
@@ -818,6 +833,16 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(dst)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if len(tags) > 0 {
+		if err := s.Catalog.SetManualVideoTags(r.Context(), video.ID, tags); err != nil {
+			_ = os.Remove(dst)
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if saved, err := s.Catalog.GetVideo(r.Context(), video.ID); err == nil {
+			video = saved
+		}
 	}
 	if s.OnVideoUploaded != nil {
 		s.OnVideoUploaded(video)

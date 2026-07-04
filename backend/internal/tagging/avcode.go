@@ -4,13 +4,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
 
-// 番号（AV code）识别。历史上散落在 catalog/tags.go，现在统一收敛到 tagging 包：
-// 识别结果有两个用途——
-//  1. 命中番号的视频归并到总标签 "AV"（避免每个番号变成独立标签）；
-//  2. 从番号里提取"车牌前缀"（如 ABP-123 → ABP）作为系列信号，供夜间任务
-//     给同系列视频建 series 标签。
+// 番号（AV code）识别。AV 默认只匹配内置车牌前缀；管理员可以通过
+// AV 标签的前缀列表增删匹配用的车牌。
 var (
 	knownAVSeriesPrefixes = []string{
 		"SSNI", "SSIS", "SNIS", "SOE", "IPX", "IPZ", "IPTD",
@@ -21,83 +19,173 @@ var (
 		"259LUXU", "CAWD", "SABA", "ZIZ", "PPPD", "EBOD",
 		"EBWH", "BOBB", "CJOD", "PRED", "VEC", "IBW", "LBJ",
 		"IMPA", "DDK", "MVG", "HUNT", "NTRD", "SDDE", "DASS",
-		"MKMP", "BF", "BFDM", "CARIB",
+		"MKMP", "BF", "BFDM",
 	}
-	knownAVSeriesPrefixPattern = buildKnownAVSeriesPrefixPattern()
-	knownAVCodePattern         = regexp.MustCompile(`(?i)^(?:` + knownAVSeriesPrefixPattern + `)[-_ ]?\d{2,8}(?:[-_ ]?[A-Z0-9]{1,4}){0,2}$`)
-	avCodePattern              = regexp.MustCompile(`(?i)^[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	ccAVCodePattern            = regexp.MustCompile(`(?i)^CC[-_ ]?\d{3,8}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	fc2PPVAVCodePattern        = regexp.MustCompile(`(?i)^FC2[-_ ]?PPV[-_ ]?\d{4,8}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	fc2AVCodePattern           = regexp.MustCompile(`(?i)^FC2[-_ ]?\d{4,8}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	numericPrefixAVCodePattern = regexp.MustCompile(`(?i)^\d{2,4}[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?$`)
-	knownAVCodeInTextPattern   = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])((?:(?:` + knownAVSeriesPrefixPattern + `)[-_ ]?\d{2,8}(?:[-_ ]?[A-Z0-9]{1,4}){0,2}))(?:$|[^A-Za-z0-9])`)
-	avCodeInTextPattern        = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])((?:(?:` + knownAVSeriesPrefixPattern + `)[-_ ]?\d{2,8}(?:[-_ ]?[A-Z0-9]{1,4}){0,2})|(?:[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:CC[-_ ]?\d{3,8}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:FC2[-_ ]?(?:PPV[-_ ]?)?\d{4,8}(?:[-_ ]?[A-Z0-9]{1,4})?)|(?:\d{2,4}[A-Z]{2,8}[-_ ]?\d{3,6}(?:[-_ ]?[A-Z0-9]{1,4})?))(?:$|[^A-Za-z0-9])`)
-
-	seriesLettersPattern = regexp.MustCompile(`(?i)^\d{0,4}([A-Z]{2,8})[-_ ]?\d`)
+	defaultAVCodeMatcher = NewAVCodeMatcher(knownAVSeriesPrefixes)
 )
 
-// IsAVCode 判断一个独立字符串是否是番号。
-func IsAVCode(label string) bool {
+// AVCodeMatcher matches AV codes for one explicit prefix set.
+type AVCodeMatcher struct {
+	prefixes      []string
+	codePattern   *regexp.Regexp
+	inTextPattern *regexp.Regexp
+}
+
+// DefaultAVCodePrefixes returns the built-in AV code prefix list.
+func DefaultAVCodePrefixes() []string {
+	return append([]string(nil), knownAVSeriesPrefixes...)
+}
+
+// NormalizeAVCodePrefix converts a user-entered prefix to the canonical form.
+func NormalizeAVCodePrefix(prefix string) string {
+	prefix = strings.ToUpper(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range prefix {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || unicode.IsSpace(r):
+			continue
+		default:
+			return ""
+		}
+	}
+	out := b.String()
+	if len(out) < 2 || len(out) > 16 {
+		return ""
+	}
+	return out
+}
+
+// CleanAVCodePrefixes normalizes, de-duplicates, and preserves input order.
+func CleanAVCodePrefixes(prefixes []string) []string {
+	out := make([]string, 0, len(prefixes))
+	seen := map[string]struct{}{}
+	for _, prefix := range prefixes {
+		prefix = NormalizeAVCodePrefix(prefix)
+		if prefix == "" {
+			continue
+		}
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		out = append(out, prefix)
+	}
+	return out
+}
+
+func NewAVCodeMatcher(prefixes []string) *AVCodeMatcher {
+	prefixes = CleanAVCodePrefixes(prefixes)
+	m := &AVCodeMatcher{prefixes: prefixes}
+	if len(prefixes) == 0 {
+		return m
+	}
+	prefixPattern := buildAVSeriesPrefixPattern(prefixes)
+	codePattern := `(?:` + prefixPattern + `)[-_ ]?\d{2,8}(?:[-_ ]?[A-Z0-9]{1,4}){0,2}`
+	m.codePattern = regexp.MustCompile(`(?i)^` + codePattern + `$`)
+	m.inTextPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])(` + codePattern + `)(?:$|[^A-Za-z0-9])`)
+	return m
+}
+
+func (m *AVCodeMatcher) Prefixes() []string {
+	if m == nil {
+		return nil
+	}
+	return append([]string(nil), m.prefixes...)
+}
+
+func (m *AVCodeMatcher) IsCode(label string) bool {
 	label = strings.TrimSpace(label)
+	return label != "" && m != nil && m.codePattern != nil && m.codePattern.MatchString(label)
+}
+
+func (m *AVCodeMatcher) Contains(text string) bool {
+	return m != nil && m.inTextPattern != nil && m.inTextPattern.MatchString(text)
+}
+
+func (m *AVCodeMatcher) Find(text string) string {
+	if m == nil || m.inTextPattern == nil {
+		return ""
+	}
+	if matches := m.inTextPattern.FindStringSubmatch(text); len(matches) >= 2 {
+		return strings.TrimSpace(matches[1])
+	}
+	return ""
+}
+
+func (m *AVCodeMatcher) SeriesOf(code string) string {
+	if !m.IsCode(code) {
+		return ""
+	}
+	normalized := normalizeCodeForPrefixMatch(code)
+	for _, prefix := range sortedAVSeriesPrefixes(m.prefixes) {
+		if prefix == "FC2PPV" {
+			if hasSeriesPrefix(normalized, "FC2PPV") || hasSeriesPrefix(normalized, "FC2-PPV") {
+				return prefix
+			}
+			continue
+		}
+		if hasSeriesPrefix(normalized, prefix) {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// IsAVCode 判断一个独立字符串是否是内置车牌番号。
+func IsAVCode(label string) bool {
+	return defaultAVCodeMatcher.IsCode(label)
+}
+
+// ContainsAVCode 判断文本中是否出现内置车牌番号。
+func ContainsAVCode(text string) bool {
+	return defaultAVCodeMatcher.Contains(text)
+}
+
+// FindAVCode 返回文本中出现的第一个内置车牌番号（原样片段），没有则返回空串。
+func FindAVCode(text string) string {
+	return defaultAVCodeMatcher.Find(text)
+}
+
+// SeriesOf 从一个内置车牌番号中提取"车牌前缀"（系列名），统一为大写。
+func SeriesOf(code string) string {
+	return defaultAVCodeMatcher.SeriesOf(code)
+}
+
+// AutoSeriesOf returns the AV series label that is safe to create
+// automatically for the built-in prefix set.
+func AutoSeriesOf(code string) string {
+	return defaultAVCodeMatcher.SeriesOf(code)
+}
+
+// IsAutoSeriesLabel reports whether label is one of the built-in AV series
+// labels. Catalog code passes custom aliases separately when needed.
+func IsAutoSeriesLabel(label string) bool {
+	label = NormalizeAVCodePrefix(label)
 	if label == "" {
 		return false
 	}
-	return avCodePattern.MatchString(label) ||
-		knownAVCodePattern.MatchString(label) ||
-		ccAVCodePattern.MatchString(label) ||
-		fc2PPVAVCodePattern.MatchString(label) ||
-		fc2AVCodePattern.MatchString(label) ||
-		numericPrefixAVCodePattern.MatchString(label)
+	for _, prefix := range knownAVSeriesPrefixes {
+		if label == prefix {
+			return true
+		}
+	}
+	return false
 }
 
-// ContainsAVCode 判断文本中是否出现番号。
-func ContainsAVCode(text string) bool {
-	return avCodeInTextPattern.MatchString(text)
-}
-
-// FindAVCode 返回文本中出现的第一个番号（原样片段），没有则返回空串。
-func FindAVCode(text string) string {
-	if m := knownAVCodeInTextPattern.FindStringSubmatch(text); len(m) >= 2 {
-		return strings.TrimSpace(m[1])
-	}
-	m := avCodeInTextPattern.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
-}
-
-// SeriesOf 从一个番号中提取"车牌前缀"（系列名），统一为大写。
-// 例：ABP-123 → ABP；390JAC-233 → JAC；FC2-PPV-1234567 → FC2PPV。
-// 无法提取时返回空串。
-func SeriesOf(code string) string {
-	code = strings.TrimSpace(code)
-	if code == "" || !IsAVCode(code) {
-		return ""
-	}
-	if series, ok := knownSeriesOf(code); ok {
-		return series
-	}
-	if fc2PPVAVCodePattern.MatchString(code) {
-		return "FC2PPV"
-	}
-	if fc2AVCodePattern.MatchString(code) {
-		return "FC2"
-	}
-	m := seriesLettersPattern.FindStringSubmatch(code)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.ToUpper(m[1])
-}
-
-// SeriesInText 提取文本中第一个番号的系列前缀。
+// SeriesInText 提取文本中第一个内置车牌番号的系列前缀。
 func SeriesInText(text string) string {
 	return SeriesOf(FindAVCode(text))
 }
 
-func buildKnownAVSeriesPrefixPattern() string {
-	prefixes := sortedKnownAVSeriesPrefixes()
+func buildAVSeriesPrefixPattern(prefixes []string) string {
+	prefixes = sortedAVSeriesPrefixes(prefixes)
 	parts := make([]string, 0, len(prefixes))
 	for _, prefix := range prefixes {
 		if prefix == "FC2PPV" {
@@ -109,8 +197,8 @@ func buildKnownAVSeriesPrefixPattern() string {
 	return strings.Join(parts, "|")
 }
 
-func sortedKnownAVSeriesPrefixes() []string {
-	prefixes := append([]string(nil), knownAVSeriesPrefixes...)
+func sortedAVSeriesPrefixes(prefixes []string) []string {
+	prefixes = CleanAVCodePrefixes(prefixes)
 	sort.Slice(prefixes, func(i, j int) bool {
 		if len(prefixes[i]) == len(prefixes[j]) {
 			return prefixes[i] < prefixes[j]
@@ -120,27 +208,16 @@ func sortedKnownAVSeriesPrefixes() []string {
 	return prefixes
 }
 
-func knownSeriesOf(code string) (string, bool) {
+func normalizeCodeForPrefixMatch(code string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(code))
 	normalized = strings.NewReplacer("_", "-", " ", "-").Replace(normalized)
 	for strings.Contains(normalized, "--") {
 		normalized = strings.ReplaceAll(normalized, "--", "-")
 	}
-	if hasKnownSeriesPrefix(normalized, "FC2PPV") || hasKnownSeriesPrefix(normalized, "FC2-PPV") {
-		return "FC2PPV", true
-	}
-	for _, prefix := range sortedKnownAVSeriesPrefixes() {
-		if prefix == "FC2PPV" {
-			continue
-		}
-		if hasKnownSeriesPrefix(normalized, prefix) {
-			return prefix, true
-		}
-	}
-	return "", false
+	return normalized
 }
 
-func hasKnownSeriesPrefix(code, prefix string) bool {
+func hasSeriesPrefix(code, prefix string) bool {
 	if !strings.HasPrefix(code, prefix) {
 		return false
 	}

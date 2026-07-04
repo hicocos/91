@@ -184,19 +184,17 @@ func TestRunPipelineSkipsMigrationWhenNoCrawler(t *testing.T) {
 		}
 	}
 	foundCleanup := false
+	foundTagMaintenance := false
 	for _, c := range rec.snapshot() {
 		if c == "dedupe-cleanup" {
 			foundCleanup = true
 		}
-	}
-	if !foundCleanup {
-		t.Fatalf("dedupe cleanup should still run when crawler is absent; calls=%v", rec.snapshot())
-	}
-	foundTagMaintenance := false
-	for _, c := range rec.snapshot() {
 		if c == "tag-maintenance" {
 			foundTagMaintenance = true
 		}
+	}
+	if !foundCleanup {
+		t.Fatalf("dedupe cleanup should still run when crawler is absent; calls=%v", rec.snapshot())
 	}
 	if !foundTagMaintenance {
 		t.Fatalf("tag maintenance should still run when crawler is absent; calls=%v", rec.snapshot())
@@ -223,6 +221,7 @@ func TestRunPipelineExitsWhenContextCancelledMidPhase(t *testing.T) {
 		WaitPreviewQueuesIdle: func(context.Context) error { rec.push("wait-idle"); return nil },
 		RunMigration:          func(context.Context) error { rec.push("migrate"); return nil },
 		RunDedupeAssetCleanup: func(context.Context) error { rec.push("dedupe-cleanup"); return nil },
+		RunTagMaintenance:     func(context.Context) error { rec.push("tag-maintenance"); return nil },
 	})
 
 	r.runPipeline(ctx)
@@ -239,6 +238,9 @@ func TestRunPipelineExitsWhenContextCancelledMidPhase(t *testing.T) {
 		}
 		if c == "dedupe-cleanup" {
 			t.Fatalf("dedupe cleanup should not run after cancel, got call %q", c)
+		}
+		if c == "tag-maintenance" {
+			t.Fatalf("tag maintenance should not run after cancel, got call %q", c)
 		}
 	}
 }

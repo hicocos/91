@@ -110,7 +110,8 @@ func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
 	if v.SampledSHA256 != "" && (v.FingerprintStatus == "" || v.FingerprintStatus == "pending") {
 		fingerprintStatus = "ready"
 	}
-	tagsJSON, _ := json.Marshal(v.Tags)
+	storedTags := uniqueStrings(cleanLabels(v.Tags))
+	tagsJSON, _ := json.Marshal(storedTags)
 	badgesJSON, _ := json.Marshal(v.Badges)
 	now := time.Now().UnixMilli()
 	if v.CreatedAt.IsZero() {
@@ -143,7 +144,10 @@ ON CONFLICT(id) DO UPDATE SET
                     END,
   title           = excluded.title,
   author          = excluded.author,
-  tags            = excluded.tags,
+  tags            = CASE
+                      WHEN excluded.tags NOT IN ('', '[]', 'null') THEN excluded.tags
+                      ELSE videos.tags
+                    END,
   content_hash    = CASE
                       WHEN excluded.content_hash != '' THEN excluded.content_hash
                       ELSE videos.content_hash
@@ -190,8 +194,8 @@ ON CONFLICT(id) DO UPDATE SET
 	if err != nil {
 		return err
 	}
-	if len(v.Tags) > 0 && !existed {
-		return c.replaceVideoTags(ctx, v.ID, v.Tags, "auto", false, true)
+	if !existed && len(storedTags) > 0 {
+		return c.replaceVideoTags(ctx, v.ID, storedTags, "manual", true, true)
 	}
 	return nil
 }
