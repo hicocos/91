@@ -4,11 +4,14 @@ import { test } from "node:test";
 
 const videosPageSource = readFileSync(new URL("../src/admin/VideosPage.tsx", import.meta.url), "utf8");
 
-test("admin videos page uses responsive page size", () => {
+test("normal videos use ten items while blacklist remains responsive", () => {
+  assert.match(videosPageSource, /const NORMAL_VIDEOS_PAGE_SIZE = 10;/);
   assert.match(videosPageSource, /const DESKTOP_VIDEOS_PAGE_SIZE = 50;/);
   assert.match(videosPageSource, /const MOBILE_VIDEOS_PAGE_SIZE = 20;/);
   assert.match(videosPageSource, /const VIDEOS_MOBILE_QUERY = "\(max-width: 640px\)";/);
   assert.match(videosPageSource, /window\.matchMedia\(VIDEOS_MOBILE_QUERY\)/);
+  assert.match(videosPageSource, /function CurrentVideosTab[\s\S]*?const pageSize = NORMAL_VIDEOS_PAGE_SIZE;/);
+  assert.match(videosPageSource, /function BlacklistTab[\s\S]*?const pageSize = useVideosPageSize\(\);/);
   assert.match(videosPageSource, /api\.listVideos\(\{ page, size: pageSize, keyword: searchKeyword \}\)/);
 });
 
@@ -27,7 +30,7 @@ test("admin videos track preview regeneration after it is accepted", () => {
   assert.match(videosPageSource, /trackRegeneratingPreview\(\[v\]\)/);
   assert.doesNotMatch(videosPageSource, /data-label="预览视频"[\s\S]*?<PreviewStatus/);
   assert.match(videosPageSource, /onRegenPreview=\{\(\) => handleRegen\(editingVideo\)\}/);
-  assert.match(videosPageSource, /className="admin-btn admin-video-preview-control__button"/);
+  assert.match(videosPageSource, /className="admin-btn admin-video-preview-button"/);
   assert.match(videosPageSource, /refreshListOnly\(\)/);
 });
 

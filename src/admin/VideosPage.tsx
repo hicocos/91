@@ -7,7 +7,6 @@ import {
   Image,
   Trash2,
   Ban,
-  RotateCcw,
   ExternalLink,
 } from "lucide-react";
 import * as api from "./api";
@@ -18,6 +17,7 @@ import { formatBytes } from "./storageFormat";
 
 const DESKTOP_VIDEOS_PAGE_SIZE = 50;
 const MOBILE_VIDEOS_PAGE_SIZE = 20;
+const NORMAL_VIDEOS_PAGE_SIZE = 10;
 const VIDEOS_MOBILE_QUERY = "(max-width: 640px)";
 const REGEN_PREVIEW_STATUS = "generating";
 const REGEN_PREVIEW_POLL_INTERVAL_MS = 2000;
@@ -31,7 +31,7 @@ type RegenPreviewState = {
 };
 
 const TABS: { key: TabKey; label: string }[] = [
-  { key: "current", label: "当前视频" },
+  { key: "current", label: "正常视频" },
   { key: "blacklist", label: "拉黑视频" },
 ];
 
@@ -124,7 +124,7 @@ function CurrentVideosTab({
   const [deleting, setDeleting] = useState(false);
   const [deleteSource, setDeleteSource] = useState(false);
   const [regenPreviewById, setRegenPreviewById] = useState<Record<string, RegenPreviewState>>({});
-  const pageSize = useVideosPageSize();
+  const pageSize = NORMAL_VIDEOS_PAGE_SIZE;
   const { show } = useToast();
 
   async function refresh() {
@@ -384,11 +384,14 @@ function CurrentVideosTab({
         <div className="admin-videos-list-toolbar">
           <div className="admin-videos-bulk-actions">
             <span className="admin-videos-bulk-actions__count">已选择 {selectedIds.size} 项</span>
-            <button type="button" className="admin-btn is-primary admin-videos-bulk-actions__btn" onClick={handleBatchRegen}>
-              <RefreshCw size={13} /> 批量重生预览视频
+            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={() => setSelectedIds(new Set())}>
+              取消选中
             </button>
-            <button type="button" className="admin-btn is-danger admin-videos-bulk-actions__btn" onClick={handleBatchDelete}>
-              <Trash2 size={13} /> 批量删除
+            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={handleBatchRegen}>
+              重生预览视频
+            </button>
+            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={handleBatchDelete}>
+              批量删除
             </button>
           </div>
         </div>
@@ -492,10 +495,10 @@ function CurrentVideosTab({
         open={deleteTarget !== null}
         title="删除视频"
         message={deleteTarget ? `确定要删除「${deleteTarget.title}」吗？` : ""}
-        confirmText="删除视频"
+        confirmText="确认"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--video-delete-flat"
         loading={deleting}
         onCancel={() => {
           if (!deleting) {
@@ -505,16 +508,16 @@ function CurrentVideosTab({
         }}
         onConfirm={confirmDeleteVideo}
       >
-        <DeleteSourceOption checked={deleteSource} disabled={deleting} onChange={setDeleteSource} note="开启后会先删除源文件，失败则不会删除管理库记录。" />
+        <DeleteSourceOption checked={deleteSource} disabled={deleting} onChange={setDeleteSource} />
       </ConfirmModal>
       <ConfirmModal
         open={batchDeleteOpen}
         title="批量删除视频"
         message={`确定要删除当前页选中的 ${selectedIds.size} 个视频吗？`}
-        confirmText="批量删除"
+        confirmText="确认"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--video-delete-flat"
         loading={batchDeleting}
         onCancel={() => {
           if (!batchDeleting) {
@@ -524,7 +527,7 @@ function CurrentVideosTab({
         }}
         onConfirm={confirmBatchDelete}
       >
-        <DeleteSourceOption checked={batchDeleteSource} disabled={batchDeleting} onChange={setBatchDeleteSource} note="开启后会先删除源文件，失败的视频会保留管理库记录。" />
+        <DeleteSourceOption checked={batchDeleteSource} disabled={batchDeleting} onChange={setBatchDeleteSource} />
       </ConfirmModal>
     </div>
   );
@@ -653,8 +656,8 @@ function BlacklistTab({
       setRemoveTarget(null);
       show(
         target.restorePolicy === "crawler"
-          ? "已允许重新入库，将在下次爬虫任务时生效"
-          : "已允许重新入库，将在下次手动或定时扫盘时生效",
+          ? "已取消拉黑，将在下次爬虫任务时生效"
+          : "已取消拉黑，将在下次手动或定时扫盘时生效",
         "success"
       );
       if (list.length === 1 && page > 1) {
@@ -753,14 +756,29 @@ function BlacklistTab({
     <div className={`admin-videos-blacklist${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} placeholder="搜索文件名" />
-        <button
-          type="button"
-          className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
-          onClick={toggleSelectMode}
-          aria-pressed={selectMode}
-        >
-          <span>{selectMode ? "退出选择" : "批量选择"}</span>
-        </button>
+        <div className="admin-videos-filter__actions admin-blacklist-source-delete">
+          {sourceDeleteStatus?.running && (
+            <span className="admin-blacklist-source-delete__status">
+              正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
+            </span>
+          )}
+          <button
+            type="button"
+            className="admin-btn admin-videos-filter__batch admin-blacklist-source-delete__button"
+            disabled={sourceDeleteStatus?.running || (sourceDeleteStatus?.pending ?? total) <= 0}
+            onClick={() => setSourceDeleteOpen(true)}
+          >
+            {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
+          </button>
+          <button
+            type="button"
+            className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+            onClick={toggleSelectMode}
+            aria-pressed={selectMode}
+          >
+            <span>{selectMode ? "退出选择" : "批量选择"}</span>
+          </button>
+        </div>
       </div>
       {tabSelector}
 
@@ -768,13 +786,16 @@ function BlacklistTab({
         <div className="admin-videos-list-toolbar admin-blacklist-bulk-toolbar">
           <div className="admin-videos-bulk-actions">
             <span className="admin-videos-bulk-actions__count">已选择 {selectedIds.size} 项</span>
+            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={() => setSelectedIds(new Set())}>
+              取消选中
+            </button>
             <button
               type="button"
-              className="admin-btn is-danger admin-videos-bulk-actions__btn"
+              className="admin-btn admin-videos-bulk-actions__btn"
               onClick={() => setBatchSourceDeleteOpen(true)}
               disabled={sourceDeleteRunning}
             >
-              <Trash2 size={13} /> 批量删除
+              批量删除
             </button>
           </div>
         </div>
@@ -793,35 +814,7 @@ function BlacklistTab({
         </div>
       ) : (
         <>
-          <div className="admin-videos-list-toolbar">
-            <div className="admin-videos-summary">共 {total} 个拉黑视频</div>
-            <div className="admin-blacklist-source-delete">
-              {sourceDeleteStatus?.running && (
-                <span className="admin-blacklist-source-delete__status">
-                  正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
-                </span>
-              )}
-              <button
-                type="button"
-                className="admin-btn is-danger admin-blacklist-source-delete__button"
-                disabled={sourceDeleteStatus?.running || (sourceDeleteStatus?.pending ?? total) <= 0}
-                onClick={() => setSourceDeleteOpen(true)}
-              >
-                <Trash2 size={13} />
-                {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
-              </button>
-            </div>
-          </div>
           <table className={`admin-table is-selectable admin-blacklist-table${selectMode ? " is-row-select-mode" : ""}`}>
-            <thead>
-              <tr>
-                <th>文件名</th>
-                <th>来源</th>
-                <th>大小</th>
-                <th>拉黑时间</th>
-                <th className="is-actions">操作</th>
-              </tr>
-            </thead>
             <tbody>
               {list.map((v) => {
                 const sourceDeletable = canDeleteBlacklistSource(v);
@@ -857,18 +850,16 @@ function BlacklistTab({
                   <td data-label="来源" className="admin-mono-cell">
                     {driveNameMap.get(v.driveId) ?? v.driveId}
                   </td>
-                  <td data-label="大小">{v.size > 0 ? formatBytes(v.size) : <span className="admin-text-faint">—</span>}</td>
-                  <td data-label="拉黑时间">{formatDateTime(v.deletedAt)}</td>
                   <td className="is-actions" data-label="操作">
                     <div className="admin-blacklist-actions">
                       {v.restorePolicy !== "none" ? (
                         <button
                           type="button"
-                          className="admin-btn admin-blacklist-restore-btn"
+                          className="admin-btn"
                           onClick={() => setRemoveTarget(v)}
-                          title="重新入库"
+                          title="取消拉黑"
                         >
-                          <RotateCcw size={13} /> 重新入库
+                          取消拉黑
                         </button>
                       ) : v.reason === "duplicate" ? (
                         v.canonicalVideoId && v.canonicalTitle ? (
@@ -912,86 +903,58 @@ function BlacklistTab({
         open={sourceDeleteOpen}
         title="删除全部黑名单源文件"
         message={`确定删除全部待处理的黑名单源文件吗？当前共 ${sourceDeleteStatus?.pending ?? total} 个。`}
-        confirmText="删除全部"
+        confirmText="确认"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--source-delete-flat"
         loading={sourceDeleteStarting}
         onCancel={() => {
           if (!sourceDeleteStarting) setSourceDeleteOpen(false);
         }}
         onConfirm={confirmSourceDeleteAll}
-      >
-        <DeleteSourceNotice
-          title="直接删除网盘中的源文件"
-          notes={[
-            "范围为整个黑名单，不受当前来源筛选或搜索条件影响。",
-            "任务会在后台逐个删除，避免并发请求触发网盘限流。",
-            "此操作不可撤销；成功项会从黑名单和管理库中移除，失败项可再次执行重试。",
-            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
-          ]}
-        />
-      </ConfirmModal>
+      />
 
       <ConfirmModal
         open={sourceDeleteTarget !== null}
-        title="删除拉黑视频源文件"
+        title="删除源文件"
         message={sourceDeleteTarget ? `确定删除「${sourceDeleteTarget.fileName || sourceDeleteTarget.id}」的源文件吗？` : ""}
-        confirmText="删除"
+        confirmText="确认"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--source-delete-flat"
         loading={sourceDeleteStarting}
         onCancel={() => {
           if (!sourceDeleteStarting) setSourceDeleteTarget(null);
         }}
         onConfirm={confirmSourceDeleteTarget}
-      >
-        <DeleteSourceNotice
-          title="直接删除网盘中的源文件"
-          notes={[
-            "成功后会从黑名单和管理库中移除。",
-            "失败时不会改变该拉黑记录，可稍后再次重试。",
-            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
-          ]}
-        />
-      </ConfirmModal>
+      />
 
       <ConfirmModal
         open={batchSourceDeleteOpen}
         title="批量删除拉黑视频源文件"
         message={`确定删除当前页选中的 ${selectedIds.size} 个拉黑视频源文件吗？`}
-        confirmText="批量删除"
+        confirmText="确认"
         danger
         centerMessage
-        modalClassName="admin-modal--delete-confirm"
+        modalClassName="admin-modal--delete-confirm admin-modal--source-delete-flat"
         loading={sourceDeleteStarting}
         onCancel={() => {
           if (!sourceDeleteStarting) setBatchSourceDeleteOpen(false);
         }}
         onConfirm={confirmBatchSourceDelete}
-      >
-        <DeleteSourceNotice
-          title="直接删除网盘中的源文件"
-          notes={[
-            "任务会在后台逐个删除，避免并发请求触发网盘限流。",
-            "成功项会从黑名单和管理库中移除，失败项可再次执行重试。",
-            "爬虫来源会保留已爬取标记，避免后续重复爬取。",
-          ]}
-        />
-      </ConfirmModal>
+      />
 
       <ConfirmModal
         open={removeTarget !== null}
-        title="重新入库"
+        title="取消拉黑"
         message={
           removeTarget
             ? removeTarget.restorePolicy === "crawler"
-              ? `确定允许「${removeTarget.fileName || removeTarget.id}」重新入库吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
-              : `确定允许「${removeTarget.fileName || removeTarget.id}」重新入库吗？此操作不会立即扫盘，将在下次手动或定时扫盘时生效。`
+              ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
+              : `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？此操作不会立即扫盘，将在下次手动或定时扫盘时生效。`
             : ""
         }
-        confirmText="重新入库"
+        confirmText="取消拉黑"
         centerMessage
         loading={removing}
         onCancel={() => {
@@ -1102,35 +1065,18 @@ function DeleteSourceOption({
   checked,
   disabled,
   onChange,
-  note,
 }: {
   checked: boolean;
   disabled: boolean;
   onChange: (v: boolean) => void;
-  note: string;
 }) {
   return (
     <label className="admin-delete-source-option">
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       <span>
         <strong>同时删除网盘中的源文件</strong>
-        <small>{note}</small>
       </span>
     </label>
-  );
-}
-
-function DeleteSourceNotice({ title, notes }: { title: string; notes: string[] }) {
-  return (
-    <div className="admin-delete-source-option admin-delete-source-option--notice">
-      <Trash2 size={15} aria-hidden="true" />
-      <span>
-        <strong>{title}</strong>
-        {notes.map((note) => (
-          <small key={note}>{note}</small>
-        ))}
-      </span>
-    </div>
   );
 }
 
@@ -1203,14 +1149,6 @@ function formatDur(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-function formatDateTime(ms: number): string {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return "—";
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 function videoUpdatedAtMs(video?: api.AdminVideo): number {
   if (!video?.updatedAt) return 0;
   const value = Date.parse(video.updatedAt);
@@ -1254,8 +1192,6 @@ function EditVideoModal({
   const [title, setTitle] = useState(video.title);
   const [author, setAuthor] = useState(video.author ?? "");
   const [selectedTags, setSelectedTags] = useState(video.tags ?? []);
-  const [description, setDescription] = useState(video.description ?? "");
-  const [durationSec, setDurationSec] = useState(String(video.durationSeconds || 0));
   const [saving, setSaving] = useState(false);
   const [regeningPreview, setRegeningPreview] = useState(false);
   const { show } = useToast();
@@ -1267,8 +1203,6 @@ function EditVideoModal({
         title: title.trim(),
         author: author.trim(),
         tags: selectedTags,
-        description,
-        durationSeconds: Number(durationSec) || 0,
       });
       show("已保存", "success");
       onSaved();
@@ -1294,6 +1228,7 @@ function EditVideoModal({
     <Modal
       open
       ariaLabel="编辑视频"
+      className="admin-modal--video-edit"
       onClose={onClose}
       footer={
         <>
@@ -1335,27 +1270,9 @@ function EditVideoModal({
                     {tagAssignmentSourceLabel(video.tagSources[tag.label])}
                   </span>
                 )}
-                <em className="admin-video-tag-option__count">{tag.count}</em>
               </label>
             ))}
           </div>
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor={`${idPrefix}-video-duration`}>时长（秒）</label>
-          <input
-            id={`${idPrefix}-video-duration`}
-            value={durationSec}
-            onChange={(e) => setDurationSec(e.target.value)}
-            inputMode="numeric"
-          />
-        </div>
-        <div className="admin-form__row">
-          <label htmlFor={`${idPrefix}-video-description`}>描述</label>
-          <textarea
-            id={`${idPrefix}-video-description`}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
         </div>
         <dl className="admin-kv" style={{ marginTop: 8 }}>
           <dt>来源盘</dt>
@@ -1363,30 +1280,18 @@ function EditVideoModal({
           <dt>文件信息</dt>
           <dd>{fileMeta(video) || "—"}</dd>
           <dt>预览视频</dt>
-          <dd>
-            <div className="admin-video-preview-control">
-              <PreviewStatus s={previewGenerating ? REGEN_PREVIEW_STATUS : video.previewStatus} />
-              <button
-                type="button"
-                className="admin-btn admin-video-preview-control__button"
-                onClick={handleRegenPreview}
-                disabled={saving || previewBusy}
-              >
-                <RefreshCw size={13} className={previewBusy ? "admin-spin" : undefined} />
-                {previewBusy ? "生成中..." : "重新生成预览"}
-              </button>
-            </div>
+          <dd className="admin-video-preview-actions">
+            <PreviewStatus s={previewGenerating ? REGEN_PREVIEW_STATUS : video.previewStatus} />
+            <button
+              type="button"
+              className="admin-btn admin-video-preview-button"
+              onClick={handleRegenPreview}
+              disabled={saving || previewBusy}
+            >
+              {previewBusy ? "生成中..." : "重新生成预览"}
+            </button>
           </dd>
         </dl>
-        <details className="admin-form__help" style={{ marginTop: 8 }}>
-          <summary>技术信息（排查用）</summary>
-          <dl className="admin-kv" style={{ marginTop: 8 }}>
-            <dt>内部视频 ID</dt>
-            <dd style={{ fontFamily: "ui-monospace", fontSize: 12 }}>{video.id}</dd>
-            <dt>网盘文件 ID</dt>
-            <dd style={{ fontFamily: "ui-monospace", fontSize: 12 }}>{video.fileId}</dd>
-          </dl>
-        </details>
       </div>
     </Modal>
   );
