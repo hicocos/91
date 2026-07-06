@@ -1890,20 +1890,6 @@
   box-shadow: var(--shadow-xl);
 }
 
-.admin-login__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--font-2xl);
-  font-weight: var(--weight-bold);
-  color: var(--text-strong);
-  margin-bottom: var(--space-5);
-}
-
-.admin-login__title svg {
-  color: var(--accent);
-}
-
 .admin-login__error {
   margin-top: var(--space-2);
   padding: 8px var(--space-3);

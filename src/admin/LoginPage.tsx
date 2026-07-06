@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Play } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { useToast } from "./ToastContext";
 import * as api from "./api";
@@ -86,11 +85,6 @@ export function LoginPage() {
   return (
     <div className="admin-login">
       <form className="admin-login__card" onSubmit={handleSubmit}>
-        {setupRequired && (
-          <h1 className="admin-login__title">
-            <Play size={18} fill="currentColor" /> 首次设置管理员
-          </h1>
-        )}
         <div className="admin-form">
           <div className="admin-form__row">
             <label htmlFor="admin-login-username">用户名</label>
