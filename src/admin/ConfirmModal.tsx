@@ -40,7 +40,7 @@ export function ConfirmModal({
       open={open}
       title={title}
       onClose={onCancel}
-      className={modalClassName}
+      className={`admin-modal--confirm${modalClassName ? ` ${modalClassName}` : ""}`}
       restoreFocus={restoreFocus}
       footer={
         <>

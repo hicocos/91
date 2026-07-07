@@ -55,10 +55,8 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		// SkipDirIDs 是用户在 admin 配置的"扫描跳过目录"集合（drive 侧目录 fileID）。
 		// 前端用它在"设置跳过目录"弹窗里回显已选项；JSON 字段名 camelCase 与
 		// catalog.Drive 保持一致。
-		SkipDirIDs                []string `json:"skipDirIds"`
-		LastCrawlAt               int64    `json:"lastCrawlAt,omitempty"`
-		GoogleDriveUseOnlineAPI   *bool    `json:"googleDriveUseOnlineAPI,omitempty"`
-		GoogleDriveOpenListAPIURL string   `json:"googleDriveOpenListApiUrl,omitempty"`
+		SkipDirIDs  []string `json:"skipDirIds"`
+		LastCrawlAt int64    `json:"lastCrawlAt,omitempty"`
 		// STRMAllowOutsideRoot 是 localstorage 的 .strm 越root开关；其它 kind 省略。
 		STRMAllowOutsideRoot          *bool            `json:"strmAllowOutsideRoot,omitempty"`
 		ScanGenerationStatus          GenerationStatus `json:"scanGenerationStatus"`
@@ -134,8 +132,6 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 			TeaserEnabled:                 d.TeaserEnabled,
 			SkipDirIDs:                    append([]string{}, d.SkipDirIDs...),
 			LastCrawlAt:                   lastCrawlAt,
-			GoogleDriveUseOnlineAPI:       googleDriveUseOnlineAPIForDrive(d),
-			GoogleDriveOpenListAPIURL:     googleDriveOpenListAPIURLForDrive(d),
 			STRMAllowOutsideRoot:          strmAllowOutsideRootForDrive(d),
 			ScanGenerationStatus:          generation.Scan,
 			ThumbnailGenerationStatus:     generation.Thumbnail,

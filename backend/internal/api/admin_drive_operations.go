@@ -85,38 +85,10 @@ func strmAllowOutsideRootForDrive(d *catalog.Drive) *bool {
 	return &result
 }
 
-func googleDriveUseOnlineAPIForDrive(d *catalog.Drive) *bool {
-	if d == nil || d.Kind != "googledrive" {
-		return nil
-	}
-	result := true
-	if d.Credentials == nil {
-		return &result
-	}
-	raw := strings.TrimSpace(d.Credentials["use_online_api"])
-	if raw == "" {
-		return &result
-	}
-	v, err := strconv.ParseBool(raw)
-	if err != nil {
-		return &result
-	}
-	result = v
-	return &result
-}
-
-func googleDriveOpenListAPIURLForDrive(d *catalog.Drive) string {
-	if d == nil || d.Kind != "googledrive" || d.Credentials == nil {
-		return ""
-	}
-	return strings.TrimSpace(d.Credentials["api_url_address"])
-}
-
 func mergeGoogleDriveCredentials(existing *catalog.Drive, incoming map[string]string) map[string]string {
 	merged := mergeNonEmptyCredentials(existing, incoming)
-	if _, ok := incoming["api_url_address"]; ok && strings.TrimSpace(incoming["api_url_address"]) == "" {
-		delete(merged, "api_url_address")
-	}
+	delete(merged, "use_online_api")
+	delete(merged, "api_url_address")
 	return merged
 }
 

@@ -12,6 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+const frontendHashedAssetCacheControl = "public, max-age=31536000, immutable"
+
 // corsMiddleware 返回一个 chi 中间件，按白名单匹配 Origin 决定是否回写
 // CORS 响应头。
 //
@@ -125,6 +127,9 @@ func frontendHandler(dir string) http.HandlerFunc {
 			if err == nil {
 				defer f.Close()
 				if st, statErr := f.Stat(); statErr == nil && !st.IsDir() {
+					if strings.HasPrefix(cleanPath, "/assets/") {
+						w.Header().Set("Cache-Control", frontendHashedAssetCacheControl)
+					}
 					http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 					return
 				}

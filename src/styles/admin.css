@@ -372,6 +372,11 @@
   align-items: center;
 }
 
+.admin-drive-list-actions {
+  width: 100%;
+  justify-content: space-between;
+}
+
 .admin-task-controls {
   display: inline-flex;
   align-items: center;
@@ -1208,14 +1213,17 @@
 /* ----- Storage summary ----- */
 .admin-storage-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
   padding: var(--space-4) var(--space-5);
 }
 
 .admin-storage-summary__metric {
   display: grid;
+  justify-items: center;
   gap: 4px;
+  min-width: 0;
+  text-align: center;
 }
 
 .admin-storage-summary__metric span {
@@ -1249,6 +1257,12 @@
 
 .admin-form__row label,
 .admin-form__label {
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-default);
+}
+
+.admin-form__method-label {
   font-size: var(--font-sm);
   font-weight: var(--weight-medium);
   color: var(--text-default);
@@ -1448,10 +1462,10 @@
 .admin-p123-qr {
   display: grid;
   gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .admin-p123-qr__actions {
@@ -1568,35 +1582,6 @@
   border-color: var(--warning);
   background: rgba(245, 181, 74, 0.2);
   box-shadow: 0 2px 10px rgba(245, 181, 74, 0.12);
-}
-
-.admin-detail-actions > .admin-btn:not(.is-danger) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-on-accent);
-  box-shadow: none;
-}
-
-.admin-detail-actions > .admin-btn:not(.is-danger):hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: var(--text-on-accent);
-  box-shadow: none;
-}
-
-.admin-detail-actions .admin-btn.is-stop {
-  background: var(--warning);
-  border-color: var(--warning);
-  color: var(--text-on-accent);
-  box-shadow: none;
-}
-
-.admin-detail-actions .admin-btn.is-stop:hover:not(:disabled) {
-  background: var(--warning);
-  border-color: var(--warning);
-  color: var(--text-on-accent);
-  filter: brightness(1.04);
-  box-shadow: none;
 }
 
 .admin-btn:disabled {
@@ -1969,64 +1954,80 @@
   background: var(--bg-elevated);
 }
 
+.admin-modal--confirm,
 .admin-modal--delete-confirm {
   background: var(--bg-surface);
-  border-color: var(--border-default);
+  border: 0;
   color: var(--text-strong);
-  box-shadow: var(--shadow-xl);
+  box-shadow: none;
 }
 
+.admin-modal--confirm .admin-modal__header,
+.admin-modal--confirm .admin-modal__footer,
 .admin-modal--delete-confirm .admin-modal__header,
 .admin-modal--delete-confirm .admin-modal__footer {
-  background: var(--bg-elevated);
-  border-color: var(--border-subtle);
+  background: var(--bg-surface);
+  border: 0;
 }
 
+.admin-modal--confirm .admin-modal__header,
+.admin-modal--confirm .admin-confirm__message,
 .admin-modal--delete-confirm .admin-modal__header,
 .admin-modal--delete-confirm .admin-confirm__message {
   color: var(--text-strong);
 }
 
+.admin-modal--confirm .admin-modal__header .admin-btn,
 .admin-modal--delete-confirm .admin-modal__header .admin-btn {
-  background: var(--bg-elevated);
+  background: transparent;
   color: var(--accent);
-  border-color: var(--border-default);
+  border-color: transparent;
+  box-shadow: none;
 }
 
+.admin-modal--confirm .admin-modal__header .admin-btn:hover:not(:disabled),
 .admin-modal--delete-confirm .admin-modal__header .admin-btn:hover:not(:disabled) {
   background: var(--bg-surface);
   color: var(--accent-hover);
-  border-color: var(--border-strong);
+  border-color: transparent;
 }
 
+:root[data-theme="pink"] .admin-modal--confirm,
 :root[data-theme="pink"] .admin-modal--delete-confirm {
   background: #ffffff;
-  border-color: rgba(255, 91, 138, 0.18);
+  border: 0;
   color: #2a1820;
-  box-shadow: 0 18px 54px rgba(42, 24, 32, 0.18);
+  box-shadow: none;
 }
 
+:root[data-theme="pink"] .admin-modal--confirm .admin-modal__header,
+:root[data-theme="pink"] .admin-modal--confirm .admin-modal__footer,
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-modal__header,
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-modal__footer {
   background: #ffffff;
-  border-color: rgba(255, 91, 138, 0.12);
+  border: 0;
 }
 
+:root[data-theme="pink"] .admin-modal--confirm .admin-modal__header,
+:root[data-theme="pink"] .admin-modal--confirm .admin-confirm__message,
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-modal__header,
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-confirm__message {
   color: #2a1820;
 }
 
+:root[data-theme="pink"] .admin-modal--confirm .admin-modal__header .admin-btn,
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-modal__header .admin-btn {
-  background: #ffffff;
+  background: transparent;
   color: #ff5b8a;
-  border-color: rgba(255, 91, 138, 0.26);
+  border-color: transparent;
+  box-shadow: none;
 }
 
+:root[data-theme="pink"] .admin-modal--confirm .admin-modal__header .admin-btn:hover:not(:disabled),
 :root[data-theme="pink"] .admin-modal--delete-confirm .admin-modal__header .admin-btn:hover:not(:disabled) {
   background: #fff6f9;
   color: #f43d75;
-  border-color: rgba(255, 91, 138, 0.45);
+  border-color: transparent;
 }
 
 .admin-modal--source-delete-flat,
@@ -2082,6 +2083,149 @@
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.admin-modal--drive-form {
+  width: min(520px, 100%);
+  min-height: min(440px, calc(100vh - 2 * var(--space-4)));
+  min-height: min(440px, calc(100dvh - 2 * var(--space-4)));
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  box-shadow: none;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.admin-modal--drive-form::-webkit-scrollbar,
+.admin-modal--drive-form .admin-modal__body::-webkit-scrollbar {
+  display: none;
+}
+
+.admin-modal--drive-form .admin-modal__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.admin-modal--drive-form .admin-drive-type-picker {
+  align-content: center;
+  flex: 1 1 auto;
+}
+
+.admin-modal--drive-form .admin-modal__header,
+.admin-modal--drive-form .admin-modal__footer {
+  border: 0;
+  background: var(--bg-surface);
+}
+
+.admin-modal--drive-form .admin-modal__header .admin-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.admin-modal--drive-form .admin-form__section {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.admin-modal--drive-form .admin-drive-selected-bar {
+  padding: 0 0 var(--space-1);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  margin-bottom: var(--space-3);
+}
+
+.admin-modal--drive-form .admin-form__section + .admin-form__section {
+  margin-top: 0;
+}
+
+.admin-modal--drive-form .admin-form__section-label {
+  color: var(--text-default);
+  font-weight: var(--weight-medium);
+}
+
+.admin-modal--drive-form .admin-drive-type-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.admin-modal--drive-form .admin-drive-type-card {
+  justify-self: stretch;
+  min-width: 0;
+  min-height: 82px;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+}
+
+.admin-modal--drive-form .admin-drive-type-card:hover,
+.admin-modal--drive-form .admin-drive-type-card:active,
+.admin-modal--drive-form .admin-drive-type-card:focus-visible {
+  border-color: var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: none;
+  transform: none;
+}
+
+.admin-modal--drive-form .admin-drive-type-card[data-kind]:hover,
+.admin-modal--drive-form .admin-drive-type-card[data-kind]:active,
+.admin-modal--drive-form .admin-drive-type-card[data-kind]:focus-visible {
+  border-color: var(--border-default);
+  box-shadow: none;
+}
+
+.admin-modal--drive-form .admin-drive-type-card__icon,
+.admin-modal--drive-form .admin-drive-type-card__icon[data-kind] {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: transparent;
+}
+
+.admin-modal--drive-form .admin-drive-type-card__icon.has-image,
+.admin-modal--drive-form .admin-drive-type-card__icon.has-image[data-kind] {
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  color: inherit;
+}
+
+.admin-drive-type-card__icon-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+  object-fit: contain;
+}
+
+@media (max-width: 520px) {
+  .admin-modal--drive-form .admin-drive-type-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    justify-content: stretch;
+    gap: var(--space-2);
+  }
+
+  .admin-modal--drive-form .admin-drive-type-card {
+    min-width: 0;
+    min-height: 74px;
+    padding: 8px 4px;
+  }
+
+  .admin-modal--drive-form .admin-drive-type-card__icon.has-image,
+  .admin-modal--drive-form .admin-drive-type-card__icon.has-image[data-kind] {
+    width: 34px;
+    height: 34px;
+  }
 }
 
 .admin-modal--release-notes {
@@ -2465,8 +2609,8 @@
   width: 36px;
   height: 20px;
   border-radius: var(--radius-pill);
-  background: rgba(255, 255, 255, 0.1);
-  border: 0;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-default);
   padding: 0;
   cursor: pointer;
   transition: background var(--transition-fast);
@@ -2474,16 +2618,19 @@
 }
 
 .toggle-switch:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
 }
 
 .toggle-switch.is-on {
   background: var(--accent);
+  border-color: var(--accent);
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
 .toggle-switch.is-on:hover:not(:disabled) {
   background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .toggle-switch.is-saving { opacity: 0.7; }
@@ -2503,6 +2650,13 @@
 
 .toggle-switch.is-on .toggle-switch__dot {
   left: 19px;
+}
+
+.admin-drive-preview-toggle__label {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
 }
 
 /* =========================================================
@@ -3931,16 +4085,6 @@
   margin: var(--space-2) 0;
 }
 
-.admin-form__help--lead {
-  font-size: var(--font-sm);
-  color: var(--text-default);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 10px var(--space-3);
-  line-height: var(--line-relaxed);
-}
-
 @media (max-width: 768px) {
   .admin-videos-filter__search {
     flex: 1 1 100%;
@@ -4105,7 +4249,7 @@
 }
 
 /* =========================================================
- * Drive Type Picker (新建网盘 - 类型选择卡片)
+ * Drive Type Picker (添加网盘 - 类型选择卡片)
  * ========================================================= */
 .admin-drive-type-picker {
   display: grid;
@@ -4199,12 +4343,6 @@
   line-height: 1.2;
 }
 
-.admin-drive-type-card__desc {
-  font-size: var(--font-xs);
-  color: var(--text-faint);
-  line-height: var(--line-tight);
-}
-
 @media (max-width: 520px) {
   .admin-drive-type-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4272,6 +4410,20 @@
 .admin-drive-selected-bar__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
 .admin-drive-selected-bar__icon[data-kind="guangyapan"]  { background: rgba(48,195,168,.14);  color: var(--drive-guangyapan); }
 
+.admin-drive-selected-bar__icon.has-image[data-kind] {
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+}
+
+.admin-drive-selected-bar__icon-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
+  object-fit: contain;
+}
+
 .admin-drive-selected-bar__text {
   flex: 1;
   min-width: 0;
@@ -4284,33 +4436,6 @@
   font-size: var(--font-md);
   font-weight: var(--weight-semibold);
   color: var(--text-strong);
-}
-
-.admin-drive-selected-bar__desc {
-  font-size: var(--font-xs);
-  color: var(--text-muted);
-}
-
-.admin-drive-selected-bar__back {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface);
-  color: var(--text-muted);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-medium);
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
-}
-
-.admin-drive-selected-bar__back:hover {
-  color: var(--text-strong);
-  border-color: var(--border-strong);
-  background: var(--bg-elevated);
 }
 
 .admin-form__section {
@@ -4812,6 +4937,15 @@
   box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md);
 }
 
+.admin-drives-page .admin-status {
+  gap: 0;
+}
+
+.admin-drives-page .admin-status::before {
+  content: none;
+  display: none;
+}
+
 .admin-drive-card__header {
   display: flex;
   align-items: center;
@@ -4859,6 +4993,20 @@
 .admin-drive-card__brand-icon[data-kind="onedrive"] { background: var(--drive-onedrive); }
 .admin-drive-card__brand-icon[data-kind="googledrive"] { background: #4285f4; }
 .admin-drive-card__brand-icon[data-kind="localstorage"] { background: var(--drive-localstorage); }
+
+.admin-drive-card__brand-icon.has-image[data-kind] {
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+}
+
+.admin-drive-card__brand-icon-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+  object-fit: contain;
+}
 
 .admin-drive-card__info {
   display: grid;
@@ -4915,27 +5063,6 @@
   color: var(--text-faint);
   display: block;
   margin-top: 3px;
-}
-
-.admin-drive-detail__header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.admin-drive-detail__kind-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-medium);
-  color: var(--text-muted);
-  white-space: nowrap;
 }
 
 /* =========================================================
@@ -5194,6 +5321,23 @@
   margin-top: var(--space-5);
   padding-top: var(--space-4);
   border-top: 1px solid var(--border-subtle);
+}
+
+.admin-generation-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.admin-generation-actions .admin-btn {
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .admin-generation-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .admin-detail-actions-inline {

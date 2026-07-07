@@ -165,10 +165,10 @@ func TestDefaultAPIBaseMatchesCurrentWebAPIHost(t *testing.T) {
 	}
 }
 
-func TestLoginRiskErrorSuggestsAccessToken(t *testing.T) {
+func TestLoginRiskErrorSuggestsQRCodeLogin(t *testing.T) {
 	err := loginError("当前账号存在境外登录风险，请使用短信验证码或者微信进行登录。")
-	if err == nil || !strings.Contains(err.Error(), "access_token") {
-		t.Fatalf("loginError() = %v, want access_token guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "扫码登录") {
+		t.Fatalf("loginError() = %v, want qr login guidance", err)
 	}
 }
 

@@ -28,6 +28,15 @@ import (
 	"github.com/video-site/backend/internal/scanner"
 )
 
+// guangYaPanLegacyRootPath keeps existing path-based mounts working until the
+// user saves a directory ID through the unified root directory field.
+func guangYaPanLegacyRootPath(rootID string, credentials map[string]string) string {
+	if strings.TrimSpace(rootID) != "" {
+		return ""
+	}
+	return strings.TrimSpace(credentials["root_path"])
+}
+
 func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 	a.driveAttachMu.Lock()
 	defer a.driveAttachMu.Unlock()
@@ -148,7 +157,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 		drv = guangyapan.New(guangyapan.Config{
 			ID:             d.ID,
 			RootID:         d.RootID,
-			RootPath:       d.Credentials["root_path"],
+			RootPath:       guangYaPanLegacyRootPath(d.RootID, d.Credentials),
 			PhoneNumber:    d.Credentials["phone_number"],
 			CaptchaToken:   d.Credentials["captcha_token"],
 			SendCode:       parseBoolDefault(strings.TrimSpace(d.Credentials["send_code"]), false),
@@ -200,8 +209,6 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RefreshToken: d.Credentials["refresh_token"],
 			ClientID:     d.Credentials["client_id"],
 			ClientSecret: d.Credentials["client_secret"],
-			UseOnlineAPI: parseBoolDefault(d.Credentials["use_online_api"], true),
-			RenewAPIURL:  d.Credentials["api_url_address"],
 			OAuthURL:     d.Credentials["oauth_url"],
 			APIBaseURL:   d.Credentials["api_base_url"],
 			OnTokenUpdate: func(access, refresh string) {

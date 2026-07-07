@@ -41,6 +41,16 @@ func TestHashPasswordCommandProducesBcryptHash(t *testing.T) {
 	}
 }
 
+func TestGuangYaPanLegacyRootPath(t *testing.T) {
+	credentials := map[string]string{"root_path": "  影视/电影  "}
+	if got := guangYaPanLegacyRootPath("", credentials); got != "影视/电影" {
+		t.Fatalf("legacy root path = %q", got)
+	}
+	if got := guangYaPanLegacyRootPath("folder-id", credentials); got != "" {
+		t.Fatalf("root ID should take precedence, legacy path = %q", got)
+	}
+}
+
 func TestEnsureConfigAdminUserMigratesCustomConfigAdmin(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const drivesPageSource = readFileSync(
@@ -10,12 +10,24 @@ const driveComponentsSource = readFileSync(
   new URL("../src/admin/drive/DriveComponents.tsx", import.meta.url),
   "utf8"
 );
+const skipDirsPanelSource = readFileSync(
+  new URL("../src/admin/drive/SkipDirsPanel.tsx", import.meta.url),
+  "utf8"
+);
+const deleteDriveModalSource = readFileSync(
+  new URL("../src/admin/drive/DeleteDriveModal.tsx", import.meta.url),
+  "utf8"
+);
 const crawlerPageSource = readFileSync(
   new URL("../src/admin/CrawlersPage.tsx", import.meta.url),
   "utf8"
 );
 const adminLayoutSource = readFileSync(
   new URL("../src/admin/AdminLayout.tsx", import.meta.url),
+  "utf8"
+);
+const confirmModalSource = readFileSync(
+  new URL("../src/admin/ConfirmModal.tsx", import.meta.url),
   "utf8"
 );
 const appSource = readFileSync(
@@ -42,8 +54,29 @@ const constantsSource = readFileSync(
   new URL("../src/admin/drive/constants.ts", import.meta.url),
   "utf8"
 );
+const p123QRCodeLoginSource = readFileSync(
+  new URL("../src/admin/drive/P123QRCodeLogin.tsx", import.meta.url),
+  "utf8"
+);
+const qrLoginSources = [
+  p123QRCodeLoginSource,
+  readFileSync(new URL("../src/admin/drive/WopanQRCodeLogin.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("../src/admin/drive/GuangYaPanQRCodeLogin.tsx", import.meta.url), "utf8"),
+]
+  .join("\n");
 
 const combinedSource = drivesPageSource + "\n" + driveFormSource + "\n" + constantsSource + "\n" + crawlerUploadTargetSource;
+const driveIconKinds = [
+  "p115",
+  "p123",
+  "pikpak",
+  "guangyapan",
+  "onedrive",
+  "googledrive",
+  "quark",
+  "wopan",
+];
+const generatedDriveIcons = [{ kind: "localstorage", ext: "svg" }];
 
 function driveTypeOptions() {
   const match = /const DRIVE_OPTIONS:\s*DriveOption\[]\s*=\s*\[([\s\S]*?)\];/.exec(
@@ -97,15 +130,16 @@ test("crawler upload target select uses an aligned custom arrow", () => {
   );
 });
 
-test("drive form hides root directory id for localstorage", () => {
-  assert.match(combinedSource, /<label[^>]*>根目录 ID<\/label>/);
+test("drive form labels the optional root directory and hides it for localstorage", () => {
+  assert.match(combinedSource, /<label[^>]*>自定义网盘根目录\(可选\)<\/label>/);
+  assert.match(combinedSource, /placeholder="根目录ID请参考OpenList文档"/);
+  assert.doesNotMatch(combinedSource, />根目录 ID</);
   assert.match(
     combinedSource,
     /usesRootDirectoryID\(kind:\s*Kind\):\s*boolean\s*\{\s*return kind !== "localstorage";\s*\}/
   );
   assert.match(combinedSource, /\{usesRootDirectoryID\(form\.kind\) && \(/);
   assert.match(combinedSource, /\{usesRootDirectoryID\(d\.kind\) && \(/);
-  assert.match(combinedSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
   assert.doesNotMatch(combinedSource, /扫描起点目录 ID/);
   assert.doesNotMatch(combinedSource, /set\("scanRootId"/);
 });
@@ -126,7 +160,7 @@ test("onedrive drive form only exposes required default-app fields", () => {
   assert.doesNotMatch(fields, /key: "site_id"/);
 });
 
-test("googledrive drive form supports online API and custom OAuth client modes", () => {
+test("googledrive drive form only supports a custom OAuth client", () => {
   assertDriveTypeOption("googledrive", "Google Drive");
 
   const match =
@@ -137,27 +171,18 @@ test("googledrive drive form supports online API and custom OAuth client modes",
   const fields = match[1];
 
   assert.match(fields, /key: "refresh_token"/);
-  assert.match(fields, /key: "use_online_api"/);
-  assert.match(fields, /type: "select"/);
-  assert.match(fields, /defaultValue: "true"/);
-  assert.match(fields, /OpenList 在线 API/);
-  assert.match(fields, /自建 Google OAuth 客户端/);
   assert.match(fields, /key: "client_id"/);
   assert.match(fields, /key: "client_secret"/);
-  assert.match(fields, /googleDriveUsesOnlineAPI\(creds\)/);
-  assert.match(fields, /key: "api_url_address"/);
-  assert.match(fields, /OpenList 在线 API URL/);
-  assert.doesNotMatch(fields, /在线 API 模式填写 OpenList 获取的 refresh_token/);
+  assert.doesNotMatch(fields, /key: "use_online_api"/);
+  assert.doesNotMatch(fields, /OpenList 在线 API|api\.oplist\.org/);
+  assert.doesNotMatch(fields, /key: "api_url_address"/);
   assert.doesNotMatch(constantsSource, /请参考OpenList文档中关于谷歌云盘的配置方法。/);
-  assert.doesNotMatch(constantsSource, /选择自建 Google OAuth 客户端后，服务端会直接请求 Google OAuth token 接口续期。/);
   assert.match(driveFormSource, /<select/);
   assert.match(driveFormSource, /value=\{form\.creds\[f\.key\] \?\? f\.defaultValue \?\? ""\}/);
   assert.match(driveFormSource, /className="admin-form-select"/);
   assert.match(driveFormSource, /ChevronDown/);
-  assert.match(drivesPageSource, /googleDriveUseOnlineAPI/);
-  assert.match(drivesPageSource, /googleDriveOpenListApiUrl/);
-  assert.match(apiSource, /googleDriveUseOnlineAPI\?: boolean/);
-  assert.match(apiSource, /googleDriveOpenListApiUrl\?: string/);
+  assert.doesNotMatch(drivesPageSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
+  assert.doesNotMatch(apiSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
   assert.doesNotMatch(fields, /key: "access_token"/);
 });
 
@@ -178,6 +203,41 @@ test("pikpak drive form only exposes account login fields", () => {
   assert.doesNotMatch(fields, /key: "disable_media_link"/);
 });
 
+test("wopan drive form omits the optional family space field", () => {
+  const match =
+    /case "wopan":\s*return \[([\s\S]*?)\];\s*case "guangyapan":/.exec(
+      combinedSource
+    );
+  assert.ok(match, "wopan credential field block should be present");
+  assert.doesNotMatch(match[1], /key: "family_id"|家庭空间可选/);
+});
+
+test("p123 drive form exposes qr login and phone or email password login", () => {
+  assertDriveTypeOption("p123", "123网盘");
+  assert.match(driveFormSource, /P123QRCodeLogin/);
+  assert.match(p123QRCodeLoginSource, /<label>方式一<\/label>/);
+  assert.match(driveFormSource, /className="admin-form__method-label">方式二<\/div>/);
+  assert.doesNotMatch(p123QRCodeLoginSource, /方式一：扫码登录/);
+  assert.doesNotMatch(driveFormSource, /方式二：手机号密码登录/);
+  assert.match(drivesPageSource, /hasScannedToken/);
+  assert.match(drivesPageSource, /请使用方式一扫码登录，或填写方式二的手机号\/邮箱和密码/);
+
+  const match =
+    /case "p123":\s*return \[([\s\S]*?)\];\s*case "pikpak":/.exec(
+      combinedSource
+    );
+  assert.ok(match, "p123 credential field block should be present");
+  const fields = match[1];
+
+  assert.match(fields, /key: "username"/);
+  assert.match(fields, /label: "手机号\/邮箱"/);
+  assert.match(fields, /key: "password"/);
+  assert.match(fields, /label: "密码"/);
+  assert.doesNotMatch(fields, /key: "access_token"/);
+  assert.doesNotMatch(fields, /access_token（推荐用于风控场景）|可选/);
+  assert.doesNotMatch(p123QRCodeLoginSource, /已填入 access_token/);
+});
+
 test("guangyapan drive form exposes qr login and token fields", () => {
   assertDriveTypeOption("guangyapan", "光鸭网盘");
   assert.match(driveFormSource, /GuangYaPanQRCodeLogin/);
@@ -192,7 +252,7 @@ test("guangyapan drive form exposes qr login and token fields", () => {
   assert.ok(match, "guangyapan credential field block should be present");
   const fields = match[1];
 
-  assert.match(fields, /key: "root_path"/);
+  assert.doesNotMatch(fields, /key: "root_path"/);
   assert.match(fields, /key: "refresh_token"/);
   assert.match(fields, /key: "access_token"/);
   assert.doesNotMatch(fields, /key: "phone_number"/);
@@ -229,10 +289,51 @@ test("drive type selector keeps primary source order", () => {
     { value: "guangyapan", label: "光鸭网盘" },
     { value: "onedrive", label: "OneDrive" },
     { value: "googledrive", label: "Google Drive" },
-    { value: "localstorage", label: "本地存储" },
     { value: "quark", label: "夸克网盘" },
     { value: "wopan", label: "联通网盘" },
+    { value: "localstorage", label: "本地存储" },
   ]);
+});
+
+test("drive create form keeps selected type step visually minimal", () => {
+  assert.doesNotMatch(driveFormSource, /302直链|扫码登录|稳定快速|服务器中转模式|本机文件目录/);
+  assert.doesNotMatch(driveFormSource, /留空时使用该网盘类型的默认根目录/);
+  assert.doesNotMatch(driveFormSource, /重选类型|admin-drive-selected-bar__back|onBack/);
+  assert.doesNotMatch(driveFormSource, /凭证配置|credentialHelp|admin-form__help--lead|f\.help/);
+  assert.doesNotMatch(
+    constantsSource,
+    /credentialHelp|help\?:|help:|请参考OpenList文档|填写服务器可访问|扫码成功后会自动填入|Google Cloud Console|路径必须是后端服务器/
+  );
+  assert.doesNotMatch(
+    combinedSource,
+    /使用微信或 123网盘 App 扫码并确认登录|使用联通网盘 App 扫码并确认登录|使用光鸭 App 扫码并确认登录/
+  );
+  assert.doesNotMatch(qrLoginSources, /admin-status|QRStatusClass|statusText|statusClass/);
+  assert.doesNotMatch(drivesPageSource, /onBack=\{\(\) => setNameTouched\(false\)\}/);
+  assert.doesNotMatch(adminCss, /\.admin-drive-selected-bar__back/);
+  assert.doesNotMatch(adminCss, /\.admin-drive-selected-bar__desc/);
+  assert.doesNotMatch(adminCss, /\.admin-drive-type-card__desc/);
+  assert.doesNotMatch(adminCss, /\.admin-form__help--lead/);
+  assert.match(
+    adminCss,
+    /\.admin-p123-qr\s*\{[^}]*padding\s*:\s*0;[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
+  );
+});
+
+test("drive form required fields use save-time prompts instead of label stars", () => {
+  assert.doesNotMatch(driveFormSource, /名称 \*/);
+  assert.doesNotMatch(driveFormSource, /f\.required && " \*"/);
+  assert.doesNotMatch(driveFormSource, /rootIdPlaceholder|给这个盘起个名字/);
+  assert.doesNotMatch(driveFormSource, /nameError|onNameBlur|is-invalid|aria-invalid|aria-describedby|请填写网盘名称/);
+  assert.doesNotMatch(drivesPageSource, /nameTouched|setNameTouched|nameError|onNameBlur|请填名称和类型/);
+  assert.doesNotMatch(drivesPageSource, /disabled=\{saving \|\| nameMissing\}/);
+  assert.match(drivesPageSource, /disabled=\{saving\}/);
+  assert.match(drivesPageSource, /if \(!form\.kind\) \{[\s\S]*show\("请选择网盘类型", "error"\)/);
+  assert.match(drivesPageSource, /if \(!name\) \{[\s\S]*show\("请填写网盘名称", "error"\)/);
+  assert.match(
+    drivesPageSource,
+    /credentialFields\(form\.kind\)\.find\([\s\S]*field\.required[\s\S]*show\(`请填写\$\{missingField\.label\}`, "error"\)/
+  );
 });
 
 test("crawler management is a separate admin section", () => {
@@ -322,14 +423,46 @@ test("admin shell stays mounted while lazy admin pages load", () => {
   );
 });
 
-test("drive cards use configured abbreviations and visible fallback icon colors", () => {
+test("drive icons use real assets with abbreviation fallback", () => {
+  for (const kind of driveIconKinds) {
+    assert.match(
+      constantsSource,
+      new RegExp(`import ${kind}Icon from "\\./icons/${kind}\\.png"`)
+    );
+    assert.match(constantsSource, new RegExp(`${kind}:\\s*${kind}Icon`));
+    assert.ok(
+      existsSync(new URL(`../src/admin/drive/icons/${kind}.png`, import.meta.url)),
+      `${kind} icon asset should exist`
+    );
+  }
+  for (const { kind, ext } of generatedDriveIcons) {
+    assert.match(
+      constantsSource,
+      new RegExp(`import ${kind}Icon from "\\./icons/${kind}\\.${ext}"`)
+    );
+    assert.match(constantsSource, new RegExp(`${kind}:\\s*${kind}Icon`));
+    assert.ok(
+      existsSync(new URL(`../src/admin/drive/icons/${kind}.${ext}`, import.meta.url)),
+      `${kind} generated icon asset should exist`
+    );
+  }
   assert.match(constantsSource, /googledrive:\s*"GD"/);
   assert.match(constantsSource, /function driveKindAbbr\(kind: string\)/);
+  assert.match(constantsSource, /function driveKindIconPath\(kind: string\)/);
   assert.match(constantsSource, /\.slice\(0, 2\)\.toUpperCase\(\)/);
+  assert.match(
+    readFileSync(new URL("../src/admin/drive/icons/localstorage.svg", import.meta.url), "utf8"),
+    /stop-color="#F8FAFC"[\s\S]*stop-color="#C7D0DA"/
+  );
+  assert.doesNotMatch(constantsSource, /\/admin-drive-icons\//);
+  assert.match(driveFormSource, /driveKindIconPath\(opt\.kind\)/);
+  assert.match(driveFormSource, /className="admin-drive-type-card__icon-img"/);
+  assert.match(driveFormSource, /className="admin-drive-selected-bar__icon-img"/);
+  assert.match(drivesPageSource, /driveKindIconPath\(d\.kind\)/);
   assert.match(drivesPageSource, /driveKindAbbr\(d\.kind\)/);
-  assert.match(adminCss, /\.admin-drive-card__brand-icon\s*\{[^}]*background:\s*var\(--accent\);/s);
-  assert.match(adminCss, /\.admin-drive-card__brand-icon\[data-kind="googledrive"\]\s*\{\s*background:\s*#4285f4;\s*\}/);
-  assert.match(adminCss, /\.admin-drive-card__brand-icon\[data-kind="guangyapan"\]\s*\{\s*background:\s*var\(--drive-guangyapan\);/);
+  assert.match(drivesPageSource, /className="admin-drive-card__brand-icon-img"/);
+  assert.match(adminCss, /\.admin-drive-card__brand-icon-img\s*\{[^}]*object-fit\s*:\s*contain/s);
+  assert.match(adminCss, /\.admin-drive-card__brand-icon\.has-image\[data-kind\]\s*\{[^}]*background\s*:\s*transparent/s);
 });
 
 test("drive management exposes stop task controls", () => {
@@ -337,24 +470,191 @@ test("drive management exposes stop task controls", () => {
   assert.match(apiSource, /\/drives\/\$\{encodeURIComponent\(id\)\}\/tasks\/stop/);
   assert.match(apiSource, /stopAllTasks/);
   assert.match(apiSource, /"\/tasks\/stop"/);
-  assert.match(drivesPageSource, /is-stop/);
   assert.match(drivesPageSource, /停止所有任务/);
-  assert.match(drivesPageSource, /停止所有网盘任务/);
+  assert.doesNotMatch(drivesPageSource, /停止所有网盘任务/);
 });
 
-test("drive detail primary actions use the rescan button color", () => {
-  assert.match(
+test("drive list actions use ordinary text buttons in the requested positions", () => {
+  assert.doesNotMatch(
     drivesPageSource,
-    /className="admin-btn is-primary"\s+onClick=\{\(\) => handleRescan\(d\)\}/
+    /<h1 className="admin-page__title">网盘管理<\/h1>/
   );
   assert.match(
     drivesPageSource,
-    /className="admin-btn is-primary"\s+onClick=\{\(\) => handleStopDriveTasks\(d\)\}/
+    /<header className="admin-page__header">\s*<div className="admin-page__actions admin-drive-list-actions">/
   );
   assert.match(
     drivesPageSource,
-    /className="admin-btn is-primary"\s+onClick=\{\(\) => openEdit\(d\)\}/
+    /className="admin-page__actions admin-drive-list-actions"[\s\S]*aria-label="所有网盘任务控制"[\s\S]*onClick=\{handleRunNightly\}[\s\S]*onClick=\{handleStopAllTasks\}[\s\S]*onClick=\{openCreate\}/
   );
+  assert.match(
+    drivesPageSource,
+    /<button type="button" className="admin-btn" onClick=\{openCreate\}>\s*添加网盘\s*<\/button>/
+  );
+  assert.doesNotMatch(drivesPageSource, /className="admin-drive-footer-actions"/);
+  assert.doesNotMatch(drivesPageSource, /PlayCircle/);
+  assert.doesNotMatch(drivesPageSource, /<CircleStop size=\{14\}/);
+  assert.doesNotMatch(drivesPageSource, /<Plus size=\{14\}/);
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn"\s+onClick=\{handleRunNightly\}/
+  );
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn"\s+onClick=\{handleStopAllTasks\}/
+  );
+  assert.match(
+    drivesPageSource,
+    /title=\{form\.id && list\.find\(\(x\) => x\.id === form\.id\) \? "编辑网盘" : "添加网盘"\}/
+  );
+  assert.match(adminCss, /\.admin-drive-list-actions\s*\{[^}]*justify-content\s*:\s*space-between/s);
+  assert.doesNotMatch(adminCss, /\.admin-drive-footer-actions/);
+});
+
+test("drive management status pills omit the leading status dot", () => {
+  assert.match(drivesPageSource, /<section className="admin-drives-page">/);
+  assert.match(adminCss, /\.admin-drives-page \.admin-status\s*\{[^}]*gap\s*:\s*0/s);
+  assert.match(
+    adminCss,
+    /\.admin-drives-page \.admin-status::before\s*\{[^}]*content\s*:\s*none;[^}]*display\s*:\s*none/s
+  );
+});
+
+test("drive form modal uses flatter chrome", () => {
+  assert.match(drivesPageSource, /className="admin-modal--drive-form"/);
+  assert.match(
+    drivesPageSource,
+    /title="编辑网盘"[\s\S]*?className="admin-modal--drive-form"/
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form\s*\{[^}]*width\s*:\s*min\(520px,\s*100%\);[^}]*min-height\s*:\s*min\(440px,[^;]+\);[^}]*border\s*:\s*0;[^}]*box-shadow\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-picker\s*\{[^}]*align-content\s*:\s*center;[^}]*flex\s*:\s*1 1 auto/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form\s*\{[^}]*scrollbar-width\s*:\s*none;[^}]*-ms-overflow-style\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form::-webkit-scrollbar,[\s\S]*?\.admin-modal--drive-form \.admin-modal__body::-webkit-scrollbar\s*\{[^}]*display\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-modal__body\s*\{[^}]*scrollbar-width\s*:\s*none;[^}]*-ms-overflow-style\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-modal__header,[\s\S]*?\.admin-modal--drive-form \.admin-modal__footer\s*\{[^}]*border\s*:\s*0;[^}]*background\s*:\s*var\(--bg-surface\)/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-form__section\s*\{[^}]*padding\s*:\s*0;[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-selected-bar\s*\{[^}]*padding\s*:\s*0 0 var\(--space-1\);[^}]*border\s*:\s*0;[^}]*background\s*:\s*transparent/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-form__section \+ \.admin-form__section\s*\{[^}]*margin-top\s*:\s*0/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[^}]*width\s*:\s*100%/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-card\s*\{[^}]*justify-self\s*:\s*stretch;[^}]*min-width\s*:\s*0;[^}]*min-height\s*:\s*82px;[^}]*border\s*:\s*1px solid transparent;[^}]*background\s*:\s*transparent;[^}]*box-shadow\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-card:hover,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card:active,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card:focus-visible\s*\{[^}]*border-color\s*:\s*var\(--border-default\);[^}]*background\s*:\s*var\(--bg-surface\)/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-card__icon,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card__icon\[data-kind\]\s*\{[^}]*width\s*:\s*auto;[^}]*height\s*:\s*auto;[^}]*background\s*:\s*transparent/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--drive-form \.admin-drive-type-card__icon\.has-image,[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-card__icon\.has-image\[data-kind\]\s*\{[^}]*width\s*:\s*40px;[^}]*height\s*:\s*40px/s
+  );
+  assert.match(adminCss, /\.admin-drive-type-card__icon-img\s*\{[^}]*object-fit\s*:\s*contain/s);
+  assert.match(
+    adminCss,
+    /@media \(max-width:\s*520px\)\s*\{[\s\S]*?\.admin-modal--drive-form \.admin-drive-type-grid\s*\{[^}]*grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[^}]*justify-content\s*:\s*stretch/s
+  );
+});
+
+test("initial add-drive type picker omits cancel and save footer actions", () => {
+  assert.match(drivesPageSource, /const \[createDriveTypeSelected, setCreateDriveTypeSelected\]/);
+  assert.match(drivesPageSource, /setCreateDriveTypeSelected\(false\);[\s\S]*?setModalOpen\(true\)/);
+  assert.match(
+    drivesPageSource,
+    /footer=\{form\.id \|\| createDriveTypeSelected \? \([\s\S]*?取消[\s\S]*?保存[\s\S]*?\) : undefined\}/
+  );
+  assert.match(driveFormSource, /onTypeSelected\?\.\(\)/);
+});
+
+test("drive detail actions use ordinary text buttons", () => {
+  const detailViewSource = drivesPageSource.slice(
+    drivesPageSource.indexOf("if (selectedDriveId && selectedDrive)"),
+    drivesPageSource.indexOf("// --- List view ---")
+  );
+
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn"\s+onClick=\{\(\) => handleRescan\(d\)\}/
+  );
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn"\s+onClick=\{\(\) => handleStopDriveTasks\(d\)\}/
+  );
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn"\s+onClick=\{\(\) => openEdit\(d\)\}/
+  );
+  assert.match(
+    drivesPageSource,
+    /className="admin-btn admin-detail-actions__danger"\s+onClick=\{\(\) => setDeleteTarget\(d\)\}/
+  );
+  assert.match(drivesPageSource, /stoppingDriveId === d\.id \? "停止中\.\.\." : "停止任务"/);
+  assert.match(drivesPageSource, />\s*编辑凭证\s*<\/button>/);
+  assert.match(drivesPageSource, />\s*删除网盘\s*<\/button>/);
+  assert.doesNotMatch(drivesPageSource, /编辑配置凭证/);
+  assert.doesNotMatch(
+    detailViewSource,
+    /<CircleStop[^>]*>|<Trash2[^>]*>|<RefreshCw[^>]*>[\s\S]*?开始扫盘/
+  );
+  assert.doesNotMatch(adminCss, /\.admin-detail-actions > \.admin-btn:not\(\.is-danger\)/);
+});
+
+test("drive delete and credential confirm buttons use ordinary styling", () => {
+  const detailViewSource = drivesPageSource.slice(
+    drivesPageSource.indexOf("if (selectedDriveId && selectedDrive)"),
+    drivesPageSource.indexOf("// --- List view ---")
+  );
+
+  assert.match(deleteDriveModalSource, /const primaryText = deleting \? "删除中\.\.\." : "确认"/);
+  assert.match(deleteDriveModalSource, /className="admin-btn"\s+onClick=\{onConfirm\}/);
+  assert.doesNotMatch(deleteDriveModalSource, /Trash2|确认删除|is-danger/);
+  assert.match(
+    detailViewSource,
+    /title="编辑网盘"[\s\S]*?className="admin-btn"\s+onClick=\{handleSave\}[\s\S]*?\{saving \? "确认中\.\.\." : "确认"\}/
+  );
+  assert.doesNotMatch(
+    detailViewSource,
+    /title="编辑网盘"[\s\S]*?className="admin-btn is-primary"[\s\S]*?\{saving \? "保存中\.\.\." : "保存"\}/
+  );
+});
+
+test("drive detail header omits type and connection status chips", () => {
+  assert.doesNotMatch(drivesPageSource, /admin-drive-detail__header-right/);
+  assert.doesNotMatch(drivesPageSource, /admin-drive-detail__kind-chip/);
+  assert.doesNotMatch(adminCss, /\.admin-drive-detail__kind-chip/);
 });
 
 test("drive rescan reports busy storage tasks instead of queueing duplicates", () => {
@@ -403,6 +703,19 @@ test("drive detail selection is stored in the URL history", () => {
   assert.doesNotMatch(drivesPageSource, /setSelectedDriveId/);
 });
 
+test("drive detail refresh state does not render list actions", () => {
+  const pendingDetailStart = drivesPageSource.indexOf("if (selectedDriveId && !selectedDrive)");
+  const listViewStart = drivesPageSource.indexOf("// --- List view ---");
+  assert.ok(pendingDetailStart > -1, "pending detail branch should be present");
+  assert.ok(listViewStart > pendingDetailStart, "pending detail branch should precede list view");
+
+  const pendingDetailSource = drivesPageSource.slice(pendingDetailStart, listViewStart);
+  assert.match(pendingDetailSource, /admin-drive-detail__header-bar/);
+  assert.match(pendingDetailSource, /admin-loading-state/);
+  assert.match(pendingDetailSource, /网盘不存在/);
+  assert.doesNotMatch(pendingDetailSource, /扫描所有网盘|停止所有任务|添加网盘/);
+});
+
 test("drive discard confirmation matches delete confirmation modal styling", () => {
   const discardModals = Array.from(
     drivesPageSource.matchAll(/<ConfirmModal[\s\S]*?title="放弃未保存更改"[\s\S]*?\/>/g),
@@ -415,6 +728,20 @@ test("drive discard confirmation matches delete confirmation modal styling", () 
     assert.match(modal, /centerMessage/);
     assert.match(modal, /modalClassName="admin-modal--delete-confirm"/);
   }
+  assert.match(confirmModalSource, /admin-modal--confirm/);
+  assert.match(confirmModalSource, /modalClassName \? ` \$\{modalClassName\}` : ""/);
+  assert.match(
+    adminCss,
+    /\.admin-modal--confirm,[\s\S]*?\.admin-modal--delete-confirm\s*\{[^}]*border\s*:\s*0;[^}]*box-shadow\s*:\s*none/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--confirm \.admin-modal__header,[\s\S]*?\.admin-modal--delete-confirm \.admin-modal__footer\s*\{[^}]*border\s*:\s*0/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-modal--confirm \.admin-modal__header \.admin-btn,[\s\S]*?\.admin-modal--delete-confirm \.admin-modal__header \.admin-btn\s*\{[^}]*border-color\s*:\s*transparent;[^}]*box-shadow\s*:\s*none/s
+  );
 });
 
 test("new drive type selection alone is not treated as unsaved config", () => {
@@ -448,6 +775,42 @@ test("drive generation actions can resume pending work after stop", () => {
   assert.match(driveComponentsSource, /继续生成封面/);
   assert.match(driveComponentsSource, /继续生成预览视频/);
   assert.match(driveComponentsSource, /继续生成指纹/);
+});
+
+test("drive generation actions are iconless and evenly distributed", () => {
+  assert.match(
+    driveComponentsSource,
+    /className="admin-detail-actions admin-generation-actions"/
+  );
+  assert.match(driveComponentsSource, /重试失败预览/);
+  assert.doesNotMatch(driveComponentsSource, /重试失败预览视频/);
+  assert.doesNotMatch(driveComponentsSource, /RotateCcw|Wand2|CircleStop/);
+  assert.match(
+    adminCss,
+    /\.admin-generation-actions\s*\{[^}]*grid-template-columns\s*:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s
+  );
+  assert.match(
+    adminCss,
+    /\.admin-generation-actions \.admin-btn\s*\{[^}]*width\s*:\s*100%/s
+  );
+});
+
+test("drive preview generation uses an accessible slider switch", () => {
+  assert.match(
+    driveComponentsSource,
+    /className=\{`toggle-switch \$\{d\.teaserEnabled \? "is-on" : ""\}/
+  );
+  assert.match(driveComponentsSource, /role="switch"/);
+  assert.match(driveComponentsSource, /aria-checked=\{d\.teaserEnabled\}/);
+  assert.match(driveComponentsSource, /className="toggle-switch__dot"/);
+  assert.doesNotMatch(driveComponentsSource, /预览视频：开|预览视频：关|PowerOff/);
+});
+
+test("drive skip directory tree only displays directory names", () => {
+  assert.doesNotMatch(skipDirsPanelSource, /SelectedDirsChips/);
+  assert.doesNotMatch(skipDirsPanelSource, /admin-mono-cell/);
+  assert.doesNotMatch(skipDirsPanelSource, /根目录/);
+  assert.match(skipDirsPanelSource, /\{name\}/);
 });
 
 test("drive cards label fingerprint count as video fingerprint count", () => {

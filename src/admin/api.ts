@@ -93,10 +93,6 @@ export type AdminDrive = {
    * 替代旧版硬编码 p115 "影视" 目录例外分支。
    */
   skipDirIds: string[];
-  // Google Drive 是否使用 OpenList 在线续期 API；未配置时后端按 true 返回。
-  googleDriveUseOnlineAPI?: boolean;
-  // Google Drive OpenList 在线续期 API 地址；为空时后端使用驱动默认值。
-  googleDriveOpenListApiUrl?: string;
   // localstorage 的 .strm 是否允许指向存储根目录之外；未配置时后端按 false 返回。
   strmAllowOutsideRoot?: boolean;
   scanGenerationStatus?: DriveGenerationStatus;
