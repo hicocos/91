@@ -125,7 +125,7 @@ asset_name() {
 
 verify_runtime_deps() {
   local cmd
-  for cmd in curl tar ffmpeg ffprobe openssl python3; do
+  for cmd in curl tar ffmpeg ffprobe python3; do
     command -v "$cmd" >/dev/null 2>&1 || die "missing command: $cmd"
   done
 
@@ -152,7 +152,7 @@ install_deps() {
     export DEBIAN_FRONTEND=noninteractive
     log "installing runtime dependencies"
     apt-get update
-    apt-get install -y ca-certificates curl tar ffmpeg openssl iproute2 python3 python3-requests python3-bs4 python3-lxml python3-socks
+    apt-get install -y ca-certificates curl tar ffmpeg iproute2 python3 python3-requests python3-bs4 python3-lxml python3-socks
     verify_runtime_deps
     return
   fi
@@ -233,12 +233,6 @@ prepare_config() {
     fi
   fi
 
-  if grep -q 'session_secret: "change-me-to-a-random-string"' "$cfg"; then
-    local secret
-    secret="$(openssl rand -hex 32)"
-    sed -i -E "s#session_secret: \".*\"#session_secret: \"$secret\"#" "$cfg"
-    log "generated random session_secret"
-  fi
 }
 
 write_service() {

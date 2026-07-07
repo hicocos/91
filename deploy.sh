@@ -130,7 +130,7 @@ apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   log "installing base packages"
   apt-get update
-  apt-get install -y ca-certificates curl git ffmpeg openssl iproute2 build-essential \
+  apt-get install -y ca-certificates curl git ffmpeg iproute2 build-essential \
     python3 python3-requests python3-bs4 python3-lxml python3-socks
 }
 
@@ -226,13 +226,6 @@ prepare_config() {
     sed -i -E "s#listen: \".*\"#listen: \"$BACKEND_LISTEN\"#" "$cfg"
   else
     log "backend/config.yaml already exists; keeping it"
-  fi
-
-  if grep -q 'session_secret: "change-me-to-a-random-string"' "$cfg"; then
-    local secret
-    secret="$(openssl rand -hex 32)"
-    sed -i -E "s#session_secret: \".*\"#session_secret: \"$secret\"#" "$cfg"
-    log "generated a random session_secret"
   fi
 
   ensure_ownership
