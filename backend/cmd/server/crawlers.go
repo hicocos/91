@@ -315,14 +315,7 @@ func (a *App) runCrawlerMigrationAfterManualCrawl(ctx context.Context, driveID s
 		return
 	}
 	targetDriveID := strings.TrimSpace(d.Credentials["upload_drive_id"])
-	if targetDriveID == "" {
-		return
-	}
-	if a.crawlerUploader == nil {
-		log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: migrator not configured", driveID)
-		return
-	}
-	log.Printf("[scriptcrawler] drive=%s waiting for generation queues before post-crawl migration target=%s", driveID, targetDriveID)
+	log.Printf("[scriptcrawler] drive=%s waiting for generation queues before post-crawl completion", driveID)
 	if err := a.waitDriveGenerationQueuesIdle(ctx, driveID); err != nil {
 		log.Printf("[scriptcrawler] drive=%s post-crawl migration wait canceled: %v", driveID, err)
 		return
@@ -331,10 +324,49 @@ func (a *App) runCrawlerMigrationAfterManualCrawl(ctx context.Context, driveID s
 		log.Printf("[scriptcrawler] drive=%s skip post-crawl migration after wait: %v", driveID, err)
 		return
 	}
-	log.Printf("[scriptcrawler] drive=%s running post-crawl migration target=%s", driveID, targetDriveID)
-	if err := a.crawlerUploader.RunOnce(ctx); err != nil {
-		log.Printf("[scriptcrawler] drive=%s post-crawl migration: %v", driveID, err)
+	if targetDriveID != "" {
+		if a.crawlerUploader == nil {
+			log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: migrator not configured", driveID)
+		} else {
+			log.Printf("[scriptcrawler] drive=%s running post-crawl migration target=%s", driveID, targetDriveID)
+			if err := a.crawlerUploader.RunOnce(ctx); err != nil {
+				log.Printf("[scriptcrawler] drive=%s post-crawl migration: %v", driveID, err)
+			}
+		}
 	}
+	if err := a.restoreScriptCrawlerVideos(ctx, driveID); err != nil {
+		log.Printf("[scriptcrawler] drive=%s post-crawl restore: %v", driveID, err)
+	}
+}
+
+func (a *App) restoreScriptCrawlerVideos(ctx context.Context, driveID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	requests, err := a.cat.ListCrawlerRestoreRequests(ctx, driveID)
+	if err != nil || len(requests) == 0 {
+		return err
+	}
+	if err := a.ensureDriveAttached(ctx, driveID); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	crawler := a.scriptCrawlers[driveID]
+	a.mu.Unlock()
+	if crawler == nil {
+		return nil
+	}
+	restored, err := crawler.RestoreRequestedVideos(ctx)
+	if restored > 0 {
+		a.mu.Lock()
+		worker := a.workers[driveID]
+		thumbWorker := a.thumbWorkers[driveID]
+		fingerprintWorker := a.fingerprintWorkers[driveID]
+		a.mu.Unlock()
+		a.scheduleFingerprintBackfill(ctx, driveID, fingerprintWorker)
+		a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+	}
+	return err
 }
 
 // crawlerIntCred 解析 credentials 中的整数字段，缺省时返回 def。

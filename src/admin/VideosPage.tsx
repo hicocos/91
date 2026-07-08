@@ -6,7 +6,6 @@ import {
   Search,
   Image,
   Trash2,
-  Ban,
   ExternalLink,
 } from "lucide-react";
 import * as api from "./api";
@@ -212,6 +211,10 @@ function CurrentVideosTab({
   const listItems = list;
   const editingVideo = editing ? (listItems.find((v) => v.id === editing.id) ?? editing) : null;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const showPagination = totalPages > 1;
+  const placeholderRows = showPagination ? Math.max(0, pageSize - listItems.length) : 0;
+  const hasActiveSearch = searchKeyword.trim().length > 0;
+  const hasVideoActions = listItems.length > 0;
 
   async function handleRegen(v: api.AdminVideo) {
     try {
@@ -369,14 +372,16 @@ function CurrentVideosTab({
     <div className={`admin-videos-current${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--current">
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} />
-        <button
-          type="button"
-          className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
-          onClick={toggleSelectMode}
-          aria-pressed={selectMode}
-        >
-          <span>{selectMode ? "退出选择" : "批量选择"}</span>
-        </button>
+        {hasVideoActions && (
+          <button
+            type="button"
+            className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+            onClick={toggleSelectMode}
+            aria-pressed={selectMode}
+          >
+            <span>{selectMode ? "退出选择" : "批量选择"}</span>
+          </button>
+        )}
       </div>
       {tabSelector}
 
@@ -397,18 +402,11 @@ function CurrentVideosTab({
         </div>
       )}
 
-      {loading ? (
-        <LoadingState />
-      ) : loadError ? (
+      {loading ? null : loadError ? (
         <ErrorState message={loadError} onRetry={refresh} />
       ) : listItems.length === 0 ? (
-        <div className="admin-empty-state">
-          <div className="admin-empty-state__icon">
-            <Image size={48} />
-          </div>
-          <div className="admin-empty-state__text">
-            还没有视频。先在「网盘管理」里配置好盘并触发扫描，或调整搜索词。
-          </div>
+        <div className="admin-empty-state admin-empty-state--plain">
+          {hasActiveSearch ? "未查询到" : "当前库中没有视频"}
         </div>
       ) : (
         <>
@@ -461,9 +459,37 @@ function CurrentVideosTab({
                   </tr>
                 );
               })}
+              {Array.from({ length: placeholderRows }, (_, index) => (
+                <tr
+                  key={`placeholder-${index}`}
+                  className="admin-video-placeholder-row"
+                  aria-hidden="true"
+                >
+                  <td data-label="标题">
+                    <div className="admin-video-title-cell">
+                      <div className="admin-video-thumb-wrap" aria-hidden="true" />
+                      <div className="admin-video-title-body">
+                        <div className="admin-video-title">placeholder</div>
+                        <div className="admin-video-filemeta-pills">
+                          <span className="admin-video-filemeta-pill">placeholder</span>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td data-label="作者">placeholder</td>
+                  <td data-label="时长">placeholder</td>
+                  <td data-label="来源" className="admin-mono-cell">
+                    placeholder
+                  </td>
+                  <td className="is-actions" data-label="操作">
+                    <span className="admin-btn">placeholder</span>
+                    <span className="admin-btn">placeholder</span>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} />
+          {showPagination && <Pagination page={page} totalPages={totalPages} onPage={setPage} />}
         </>
       )}
 
@@ -645,7 +671,11 @@ function BlacklistTab({
 
   const driveNameMap = new Map(drives.map((d) => [d.id, d.name || d.id]));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const showPagination = totalPages > 1;
+  const placeholderRows = showPagination ? Math.max(0, pageSize - list.length) : 0;
   const sourceDeleteRunning = !!sourceDeleteStatus?.running;
+  const hasActiveSearch = searchKeyword.trim().length > 0;
+  const hasBlacklistActions = list.length > 0;
 
   async function confirmRemove() {
     if (!removeTarget) return;
@@ -756,29 +786,31 @@ function BlacklistTab({
     <div className={`admin-videos-blacklist${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} placeholder="搜索文件名" />
-        <div className="admin-videos-filter__actions admin-blacklist-source-delete">
-          {sourceDeleteStatus?.running && (
-            <span className="admin-blacklist-source-delete__status">
-              正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
-            </span>
-          )}
-          <button
-            type="button"
-            className="admin-btn admin-videos-filter__batch admin-blacklist-source-delete__button"
-            disabled={sourceDeleteStatus?.running || (sourceDeleteStatus?.pending ?? total) <= 0}
-            onClick={() => setSourceDeleteOpen(true)}
-          >
-            {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
-          </button>
-          <button
-            type="button"
-            className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
-            onClick={toggleSelectMode}
-            aria-pressed={selectMode}
-          >
-            <span>{selectMode ? "退出选择" : "批量选择"}</span>
-          </button>
-        </div>
+        {hasBlacklistActions && (
+          <div className="admin-videos-filter__actions admin-blacklist-source-delete">
+            {sourceDeleteStatus?.running && (
+              <span className="admin-blacklist-source-delete__status">
+                正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
+              </span>
+            )}
+            <button
+              type="button"
+              className="admin-btn admin-videos-filter__batch admin-blacklist-source-delete__button"
+              disabled={sourceDeleteStatus?.running || (sourceDeleteStatus?.pending ?? total) <= 0}
+              onClick={() => setSourceDeleteOpen(true)}
+            >
+              {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
+            </button>
+            <button
+              type="button"
+              className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+              onClick={toggleSelectMode}
+              aria-pressed={selectMode}
+            >
+              <span>{selectMode ? "退出选择" : "批量选择"}</span>
+            </button>
+          </div>
+        )}
       </div>
       {tabSelector}
 
@@ -801,16 +833,11 @@ function BlacklistTab({
         </div>
       )}
 
-      {loading ? (
-        <LoadingState />
-      ) : loadError ? (
+      {loading ? null : loadError ? (
         <ErrorState message={loadError} onRetry={refresh} />
       ) : list.length === 0 ? (
-        <div className="admin-empty-state">
-          <div className="admin-empty-state__icon">
-            <Ban size={48} />
-          </div>
-          <div className="admin-empty-state__text">黑名单为空。</div>
+        <div className="admin-empty-state admin-empty-state--plain">
+          {hasActiveSearch ? "未查询到" : "暂无拉黑视频"}
         </div>
       ) : (
         <>
@@ -893,9 +920,31 @@ function BlacklistTab({
                 </tr>
                 );
               })}
+              {Array.from({ length: placeholderRows }, (_, index) => (
+                <tr
+                  key={`placeholder-${index}`}
+                  className="admin-video-placeholder-row"
+                  aria-hidden="true"
+                >
+                  <td data-label="文件名">
+                    <div className="admin-blacklist-filecell">
+                      <span className="admin-blacklist-filename">placeholder</span>
+                    </div>
+                  </td>
+                  <td data-label="来源" className="admin-mono-cell">
+                    placeholder
+                  </td>
+                  <td className="is-actions" data-label="操作">
+                    <div className="admin-blacklist-actions">
+                      <span className="admin-btn">placeholder</span>
+                      <span className="admin-btn admin-blacklist-delete-source-btn">placeholder</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          <Pagination page={page} totalPages={totalPages} pageSize={pageSize} onPage={setPage} />
+          {showPagination && <Pagination page={page} totalPages={totalPages} onPage={setPage} />}
         </>
       )}
 
@@ -995,12 +1044,10 @@ function SearchBox({
 function Pagination({
   page,
   totalPages,
-  pageSize,
   onPage,
 }: {
   page: number;
   totalPages: number;
-  pageSize: number;
   onPage: React.Dispatch<React.SetStateAction<number>>;
 }) {
   return (
@@ -1012,7 +1059,7 @@ function Pagination({
         上一页
       </button>
       <span className="admin-table-pagination__info">
-        第 {page} / {totalPages} 页，每页 {pageSize} 个
+        第 {page} / {totalPages} 页
       </span>
       <button
         type="button"
@@ -1025,15 +1072,6 @@ function Pagination({
       <button type="button" className="admin-btn" onClick={() => onPage(() => totalPages)} disabled={page >= totalPages}>
         末页
       </button>
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="admin-loading-state">
-      <RefreshCw size={20} className="admin-spin" />
-      <span>加载中...</span>
     </div>
   );
 }
@@ -1074,7 +1112,7 @@ function DeleteSourceOption({
     <label className="admin-delete-source-option">
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       <span>
-        <strong>同时删除网盘中的源文件</strong>
+        <strong>同时删除视频源文件</strong>
       </span>
     </label>
   );

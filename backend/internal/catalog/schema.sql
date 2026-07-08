@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
     reason             TEXT NOT NULL DEFAULT '',
     source_deleted     INTEGER NOT NULL DEFAULT 0,
     canonical_video_id TEXT NOT NULL DEFAULT '',
+    restore_requested  INTEGER NOT NULL DEFAULT 0,
+    restore_payload    TEXT NOT NULL DEFAULT '',
     deleted_at         INTEGER NOT NULL
 );
 

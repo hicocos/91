@@ -312,7 +312,8 @@ func main() {
 	//   Phase 1 扫所有非爬虫 / localupload 网盘 + 删除检测 + 入队封面/预览视频
 	//   Phase 2 脚本爬虫 + 入队预览视频
 	//   Phase 3 爬虫本地视频 → 云盘上传
-	//   Phase 4 全库重复视频维护：精确指纹去重 + 标题/时长/封面近似去重
+	//   Phase 4 扫描爬虫本地目录并恢复已取消拉黑的视频
+	//   Phase 5 全库重复视频维护：精确指纹去重 + 标题/时长/封面近似去重
 	// 标签匹配不在夜间流水线中全库重算；新视频入库和管理员修改标签规则时按事件刷新。
 	// 也响应 admin "扫描所有网盘" 按钮（POST /admin/api/jobs/nightly/run → TriggerNow）。
 	app.nightlyRunner = nightly.New(nightly.Config{
@@ -324,6 +325,7 @@ func main() {
 		RunCrawlerCrawl:       app.runScriptCrawlerCrawl,
 		WaitPreviewQueuesIdle: app.waitAllPreviewQueuesIdle,
 		RunMigration:          app.crawlerUploader.RunOnce,
+		RestoreCrawlerVideos:  app.restoreScriptCrawlerVideos,
 		RunDedupeAssetCleanup: app.cleanupDuplicateVideoAssets,
 	})
 	go app.nightlyRunner.Run(ctx)

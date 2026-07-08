@@ -235,8 +235,20 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list crawler source ids: %v", err)
 	}
-	if len(seenIDs) != 0 {
-		t.Fatalf("crawler source remains seen after restore: %#v", seenIDs)
+	if len(seenIDs) != 1 || seenIDs[0] != "source-1" {
+		t.Fatalf("crawler source seen after restore request = %#v, want source-1", seenIDs)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, crawlerID); err != nil || !deleted {
+		t.Fatalf("crawler restore request must retain internal tombstone: deleted=%v err=%v", deleted, err)
+	}
+	if requests, err := cat.ListCrawlerRestoreRequests(ctx, "crawler-a"); err != nil || len(requests) != 1 {
+		t.Fatalf("crawler restore requests = %#v err=%v, want one", requests, err)
+	}
+	if items, total, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 50}); err != nil || total != 0 || len(items) != 0 {
+		t.Fatalf("visible blacklist after crawler restore request = total:%d items:%#v err:%v, want empty", total, items, err)
+	}
+	if _, blacklisted, err := cat.VideoManagementCounts(ctx); err != nil || blacklisted != 0 {
+		t.Fatalf("blacklist count after crawler restore request = %d err=%v, want 0", blacklisted, err)
 	}
 
 	seedVideo("source-deleted", "remote", "gone", "Gone")

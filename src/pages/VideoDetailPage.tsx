@@ -296,7 +296,7 @@ export default function VideoDetailPage() {
                 onChange={(e) => setDeleteSource(e.target.checked)}
               />
               <span>
-                <strong>同时删除网盘中的源文件</strong>
+                <strong>同时删除视频源文件</strong>
               </span>
             </label>
 

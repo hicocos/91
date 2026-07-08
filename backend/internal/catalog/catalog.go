@@ -973,29 +973,23 @@ func (c *Catalog) DeleteVideoWithTombstoneOptions(ctx context.Context, id string
 	if options.Reason != DeletedVideoReasonDuplicate {
 		options.CanonicalVideoID = ""
 	}
+	restoreVideo, err := c.GetVideo(ctx, id)
+	if err != nil {
+		return err
+	}
+	restorePayloadData, err := json.Marshal(restoreVideo)
+	if err != nil {
+		return fmt.Errorf("catalog: encode deleted video restore payload: %w", err)
+	}
+	restorePayload := string(restorePayloadData)
+
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	var v struct {
-		ID          string
-		DriveID     string
-		FileID      string
-		ParentID    string
-		ContentHash string
-		FileName    string
-		Size        int64
-	}
-	row := tx.QueryRowContext(ctx, `
-SELECT id, drive_id, file_id, COALESCE(parent_id, ''), COALESCE(content_hash, ''), COALESCE(file_name, ''), size_bytes
-  FROM videos
- WHERE id = ?`, id)
-	if err := row.Scan(&v.ID, &v.DriveID, &v.FileID, &v.ParentID, &v.ContentHash, &v.FileName, &v.Size); err != nil {
-		return err
-	}
-	v.ContentHash = normalizeContentHash(v.ContentHash)
+	restoreVideo.ContentHash = normalizeContentHash(restoreVideo.ContentHash)
 
 	// 先记录这次视频关联的 tag_id，便于事务末尾清理孤儿自动生成标签。
 	tagIDs, err := collectVideoTagIDs(ctx, tx, id)
@@ -1007,9 +1001,9 @@ SELECT id, drive_id, file_id, COALESCE(parent_id, ''), COALESCE(content_hash, ''
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO deleted_videos (
   id, drive_id, file_id, parent_id, content_hash, file_name, size_bytes,
-  reason, source_deleted, canonical_video_id, deleted_at
+  reason, source_deleted, canonical_video_id, restore_requested, restore_payload, deleted_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   drive_id           = excluded.drive_id,
   file_id            = excluded.file_id,
@@ -1020,9 +1014,11 @@ ON CONFLICT(id) DO UPDATE SET
   reason             = excluded.reason,
   source_deleted     = excluded.source_deleted,
   canonical_video_id = excluded.canonical_video_id,
+  restore_requested  = 0,
+  restore_payload    = excluded.restore_payload,
   deleted_at         = excluded.deleted_at`,
-		v.ID, v.DriveID, v.FileID, v.ParentID, v.ContentHash, v.FileName, v.Size,
-		options.Reason, boolToInt(options.SourceDeleted), options.CanonicalVideoID, now); err != nil {
+		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, restoreVideo.FileName, restoreVideo.Size,
+		options.Reason, boolToInt(options.SourceDeleted), options.CanonicalVideoID, restorePayload, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE video_id = ?`, id); err != nil {
@@ -1102,6 +1098,7 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	}
 	var where []string
 	var args []any
+	where = append(where, "COALESCE(dv.restore_requested, 0) = 0")
 	if !p.IncludeSourceDeleted {
 		where = append(where, "COALESCE(dv.source_deleted, 0) = 0")
 	}
@@ -1188,8 +1185,9 @@ SELECT id,
        COALESCE(size_bytes, 0),
        COALESCE(reason, ''),
        deleted_at
-  FROM deleted_videos
- WHERE COALESCE(source_deleted, 0) = 0
+	 FROM deleted_videos
+	WHERE COALESCE(source_deleted, 0) = 0
+	  AND COALESCE(restore_requested, 0) = 0
  ORDER BY deleted_at, id`)
 	if err != nil {
 		return nil, err
@@ -1248,9 +1246,10 @@ SELECT id,
        COALESCE(size_bytes, 0),
        COALESCE(reason, ''),
        deleted_at
-  FROM deleted_videos
- WHERE COALESCE(source_deleted, 0) = 0
-   AND id IN (`+placeholders+`)
+	 FROM deleted_videos
+	WHERE COALESCE(source_deleted, 0) = 0
+	  AND COALESCE(restore_requested, 0) = 0
+	  AND id IN (`+placeholders+`)
  ORDER BY deleted_at, id`, args...)
 	if err != nil {
 		return nil, err
@@ -1280,7 +1279,7 @@ SELECT id,
 func (c *Catalog) CountDeletedVideosPendingSourceDeletion(ctx context.Context) (int, error) {
 	var count int
 	err := c.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0`,
+		`SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0 AND COALESCE(restore_requested, 0) = 0`,
 	).Scan(&count)
 	return count, err
 }
@@ -1304,8 +1303,8 @@ func (c *Catalog) PurgeDeletedVideo(ctx context.Context, id string) error {
 }
 
 // RemoveDeletedVideo 允许可扫描来源在后续任务中重新入库。本函数不会触发
-// 扫描或爬取。爬虫来源还会在同一事务中清理对应的 seen 记录；无法重新发现
-// 的本地上传、已删除源文件和自动去重记录会被拒绝。
+// 扫描或爬取。爬虫来源会保留墓碑和 seen 记录，并标记为待目录扫描恢复，
+// 使下一轮爬取仍将其当作已见来源跳过。
 func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -1360,12 +1359,17 @@ SELECT dv.id,
 		if sourceID == "" {
 			return fmt.Errorf("%w: crawler source id is unavailable", ErrDeletedVideoNotRestorable)
 		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM crawler_seen_sources
- WHERE kind = ? AND drive_id = ? AND source_id = ?`,
-			driveKind, deleted.DriveID, sourceID); err != nil {
+		res, err := tx.ExecContext(ctx, `
+UPDATE deleted_videos
+   SET restore_requested = 1
+ WHERE id = ?`, id)
+		if err != nil {
 			return err
 		}
+		if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+			return sql.ErrNoRows
+		}
+		return tx.Commit()
 	}
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE id = ?`, id)
@@ -1378,6 +1382,79 @@ DELETE FROM crawler_seen_sources
 	return tx.Commit()
 }
 
+// CrawlerRestoreRequest is a crawler tombstone that the user removed from the
+// blacklist and that is waiting for its retained local source file to be
+// discovered after a crawl pipeline completes.
+type CrawlerRestoreRequest struct {
+	ID       string
+	DriveID  string
+	FileID   string
+	FileName string
+	Size     int64
+	Video    *Video
+}
+
+func (c *Catalog) ListCrawlerRestoreRequests(ctx context.Context, driveID string) ([]CrawlerRestoreRequest, error) {
+	driveID = strings.TrimSpace(driveID)
+	if driveID == "" {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT id,
+       COALESCE(drive_id, ''),
+       COALESCE(file_id, ''),
+       COALESCE(file_name, ''),
+       COALESCE(size_bytes, 0),
+       COALESCE(restore_payload, '')
+  FROM deleted_videos
+ WHERE drive_id = ?
+   AND COALESCE(source_deleted, 0) = 0
+   AND COALESCE(restore_requested, 0) = 1
+ ORDER BY deleted_at, id`, driveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CrawlerRestoreRequest
+	for rows.Next() {
+		var request CrawlerRestoreRequest
+		var payload string
+		if err := rows.Scan(&request.ID, &request.DriveID, &request.FileID, &request.FileName, &request.Size, &payload); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(payload) != "" {
+			var video Video
+			if err := json.Unmarshal([]byte(payload), &video); err != nil {
+				return nil, fmt.Errorf("catalog: decode restore payload for %s: %w", request.ID, err)
+			}
+			request.Video = &video
+		}
+		out = append(out, request)
+	}
+	return out, rows.Err()
+}
+
+// CompleteCrawlerRestore removes the internal pending tombstone after the
+// caller has verified the local source and restored the catalog row.
+func (c *Catalog) CompleteCrawlerRestore(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sql.ErrNoRows
+	}
+	res, err := c.db.ExecContext(ctx, `
+DELETE FROM deleted_videos
+ WHERE id = ?
+   AND COALESCE(restore_requested, 0) = 1`, id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // VideoManagementCounts 返回后台视频管理两个标签的计数：
 // current=当前可见（与「当前视频」页一致的去重+在线盘+hidden=0 口径），
 // blacklisted=仍有源文件待管理的黑名单墓碑数。
@@ -1386,7 +1463,7 @@ func (c *Catalog) VideoManagementCounts(ctx context.Context) (current, blacklist
 	if err = c.db.QueryRowContext(ctx, currentSQL).Scan(&current); err != nil {
 		return 0, 0, err
 	}
-	if err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0`).Scan(&blacklisted); err != nil {
+	if err = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0 AND COALESCE(restore_requested, 0) = 0`).Scan(&blacklisted); err != nil {
 		return 0, 0, err
 	}
 	return current, blacklisted, nil

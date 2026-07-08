@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -444,6 +445,139 @@ func TestCrawlerRunOnceImportsSimpleMediaURLWithoutSourceID(t *testing.T) {
 	}
 	if res.NewVideos != 0 || res.Skipped != 1 {
 		t.Fatalf("second result = new:%d skipped:%d, want 0/1", res.NewVideos, res.Skipped)
+	}
+}
+
+func TestCrawlerRunOnceSkipsThenRestoresRetainedLocalVideo(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	cat, err := catalog.Open(filepath.Join(tmp, "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	var requests atomic.Int32
+	var failRemote atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/video.mp4" {
+			http.NotFound(w, r)
+			return
+		}
+		requests.Add(1)
+		if failRemote.Load() {
+			http.Error(w, "remote unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("restored-video-bytes"))
+	}))
+	defer srv.Close()
+
+	drv := New(Config{ID: "demo", RootDir: filepath.Join(tmp, "crawler")})
+	if err := drv.Init(ctx); err != nil {
+		t.Fatalf("driver init: %v", err)
+	}
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:            drv.ID(),
+		Kind:          Kind,
+		Name:          "Demo",
+		TeaserEnabled: true,
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+	dummyScript := filepath.Join(tmp, "helper-script")
+	if err := os.WriteFile(dummyScript, []byte("helper"), 0o755); err != nil {
+		t.Fatalf("write dummy script: %v", err)
+	}
+	wrapper := filepath.Join(tmp, "helper-wrapper.sh")
+	wrapperScript := fmt.Sprintf("#!/bin/sh\nexec %q -test.run=TestScriptCrawlerHelperProcess \"$@\"\n", os.Args[0])
+	if err := os.WriteFile(wrapper, []byte(wrapperScript), 0o755); err != nil {
+		t.Fatalf("write helper wrapper: %v", err)
+	}
+
+	t.Setenv("GO_WANT_SCRIPTCRAWLER_HELPER", "1")
+	t.Setenv("GO_WANT_SCRIPTCRAWLER_SIMPLE", "1")
+	t.Setenv("GO_SCRIPTCRAWLER_MEDIA_URL", srv.URL+"/video.mp4?token=restore")
+	c := NewCrawler(CrawlerConfig{
+		Driver:      drv,
+		Catalog:     cat,
+		PythonPath:  wrapper,
+		FFprobePath: writeScriptCrawlerFFprobeStub(t, tmp, true),
+		ScriptPath:  dummyScript,
+		HTTPClient:  srv.Client(),
+	})
+	res, err := c.RunOnce(ctx, 1)
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if res.NewVideos != 1 || res.Failed != 0 {
+		t.Fatalf("result = new:%d failed:%d, want 1/0", res.NewVideos, res.Failed)
+	}
+	videos, err := cat.ListVideosByDrive(ctx, "demo")
+	if err != nil {
+		t.Fatalf("list videos: %v", err)
+	}
+	if len(videos) != 1 {
+		t.Fatalf("videos = %d, want 1", len(videos))
+	}
+	v := videos[0]
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+	localPath := filepath.Join(drv.VideosDir(), v.FileID)
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("read local video: %v", err)
+	}
+	if string(data) != "restored-video-bytes" {
+		t.Fatalf("local data = %q", data)
+	}
+
+	if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+		t.Fatalf("delete with tombstone: %v", err)
+	}
+	if err := cat.RemoveDeletedVideo(ctx, v.ID); err != nil {
+		t.Fatalf("remove deleted video: %v", err)
+	}
+	failRemote.Store(true)
+	res, err = c.RunOnce(ctx, 1)
+	if err != nil {
+		t.Fatalf("restore run: %v", err)
+	}
+	if res.NewVideos != 0 || res.Skipped != 1 || res.Failed != 0 {
+		t.Fatalf("restore crawl result = new:%d skipped:%d failed:%d, want 0/1/0", res.NewVideos, res.Skipped, res.Failed)
+	}
+	if res.SeenSnapshot != 1 {
+		t.Fatalf("restore crawl seen snapshot = %d, want pending source treated as seen", res.SeenSnapshot)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests after skipped restore candidate = %d, want 1", got)
+	}
+	if _, err := cat.GetVideo(ctx, v.ID); err == nil {
+		t.Fatal("video restored during crawl, want restore only after pipeline completion")
+	}
+	restoredCount, err := c.RestoreRequestedVideos(ctx)
+	if err != nil {
+		t.Fatalf("scan retained videos: %v", err)
+	}
+	if restoredCount != 1 {
+		t.Fatalf("restored count = %d, want 1", restoredCount)
+	}
+	restored, err := cat.GetVideo(ctx, v.ID)
+	if err != nil {
+		t.Fatalf("get restored video: %v", err)
+	}
+	if restored.FileID != v.FileID || restored.Size != int64(len("restored-video-bytes")) {
+		t.Fatalf("restored video = file:%q size:%d, want %q/%d", restored.FileID, restored.Size, v.FileID, len("restored-video-bytes"))
+	}
+	if restored.Title != v.Title || restored.PreviewStatus != "pending" {
+		t.Fatalf("restored metadata = title:%q preview:%q, want %q/pending", restored.Title, restored.PreviewStatus, v.Title)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, v.ID); err != nil || deleted {
+		t.Fatalf("restored video tombstone remains: deleted=%v err=%v", deleted, err)
 	}
 }
 

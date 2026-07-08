@@ -116,6 +116,10 @@ func TestRunPipelineHonoursPhaseOrder(t *testing.T) {
 			rec.push("migrate")
 			return nil
 		},
+		RestoreCrawlerVideos: func(_ context.Context, id string) error {
+			rec.push("restore:" + id)
+			return nil
+		},
 		RunDedupeAssetCleanup: func(context.Context) error {
 			rec.push("dedupe-cleanup")
 			return nil
@@ -138,6 +142,7 @@ func TestRunPipelineHonoursPhaseOrder(t *testing.T) {
 		"crawl:sp-1",
 		"wait-idle", // after phase 2
 		"migrate",
+		"restore:sp-1",
 		"dedupe-cleanup",
 		"tag-maintenance",
 	}

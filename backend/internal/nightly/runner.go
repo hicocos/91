@@ -12,7 +12,8 @@
 //	         wait until preview-video queues are idle
 //	Phase 3: crawler local video → cloud upload (single sweep, captcha cooldown still
 //	         honored within this call)
-//	Phase 4: full-library duplicate video maintenance:
+//	Phase 4: scan crawler local directories and restore user-requested videos
+//	Phase 5: full-library duplicate video maintenance:
 //	         exact size+sampled_sha256 dedupe, then title/duration/thumbnail dedupe
 //
 // The pipeline runs until all phases finish, the process exits, or an admin
@@ -78,6 +79,10 @@ type Config struct {
 
 	// RunMigration runs crawlerupload.Migrator.RunOnce for Phase 3.
 	RunMigration func(ctx context.Context) error
+
+	// RestoreCrawlerVideos scans one crawler's retained local source directory
+	// after new-video generation and upload have completed.
+	RestoreCrawlerVideos func(ctx context.Context, driveID string) error
 
 	// RunDedupeAssetCleanup runs full-library duplicate video maintenance. It
 	// removes duplicate catalog rows and local generated assets, but never
@@ -383,6 +388,19 @@ func (r *Runner) runPipeline(ctx context.Context) {
 		}
 	}
 
+	// ---------- Phase 4 ----------
+	if r.shouldStop(ctx, "phase 4") {
+		return
+	}
+	if r.cfg.RestoreCrawlerVideos != nil {
+		log.Printf("[nightly] phase 4: restoring retained crawler videos")
+		for _, id := range crawlerIDs {
+			if err := r.cfg.RestoreCrawlerVideos(ctx, id); err != nil {
+				log.Printf("[nightly] phase 4 restore drive=%s: %v", id, err)
+			}
+		}
+	}
+
 	r.runDedupeAssetCleanupPhase(ctx)
 	r.runTagMaintenancePhase(ctx)
 }
@@ -411,25 +429,25 @@ func (r *Runner) runTagMaintenancePhase(ctx context.Context) {
 	if r.cfg.RunTagMaintenance == nil {
 		return
 	}
-	if r.shouldStop(ctx, "phase 5") {
+	if r.shouldStop(ctx, "phase 6") {
 		return
 	}
-	log.Printf("[nightly] phase 5: tag maintenance")
+	log.Printf("[nightly] phase 6: tag maintenance")
 	if err := r.cfg.RunTagMaintenance(ctx); err != nil {
-		log.Printf("[nightly] phase 5 tag maintenance: %v", err)
+		log.Printf("[nightly] phase 6 tag maintenance: %v", err)
 	}
 }
 
 func (r *Runner) runDedupeAssetCleanupPhase(ctx context.Context) {
-	if r.shouldStop(ctx, "phase 4") {
+	if r.shouldStop(ctx, "phase 5") {
 		return
 	}
 	if r.cfg.RunDedupeAssetCleanup == nil {
 		return
 	}
-	log.Printf("[nightly] phase 4: duplicate video maintenance")
+	log.Printf("[nightly] phase 5: duplicate video maintenance")
 	if err := r.cfg.RunDedupeAssetCleanup(ctx); err != nil {
-		log.Printf("[nightly] phase 4 duplicate video maintenance: %v", err)
+		log.Printf("[nightly] phase 5 duplicate video maintenance: %v", err)
 	}
 }
 

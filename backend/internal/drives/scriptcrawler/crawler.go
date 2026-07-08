@@ -717,6 +717,142 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 	return true, nil
 }
 
+// RestoreRequestedVideos scans the crawler's retained local video directory
+// after the crawl/generation/upload pipeline has finished. Only tombstones that
+// the user explicitly removed from the blacklist are eligible.
+func (c *Crawler) RestoreRequestedVideos(ctx context.Context) (int, error) {
+	if c == nil || c.cfg.Driver == nil || c.cfg.Catalog == nil {
+		return 0, errors.New("scriptcrawler: restore dependencies not set")
+	}
+	if err := c.cfg.Driver.Init(ctx); err != nil {
+		return 0, fmt.Errorf("scriptcrawler: restore driver init: %w", err)
+	}
+	requests, err := c.cfg.Catalog.ListCrawlerRestoreRequests(ctx, c.cfg.Driver.ID())
+	if err != nil || len(requests) == 0 {
+		return 0, err
+	}
+	entries, err := c.cfg.Driver.List(ctx, c.cfg.Driver.RootID())
+	if err != nil {
+		return 0, fmt.Errorf("scriptcrawler: scan retained videos: %w", err)
+	}
+	files := make(map[string]struct {
+		size    int64
+		modTime time.Time
+	}, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir || entry.Size <= 0 {
+			continue
+		}
+		files[entry.ID] = struct {
+			size    int64
+			modTime time.Time
+		}{size: entry.Size, modTime: entry.ModTime}
+	}
+
+	restored := 0
+	var restoreErrors []error
+	for _, request := range requests {
+		if err := ctx.Err(); err != nil {
+			return restored, err
+		}
+		fileID := strings.TrimSpace(request.FileID)
+		file, ok := files[fileID]
+		if !ok {
+			continue
+		}
+
+		video := &catalog.Video{}
+		if request.Video != nil {
+			copy := *request.Video
+			video = &copy
+		}
+		video.ID = request.ID
+		video.DriveID = c.cfg.Driver.ID()
+		video.FileID = fileID
+		if strings.TrimSpace(video.FileName) == "" {
+			video.FileName = strings.TrimSpace(request.FileName)
+		}
+		if strings.TrimSpace(video.FileName) == "" {
+			video.FileName = fileID
+		}
+		if strings.TrimSpace(video.Title) == "" {
+			video.Title = strings.TrimSuffix(video.FileName, filepath.Ext(video.FileName))
+		}
+		video.Ext = strings.TrimPrefix(strings.ToLower(filepath.Ext(fileID)), ".")
+		if request.Size != file.size {
+			video.SampledSHA256 = ""
+			video.FingerprintStatus = "pending"
+			video.FingerprintError = ""
+		}
+		video.Size = file.size
+		video.ThumbnailURL = ""
+		video.PreviewFileID = ""
+		video.PreviewLocal = ""
+		video.PreviewStatus = "pending"
+		if c.previewDisabled(ctx) {
+			video.PreviewStatus = "disabled"
+		}
+		video.TranscodeStatus = ""
+		video.TranscodeError = ""
+		video.TranscodedFileID = ""
+		video.TranscodedSize = 0
+		if video.PublishedAt.IsZero() {
+			video.PublishedAt = file.modTime
+		}
+		if video.CreatedAt.IsZero() {
+			video.CreatedAt = file.modTime
+		}
+		if c.restoreCrawlerThumbnail(video, fileID) {
+			video.ThumbnailURL = "/p/thumb/" + video.ID
+		}
+
+		if err := c.cfg.Catalog.UpsertVideo(ctx, video); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore %s: %w", request.ID, err))
+			continue
+		}
+		sourceID := strings.TrimPrefix(request.ID, BuildVideoID(c.cfg.Driver.ID(), ""))
+		if sourceID != "" {
+			if err := c.cfg.Catalog.MarkCrawlerSourceSeen(ctx, Kind, c.cfg.Driver.ID(), sourceID, "imported", video.ID, video.SampledSHA256, video.Size); err != nil {
+				restoreErrors = append(restoreErrors, fmt.Errorf("restore %s seen source: %w", request.ID, err))
+				continue
+			}
+		}
+		if err := c.cfg.Catalog.CompleteCrawlerRestore(ctx, request.ID); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("complete restore %s: %w", request.ID, err))
+			continue
+		}
+		restored++
+		log.Printf("[scriptcrawler] drive=%s restored retained video=%s file=%s size=%d", c.cfg.Driver.ID(), request.ID, fileID, file.size)
+	}
+	return restored, errors.Join(restoreErrors...)
+}
+
+func (c *Crawler) restoreCrawlerThumbnail(video *catalog.Video, fileID string) bool {
+	if video == nil || strings.TrimSpace(c.cfg.CommonThumbDir) == "" {
+		return false
+	}
+	stem := strings.TrimSuffix(fileID, filepath.Ext(fileID))
+	for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+		source, err := c.cfg.Driver.ThumbPath(stem + ext)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(source)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			continue
+		}
+		if err := os.MkdirAll(c.cfg.CommonThumbDir, 0o755); err != nil {
+			return false
+		}
+		if err := copyFileAtomic(source, mediaasset.ThumbnailPathInDir(c.cfg.CommonThumbDir, video.ID)); err != nil {
+			log.Printf("[scriptcrawler] drive=%s restore thumbnail video=%s: %v", c.cfg.Driver.ID(), video.ID, err)
+			return false
+		}
+		return true
+	}
+	return false
+}
+
 func (c *Crawler) previewDisabled(ctx context.Context) bool {
 	if c == nil {
 		return false
