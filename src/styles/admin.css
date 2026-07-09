@@ -3809,12 +3809,13 @@
 
 .admin-videos-filter__search input {
   width: 100%;
-  padding: 8px 12px 8px 32px;
+  padding: 8px 32px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   color: var(--text-strong);
   font-size: var(--font-sm);
+  text-align: center;
 }
 
 .admin-videos-filter__search input::placeholder {
@@ -4003,6 +4004,10 @@
   box-shadow: none;
 }
 
+.admin-videos-bulk-actions__mobile-exit {
+  display: none;
+}
+
 .admin-table-pagination {
   display: flex;
   flex-wrap: wrap;
@@ -4041,7 +4046,7 @@
 
   .admin-videos-filter--current {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     gap: 6px;
   }
@@ -4060,16 +4065,35 @@
     max-width: 100%;
   }
 
-  .admin-videos-filter--current .admin-videos-filter__batch,
-  .admin-videos-filter--blacklist .admin-videos-filter__batch {
-    grid-column: 2;
-    justify-self: end;
+  .admin-videos-filter--current .admin-videos-filter__batch-select,
+  .admin-videos-filter--blacklist .admin-videos-filter__batch-select {
+    position: fixed;
+    right: var(--space-3);
+    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    z-index: calc(var(--z-nav) + 2);
+    grid-column: auto;
+    justify-self: auto;
     justify-content: center;
-    height: 38px;
-    width: auto;
-    min-width: 54px;
-    padding: 0 10px;
+    min-height: 44px;
+    width: max-content;
+    min-width: 76px;
+    max-width: calc(100vw - (var(--space-3) * 2));
+    padding: 0 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    background: var(--bg-surface);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
     white-space: nowrap;
+  }
+
+  .admin-videos-current,
+  .admin-videos-blacklist {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .admin-videos-current.has-bulk-actions .admin-videos-filter__batch-select,
+  .admin-videos-blacklist.has-bulk-actions .admin-videos-filter__batch-select {
+    display: none;
   }
 
   .admin-table-pagination {
@@ -4098,7 +4122,7 @@
 
   .admin-videos-current.has-bulk-actions,
   .admin-videos-blacklist.has-bulk-actions {
-    padding-bottom: calc(104px + env(safe-area-inset-bottom));
+    padding-bottom: calc(144px + env(safe-area-inset-bottom));
   }
 
   .admin-videos-bulk-actions {
@@ -4120,7 +4144,15 @@
   }
 
   .admin-blacklist-bulk-toolbar .admin-videos-bulk-actions__btn {
+    grid-column: auto;
+  }
+
+  .admin-blacklist-bulk-toolbar .admin-videos-bulk-actions__mobile-exit {
     grid-column: 1 / -1;
+  }
+
+  .admin-videos-bulk-actions__mobile-exit {
+    display: inline-flex;
   }
 
   .admin-blacklist-table:not(.admin-drives-table) tr {

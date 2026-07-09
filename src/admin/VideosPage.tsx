@@ -370,13 +370,13 @@ function CurrentVideosTab({
   }
 
   return (
-    <div className={`admin-videos-current${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
+    <div className={`admin-videos-current${selectMode ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--current">
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} />
         {hasVideoActions && (
           <button
             type="button"
-            className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+            className={`admin-btn admin-videos-filter__batch admin-videos-filter__batch-select${selectMode ? " is-primary" : ""}`}
             onClick={toggleSelectMode}
             aria-pressed={selectMode}
           >
@@ -386,18 +386,40 @@ function CurrentVideosTab({
       </div>
       {tabSelector}
 
-      {!loading && selectedIds.size > 0 && (
+      {!loading && selectMode && (
         <div className="admin-videos-list-toolbar">
           <div className="admin-videos-bulk-actions">
             <span className="admin-videos-bulk-actions__count">已选择 {selectedIds.size} 项</span>
-            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={() => setSelectedIds(new Set())}>
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn"
+              onClick={() => setSelectedIds(new Set())}
+              disabled={selectedIds.size === 0}
+            >
               取消选中
             </button>
-            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={handleBatchRegen}>
-              重生预览视频
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn"
+              onClick={handleBatchRegen}
+              disabled={selectedIds.size === 0}
+            >
+              重生预览
             </button>
-            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={handleBatchDelete}>
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn"
+              onClick={handleBatchDelete}
+              disabled={selectedIds.size === 0}
+            >
               批量删除
+            </button>
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn admin-videos-bulk-actions__mobile-exit"
+              onClick={toggleSelectMode}
+            >
+              退出选择
             </button>
           </div>
         </div>
@@ -786,7 +808,7 @@ function BlacklistTab({
   }
 
   return (
-    <div className={`admin-videos-blacklist${selectedIds.size > 0 ? " has-bulk-actions" : ""}`}>
+    <div className={`admin-videos-blacklist${selectMode ? " has-bulk-actions" : ""}`}>
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
         <SearchBox keyword={keyword} onChange={setKeyword} onSubmit={handleSearchSubmit} placeholder="搜索文件名" />
         {hasBlacklistActions && (
@@ -806,7 +828,7 @@ function BlacklistTab({
             </button>
             <button
               type="button"
-              className={`admin-btn admin-videos-filter__batch${selectMode ? " is-primary" : ""}`}
+              className={`admin-btn admin-videos-filter__batch admin-videos-filter__batch-select${selectMode ? " is-primary" : ""}`}
               onClick={toggleSelectMode}
               aria-pressed={selectMode}
             >
@@ -817,20 +839,32 @@ function BlacklistTab({
       </div>
       {tabSelector}
 
-      {!loading && selectedIds.size > 0 && (
+      {!loading && selectMode && (
         <div className="admin-videos-list-toolbar admin-blacklist-bulk-toolbar">
           <div className="admin-videos-bulk-actions">
             <span className="admin-videos-bulk-actions__count">已选择 {selectedIds.size} 项</span>
-            <button type="button" className="admin-btn admin-videos-bulk-actions__btn" onClick={() => setSelectedIds(new Set())}>
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn"
+              onClick={() => setSelectedIds(new Set())}
+              disabled={selectedIds.size === 0}
+            >
               取消选中
             </button>
             <button
               type="button"
               className="admin-btn admin-videos-bulk-actions__btn"
               onClick={() => setBatchSourceDeleteOpen(true)}
-              disabled={sourceDeleteRunning}
+              disabled={sourceDeleteRunning || selectedIds.size === 0}
             >
               批量删除
+            </button>
+            <button
+              type="button"
+              className="admin-btn admin-videos-bulk-actions__btn admin-videos-bulk-actions__mobile-exit"
+              onClick={toggleSelectMode}
+            >
+              退出选择
             </button>
           </div>
         </div>

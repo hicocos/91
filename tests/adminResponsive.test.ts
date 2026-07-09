@@ -159,9 +159,10 @@ test("current video bulk actions use ordinary text buttons", () => {
   const base = ruleBody(adminCss, ".admin-videos-bulk-actions__btn");
 
   assert.equal(Array.from(currentVideosSource.matchAll(/className="admin-btn admin-videos-bulk-actions__btn"/g)).length, 3);
-  assert.match(currentVideosSource, /onClick=\{\(\) => setSelectedIds\(new Set\(\)\)\}>\s*取消选中\s*<\/button>/);
-  assert.match(currentVideosSource, />\s*重生预览视频\s*<\/button>/);
+  assert.match(currentVideosSource, /onClick=\{\(\) => setSelectedIds\(new Set\(\)\)\}[\s\S]*?disabled=\{selectedIds\.size === 0\}[\s\S]*?>\s*取消选中\s*<\/button>/);
+  assert.match(currentVideosSource, />\s*重生预览\s*<\/button>/);
   assert.match(currentVideosSource, />\s*批量删除\s*<\/button>/);
+  assert.match(currentVideosSource, /admin-videos-bulk-actions__mobile-exit[\s\S]*?>\s*退出选择\s*<\/button>/);
   assert.doesNotMatch(currentVideosSource, /className="admin-btn admin-videos-bulk-actions__btn"[^>]*>\s*<(?:RefreshCw|Trash2)/);
   assert.doesNotMatch(currentVideosSource, /is-primary admin-videos-bulk-actions__btn|is-danger admin-videos-bulk-actions__btn/);
   assert.match(base, /box-shadow\s*:\s*none/);
@@ -274,10 +275,10 @@ test("current video list does not render the drive summary under filters", () =>
   assert.doesNotMatch(videosPageSource, /teaserReadyCount|teaserPendingCount/);
   assert.match(videosPageSource, /admin-videos-filter admin-videos-filter--current/);
   assert.doesNotMatch(videosPageSource, /aria-label="刷新当前视频"/);
-  assert.match(videosPageSource, /admin-videos-filter__batch\$\{selectMode \? " is-primary" : ""\}/);
+  assert.match(videosPageSource, /admin-videos-filter__batch admin-videos-filter__batch-select\$\{selectMode \? " is-primary" : ""\}/);
   assert.match(videosPageSource, /selectMode \? "退出选择" : "批量选择"/);
-  assert.match(videosPageSource, /admin-videos-current\$\{selectedIds\.size > 0 \? " has-bulk-actions" : ""\}/);
-  assert.match(videosPageSource, /\{!loading && selectedIds\.size > 0 && \(/);
+  assert.match(videosPageSource, /admin-videos-current\$\{selectMode \? " has-bulk-actions" : ""\}/);
+  assert.match(videosPageSource, /\{!loading && selectMode && \(/);
   assert.match(shell, /--admin-sidebar-width\s*:\s*232px/);
   assert.match(shell, /grid-template-columns\s*:\s*var\(--admin-sidebar-width\)\s+minmax\(0,\s*1fr\)/);
   assert.match(navGroupLabel, /padding\s*:\s*0\s+12px/);
@@ -377,7 +378,8 @@ test("desktop video management toolbar follows tag management layout", () => {
   assert.match(blacklistFilterSearch, /min-width\s*:\s*0/);
   assert.match(blacklistFilterSearch, /grid-column\s*:\s*2/);
   assert.match(blacklistFilterSearch, /max-width\s*:\s*360px/);
-  assert.match(searchInput, /padding\s*:\s*8px\s+12px\s+8px\s+32px/);
+  assert.match(searchInput, /padding\s*:\s*8px\s+32px/);
+  assert.match(searchInput, /text-align\s*:\s*center/);
   assert.match(searchInput, /background\s*:\s*var\(--bg-surface\)/);
   assert.match(actions, /grid-column\s*:\s*3/);
   assert.match(actions, /display\s*:\s*inline-flex/);
@@ -490,7 +492,8 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.match(videosPageSource, /删除全部/);
   assert.match(videosPageSource, /批量删除/);
   assert.match(blacklistSource, /className="admin-btn admin-videos-bulk-actions__btn"[\s\S]*?>\s*批量删除\s*<\/button>/);
-  assert.match(blacklistSource, /onClick=\{\(\) => setSelectedIds\(new Set\(\)\)\}>\s*取消选中\s*<\/button>/);
+  assert.match(blacklistSource, /onClick=\{\(\) => setSelectedIds\(new Set\(\)\)\}[\s\S]*?disabled=\{selectedIds\.size === 0\}[\s\S]*?>\s*取消选中\s*<\/button>/);
+  assert.match(blacklistSource, /admin-videos-bulk-actions__mobile-exit[\s\S]*?>\s*退出选择\s*<\/button>/);
   assert.doesNotMatch(blacklistSource, /className="admin-btn is-danger admin-videos-bulk-actions__btn"|<Trash2 size=\{13\} \/> 批量删除/);
   assert.match(videosPageSource, /title="删除源文件"/);
   assert.equal(Array.from(blacklistSource.matchAll(/confirmText="确认"/g)).length, 3);
@@ -512,7 +515,7 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.notEqual(deleteAllButtonEnd, -1);
   assert.doesNotMatch(videosPageSource, /共 \{total\} 个拉黑视频/);
   assert.doesNotMatch(videosPageSource, /admin-videos-summary/);
-  assert.match(videosPageSource, /admin-blacklist-source-delete__button[\s\S]*?\{sourceDeleteStatus\?\.running \? "删除中" : "删除全部"\}[\s\S]*?admin-videos-filter__batch\$\{selectMode \? " is-primary" : ""\}/);
+  assert.match(videosPageSource, /admin-blacklist-source-delete__button[\s\S]*?\{sourceDeleteStatus\?\.running \? "删除中" : "删除全部"\}[\s\S]*?admin-videos-filter__batch admin-videos-filter__batch-select\$\{selectMode \? " is-primary" : ""\}/);
   assert.doesNotMatch(deleteAllButtonSource, /Trash2/);
   assert.doesNotMatch(deleteAllButtonSource, /is-danger/);
   assert.match(videosPageSource, /\{ ids: \[target\.id\] \}/);
@@ -555,7 +558,9 @@ test("admin video management controls wrap instead of covering text on mobile", 
   const bulkActions = allRuleBodies(css, ".admin-videos-bulk-actions");
   const bulkCount = allRuleBodies(css, ".admin-videos-bulk-actions__count");
   const bulkButton = allRuleBodies(css, ".admin-videos-bulk-actions__btn");
+  const bulkMobileExit = allRuleBodies(css, ".admin-videos-bulk-actions__mobile-exit");
   const blacklistBulkButton = ruleBody(css, ".admin-blacklist-bulk-toolbar .admin-videos-bulk-actions__btn");
+  const blacklistMobileExit = ruleBody(css, ".admin-blacklist-bulk-toolbar .admin-videos-bulk-actions__mobile-exit");
   const blacklistName = ruleBody(
     css,
     '.admin-blacklist-table:not(.admin-drives-table) td[data-label="文件名"]'
@@ -577,30 +582,41 @@ test("admin video management controls wrap instead of covering text on mobile", 
 
   assert.match(paginationInfo, /flex\s*:\s*1\s+0\s+100%/);
   assert.match(currentFilter, /display\s*:\s*grid/);
-  assert.match(currentFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(currentFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
   assert.match(currentFilterField, /min-width\s*:\s*0/);
-  assert.match(currentFilterBatch, /min-width\s*:\s*54px/);
+  assert.match(currentFilterBatch, /position\s*:\s*fixed/);
+  assert.match(currentFilterBatch, /right\s*:\s*var\(--space-3\)/);
+  assert.match(currentFilterBatch, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(currentFilterBatch, /width\s*:\s*max-content/);
+  assert.match(currentFilterBatch, /min-width\s*:\s*76px/);
+  assert.match(currentFilterBatch, /border\s*:\s*1px solid var\(--border-subtle\)/);
+  assert.match(currentFilterBatch, /background\s*:\s*var\(--bg-surface\)/);
   assert.match(currentFilterBatch, /white-space\s*:\s*nowrap/);
   assert.match(blacklistFilter, /display\s*:\s*grid/);
   assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
   assert.match(blacklistFilterField, /min-width\s*:\s*0/);
   assert.match(blacklistFilterActions, /grid-column\s*:\s*2/);
   assert.match(blacklistFilterActions, /max-width\s*:\s*100%/);
+  assert.match(blacklistFilterBatch, /position\s*:\s*fixed/);
   assert.match(blacklistFilterBatch, /white-space\s*:\s*nowrap/);
+  assert.match(css, /\.admin-videos-current\.has-bulk-actions \.admin-videos-filter__batch-select,[\s\S]*?\.admin-videos-blacklist\.has-bulk-actions \.admin-videos-filter__batch-select\s*\{[^}]*display\s*:\s*none/s);
   assert.match(bulkToolbar, /position\s*:\s*fixed/);
   assert.match(bulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkToolbar, /margin\s*:\s*0/);
   assert.match(blacklistBulkToolbar, /position\s*:\s*fixed/);
   assert.match(blacklistBulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(blacklistBulkToolbar, /margin\s*:\s*0/);
-  assert.match(currentWithBulk, /padding-bottom\s*:\s*calc\(104px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-  assert.match(blacklistWithBulk, /padding-bottom\s*:\s*calc\(104px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(currentWithBulk, /padding-bottom\s*:\s*calc\(144px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(blacklistWithBulk, /padding-bottom\s*:\s*calc\(144px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkActions, /display\s*:\s*grid/);
   assert.match(bulkActions, /grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(bulkCount, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(bulkButton, /min-height\s*:\s*40px/);
   assert.match(bulkButton, /min-width\s*:\s*0/);
-  assert.match(blacklistBulkButton, /grid-column\s*:\s*1\s*\/\s*-1/);
+  assert.match(bulkMobileExit, /display\s*:\s*inline-flex/);
+  assert.match(adminCss, /\.admin-videos-bulk-actions__mobile-exit\s*\{[^}]*display\s*:\s*none/s);
+  assert.match(blacklistBulkButton, /grid-column\s*:\s*auto/);
+  assert.match(blacklistMobileExit, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(videosPageSource, /admin-videos-blacklist/);
   assert.match(blacklistName, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(blacklistActions, /grid-column\s*:\s*2/);
