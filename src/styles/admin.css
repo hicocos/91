@@ -5369,8 +5369,9 @@
 
 .admin-tags-search input {
   width: 100%;
-  padding: 8px 12px 8px 32px;
+  padding: 8px 32px;
   font-size: var(--font-sm);
+  text-align: center;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
@@ -5528,21 +5529,8 @@
   box-shadow: none;
 }
 
-.admin-tags-bulk-actions__btn.is-danger {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.admin-tags-bulk-actions__btn.is-danger:hover:not(:disabled) {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #ffffff;
-  box-shadow: 0 3px 12px var(--danger-soft);
-}
-
-.admin-tags-bulk-actions__btn.is-danger:focus-visible {
-  outline-color: var(--danger);
+.admin-tags-bulk-actions__mobile-exit {
+  display: none;
 }
 
 .admin-tag-card.is-selectable {
@@ -5582,6 +5570,11 @@
   user-select: none;
 }
 
+.admin-tag-card--placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 @media (max-width: 640px) {
   .admin-tags-layout {
     width: 100%;
@@ -5610,22 +5603,67 @@
     grid-column: 1;
     grid-row: 2;
     justify-self: center;
-    width: 100%;
+    width: max-content;
+    max-width: 100%;
   }
 
   .admin-tags-filter-tabs {
     flex-direction: row;
-    width: 100%;
+    width: max-content;
     min-width: 0;
     max-width: 100%;
     overflow-x: auto;
   }
 
   .admin-tags-toolbar-actions {
-    grid-column: 1;
-    justify-self: stretch;
-    width: 100%;
+    position: fixed;
+    right: var(--space-3);
+    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    z-index: calc(var(--z-nav) + 2);
+    width: max-content;
+    max-width: calc(100vw - (var(--space-3) * 2));
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    background: var(--bg-surface);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
     justify-content: flex-end;
+    gap: 0;
+    overflow: hidden;
+  }
+
+  .admin-tags-toolbar-actions .admin-btn {
+    position: relative;
+    min-height: 44px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .admin-tags-toolbar-actions .admin-btn:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--bg-elevated);
+    box-shadow: none;
+  }
+
+  .admin-tags-toolbar-actions .admin-btn + .admin-btn::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 1px;
+    height: 18px;
+    transform: translateY(-50%);
+    background: var(--border-subtle);
+  }
+
+  .admin-tags-page {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .admin-tags-page.has-bulk-actions .admin-tags-toolbar-actions {
+    display: none;
   }
 
   .admin-tags-pagination {
@@ -5639,9 +5677,9 @@
   }
 
   .admin-tags-grid {
-    width: 100%;
+    width: min(100%, 320px);
     max-width: 100%;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     justify-content: stretch;
   }
 
@@ -5657,7 +5695,7 @@
   }
 
   .admin-tags-page.has-bulk-actions {
-    padding-bottom: calc(104px + env(safe-area-inset-bottom));
+    padding-bottom: calc(144px + env(safe-area-inset-bottom));
   }
 
   .admin-tags-bulk-actions {
@@ -5668,6 +5706,7 @@
   }
 
   .admin-tags-bulk-actions__count {
+    grid-column: 1 / -1;
     min-width: 0;
   }
 
@@ -5676,6 +5715,10 @@
     width: 100%;
     min-height: 40px;
     min-width: 0;
+  }
+
+  .admin-tags-bulk-actions__mobile-exit {
+    display: inline-flex;
   }
 
   .admin-tag-card {
@@ -5840,6 +5883,38 @@
 
   .admin-tag-card:hover .admin-tag-card__delete,
   .admin-tag-card:focus-within .admin-tag-card__delete {
+    opacity: 1;
+    pointer-events: auto;
+    width: auto;
+    padding-inline: 5px;
+    border-inline-width: 1px;
+    gap: 3px;
+  }
+}
+
+@media (hover: none) {
+  .admin-tag-card:not(.is-selectable) {
+    cursor: pointer;
+  }
+
+  .admin-tag-card:not(.is-selectable):focus-visible {
+    outline: 2px solid var(--border-accent);
+    outline-offset: 2px;
+  }
+
+  .admin-tag-card__delete {
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    min-width: 0;
+    padding-inline: 0;
+    border-inline-width: 0;
+    gap: 0;
+    overflow: hidden;
+    transition: opacity var(--transition-fast);
+  }
+
+  .admin-tag-card.is-actions-open .admin-tag-card__delete {
     opacity: 1;
     pointer-events: auto;
     width: auto;

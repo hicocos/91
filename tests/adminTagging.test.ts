@@ -159,6 +159,20 @@ test("admin tag card delete action appears before edit action", () => {
   assert.doesNotMatch(tagsPageSource, /import \{[^}]*\bPencil\b/);
 });
 
+test("mobile tag delete action only opens for the tapped card", () => {
+  assert.match(tagsPageSource, /activeTagActionsId/);
+  assert.match(tagsPageSource, /const actionsOpen = activeTagActionsId === tag\.id;/);
+  assert.match(tagsPageSource, /is-actions-open/);
+  assert.match(tagsPageSource, /onClick=\{\(\) => toggleTagActions\(tag\.id\)\}/);
+  assert.match(tagsPageSource, /onKeyDown=\{\(event\) => handleTagCardKeyDown\(event, tag\.id\)\}/);
+  assert.match(tagsPageSource, /event\.stopPropagation\(\);\s*handleDelete\(tag\);/);
+  assert.match(tagsPageSource, /event\.stopPropagation\(\);\s*setEditingTag\(tag\);/);
+  assert.match(
+    adminCss,
+    /@media \(hover: none\)\s*\{[\s\S]*?\.admin-tag-card__delete\s*\{[\s\S]*?opacity\s*:\s*0;[\s\S]*?width\s*:\s*0;[\s\S]*?\.admin-tag-card\.is-actions-open \.admin-tag-card__delete\s*\{[\s\S]*?opacity\s*:\s*1;[\s\S]*?width\s*:\s*auto;/s
+  );
+});
+
 test("admin tag dialogs use the lightweight modal style", () => {
   assert.match(
     tagsPageSource,

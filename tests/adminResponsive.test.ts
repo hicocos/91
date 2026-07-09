@@ -178,6 +178,7 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   const mobilePageWithBulk = allRuleBodies(css, ".admin-tags-page.has-bulk-actions");
   const mobileActions = allRuleBodies(css, ".admin-tags-bulk-actions");
   const mobileButton = allRuleBodies(css, ".admin-tags-bulk-actions__btn");
+  const mobileExit = allRuleBodies(css, ".admin-tags-bulk-actions__mobile-exit");
 
   assert.match(tagsPageSource, /className="admin-tags-bulk-toolbar"/);
   assert.match(tagsPageSource, /aria-label="标签批量操作"/);
@@ -185,6 +186,11 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.match(tagsPageSource, />已选择 \{selected\.size\} 项</);
   assert.match(tagsPageSource, /全选本页/);
   assert.match(tagsPageSource, /取消选中/);
+  assert.match(tagsPageSource, /删除选中/);
+  assert.match(tagsPageSource, /admin-tags-bulk-actions__mobile-exit/);
+  assert.match(tagsPageSource, />\s*退出选择\s*<\/button>/);
+  assert.doesNotMatch(tagsPageSource, /<Trash2 size=\{13\} \/> \{bulkDeleting \? "删除中\.\.\." : "删除选中"\}/);
+  assert.doesNotMatch(tagsPageSource, /className="admin-btn is-danger admin-tags-bulk-actions__btn"/);
   assert.doesNotMatch(tagsPageSource, /全选本页 \(/);
   assert.doesNotMatch(tagsPageSource, /CheckSquare/);
   assert.doesNotMatch(tagsPageSource, /admin-tag-card__check/);
@@ -193,6 +199,7 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.doesNotMatch(tagsPageSource, /admin-tags-bulkbar/);
   assert.doesNotMatch(adminCss, /admin-tags-bulkbar/);
   assert.doesNotMatch(adminCss, /admin-tag-card__check/);
+  assert.doesNotMatch(adminCss, /admin-tags-bulk-actions__btn\.is-danger/);
   assert.match(pageWithBulk, /padding-bottom\s*:\s*72px/);
   assert.match(toolbar, /position\s*:\s*fixed/);
   assert.match(toolbar, /right\s*:\s*var\(--space-7\)/);
@@ -203,11 +210,15 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.match(mobileToolbar, /left\s*:\s*var\(--space-3\)/);
   assert.match(mobileToolbar, /right\s*:\s*var\(--space-3\)/);
   assert.match(mobileToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-  assert.match(mobilePageWithBulk, /padding-bottom\s*:\s*calc\(104px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(mobilePageWithBulk, /padding-bottom\s*:\s*calc\(144px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.admin-tags-page\.has-bulk-actions \.admin-tags-toolbar-actions\s*\{[^}]*display\s*:\s*none/s);
   assert.match(mobileActions, /display\s*:\s*grid/);
   assert.match(mobileActions, /grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(count, /grid-column\s*:\s*1 \/ -1/);
   assert.match(mobileButton, /min-height\s*:\s*40px/);
   assert.match(mobileButton, /min-width\s*:\s*0/);
+  assert.match(adminCss, /\.admin-tags-bulk-actions__mobile-exit\s*\{[^}]*display\s*:\s*none/s);
+  assert.match(mobileExit, /display\s*:\s*inline-flex/);
 });
 
 test("admin tag auto-generation setting is removed", () => {
@@ -772,6 +783,10 @@ test("mobile tags management does not create horizontal page overflow", () => {
   const mobileBoard = allRuleBodies(css, ".admin-tags-board");
   const toolbar = allRuleBodies(css, ".admin-tags-toolbar");
   const search = allRuleBodies(css, ".admin-tags-search");
+  const searchInput = ruleBody(adminCss, ".admin-tags-search input");
+  const toolbarActions = allRuleBodies(css, ".admin-tags-toolbar-actions");
+  const toolbarActionButton = allRuleBodies(css, ".admin-tags-toolbar-actions .admin-btn");
+  const toolbarActionDivider = allRuleBodies(css, ".admin-tags-toolbar-actions .admin-btn + .admin-btn::before");
   const filters = allRuleBodies(css, ".admin-tags-filter-tabs");
   const desktopFilters = allRuleBodies(adminCss, ".admin-tags-filter-tabs");
   const filterPanel = allRuleBodies(css, ".admin-tags-filter-panel");
@@ -791,6 +806,7 @@ test("mobile tags management does not create horizontal page overflow", () => {
 
   assert.match(desktopLayout, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
   assert.match(main, /--tags-cards-width\s*:\s*calc\(\(240px \* 4\) \+ \(var\(--space-3\) \* 3\)\)/);
+  assert.doesNotMatch(main, /--tags-search-width/);
   assert.doesNotMatch(board, /--tags-filter-width|--tags-board-width/);
   assert.match(board, /grid-template-columns\s*:\s*minmax\(0,\s*var\(--tags-cards-width\)\)/);
   assert.match(board, /justify-content\s*:\s*center/);
@@ -806,10 +822,35 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.match(allRuleBodies(adminCss, ".admin-tags-search"), /grid-column\s*:\s*2/);
   assert.match(allRuleBodies(adminCss, ".admin-tags-search"), /grid-row\s*:\s*1/);
   assert.match(allRuleBodies(adminCss, ".admin-tags-search"), /justify-self\s*:\s*center/);
+  assert.match(ruleBody(adminCss, ".admin-tags-search"), /width\s*:\s*100%/);
+  assert.match(ruleBody(adminCss, ".admin-tags-search"), /max-width\s*:\s*360px/);
+  assert.match(searchInput, /padding\s*:\s*8px\s+32px/);
+  assert.match(searchInput, /text-align\s*:\s*center/);
   assert.match(search, /grid-column\s*:\s*1/);
   assert.match(search, /grid-row\s*:\s*1/);
   assert.match(search, /width\s*:\s*100%/);
   assert.match(search, /min-width\s*:\s*0/);
+  assert.match(search, /max-width\s*:\s*none/);
+  assert.match(toolbarActions, /position\s*:\s*fixed/);
+  assert.match(toolbarActions, /right\s*:\s*var\(--space-3\)/);
+  assert.match(toolbarActions, /bottom\s*:\s*calc\(var\(--space-3\) \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(toolbarActions, /width\s*:\s*max-content/);
+  assert.match(toolbarActions, /max-width\s*:\s*calc\(100vw - \(var\(--space-3\) \* 2\)\)/);
+  assert.match(toolbarActions, /padding\s*:\s*0/);
+  assert.match(toolbarActions, /border\s*:\s*1px solid var\(--border-subtle\)/);
+  assert.match(toolbarActions, /background\s*:\s*var\(--bg-surface\)/);
+  assert.match(toolbarActions, /gap\s*:\s*0/);
+  assert.match(toolbarActions, /overflow\s*:\s*hidden/);
+  assert.match(toolbarActionButton, /min-height\s*:\s*44px/);
+  assert.match(toolbarActionButton, /border\s*:\s*0/);
+  assert.match(toolbarActionButton, /border-radius\s*:\s*0/);
+  assert.match(toolbarActionButton, /background\s*:\s*transparent/);
+  assert.match(toolbarActionButton, /box-shadow\s*:\s*none/);
+  assert.match(toolbarActionDivider, /content\s*:\s*""/);
+  assert.match(toolbarActionDivider, /height\s*:\s*18px/);
+  assert.match(toolbarActionDivider, /background\s*:\s*var\(--border-subtle\)/);
+  assert.match(css, /\.admin-tags-page\s*\{[^}]*padding-bottom\s*:\s*calc\(72px \+ env\(safe-area-inset-bottom\)\)/s);
+  assert.match(css, /\.admin-tags-page\.has-bulk-actions \.admin-tags-toolbar-actions\s*\{[^}]*display\s*:\s*none/s);
   assert.match(desktopFilterPanel, /grid-column\s*:\s*2/);
   assert.match(desktopFilterPanel, /grid-row\s*:\s*2/);
   assert.match(desktopFilterPanel, /justify-self\s*:\s*center/);
@@ -824,7 +865,8 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.doesNotMatch(desktopFilterPanel, /\btop\s*:/);
   assert.doesNotMatch(desktopFilterPanel, /transform\s*:/);
   assert.match(filterPanel, /grid-row\s*:\s*2/);
-  assert.match(filterPanel, /width\s*:\s*100%/);
+  assert.match(filterPanel, /width\s*:\s*max-content/);
+  assert.match(filterPanel, /max-width\s*:\s*100%/);
   assert.match(desktopFilters, /display\s*:\s*flex/);
   assert.match(desktopFilters, /flex-direction\s*:\s*row/);
   assert.match(desktopFilters, /gap\s*:\s*4px/);
@@ -844,7 +886,7 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.match(filterTab, /white-space\s*:\s*nowrap/);
   assert.match(filterTabText, /writing-mode\s*:\s*horizontal-tb/);
   assert.match(filterTabText, /text-orientation\s*:\s*mixed/);
-  assert.match(filters, /width\s*:\s*100%/);
+  assert.match(filters, /width\s*:\s*max-content/);
   assert.match(filters, /min-width\s*:\s*0/);
   assert.match(filters, /max-width\s*:\s*100%/);
   assert.match(filters, /flex-direction\s*:\s*row/);
@@ -858,7 +900,8 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.match(allRuleBodies(adminCss, ".admin-tags-grid"), /align-items\s*:\s*stretch/);
   assert.doesNotMatch(allRuleBodies(adminCss, ".admin-tags-grid"), /display\s*:\s*flex/);
   assert.doesNotMatch(allRuleBodies(adminCss, ".admin-tags-grid"), /flex-wrap\s*:\s*wrap/);
-  assert.match(grid, /grid-template-columns\s*:\s*1fr/);
+  assert.match(grid, /width\s*:\s*min\(100%,\s*320px\)/);
+  assert.match(grid, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
   assert.match(grid, /justify-content\s*:\s*stretch/);
   assert.match(grid, /max-width\s*:\s*100%/);
   assert.doesNotMatch(card, /flex-basis/);

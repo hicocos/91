@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { Film, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { Film, RefreshCw, Search } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "./ToastContext";
 import { ConfirmModal } from "./ConfirmModal";
 import { Modal } from "./Modal";
 import { AdminEmptyVisual } from "./AdminEmptyVisual";
 
-const DESKTOP_TAGS_PAGE_SIZE = 25;
+const DESKTOP_TAGS_PAGE_SIZE = 24;
 const MOBILE_TAGS_PAGE_SIZE = 8;
 const TAGS_MOBILE_QUERY = "(max-width: 640px)";
 const ADMIN_SEARCH_DEBOUNCE_MS = 500;
@@ -39,6 +39,7 @@ export function TagsPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [editingTag, setEditingTag] = useState<api.AdminTag | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [activeTagActionsId, setActiveTagActionsId] = useState<number | null>(null);
   const pageSize = useTagsPageSize();
   const [page, setPage] = useState(1);
   const { show } = useToast();
@@ -91,6 +92,7 @@ export function TagsPage() {
   function toggleSelectMode() {
     setSelectMode((m) => !m);
     setSelected(new Set());
+    setActiveTagActionsId(null);
   }
 
   function toggleSelect(id: number) {
@@ -202,8 +204,8 @@ export function TagsPage() {
     () => filteredTags.slice(pageStartIndex, pageEndIndex),
     [filteredTags, pageStartIndex, pageEndIndex]
   );
-  const pageStart = filteredTags.length === 0 ? 0 : pageStartIndex + 1;
-  const pageEnd = Math.min(filteredTags.length, pageEndIndex);
+  const showPagination = filteredTags.length > pageSize;
+  const placeholderTags = showPagination ? Math.max(0, pageSize - pagedTags.length) : 0;
 
   useEffect(() => {
     if (searchInput === searchQuery) return;
@@ -239,6 +241,17 @@ export function TagsPage() {
       deletablePageTags.forEach((t) => next.add(t.id));
       return next;
     });
+  }
+
+  function toggleTagActions(id: number) {
+    setActiveTagActionsId((current) => (current === id ? null : id));
+  }
+
+  function handleTagCardKeyDown(event: KeyboardEvent<HTMLDivElement>, id: number) {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleTagActions(id);
   }
 
   return (
@@ -334,9 +347,10 @@ export function TagsPage() {
                     {pagedTags.map((tag) => {
                       const selectable = selectMode;
                       const isSelected = selected.has(tag.id);
+                      const actionsOpen = activeTagActionsId === tag.id;
                       const cardClass = `admin-tag-card${selectable ? " is-selectable" : ""}${
                         selectable && isSelected ? " is-selected" : ""
-                      }`;
+                      }${!selectable && actionsOpen ? " is-actions-open" : ""}`;
                       const cardContent = (
                         <>
                           <div className="admin-tag-card__head">
@@ -356,7 +370,10 @@ export function TagsPage() {
                                 <button
                                   type="button"
                                   className="admin-tag-card__delete"
-                                  onClick={() => handleDelete(tag)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleDelete(tag);
+                                  }}
                                   disabled={deletingId === tag.id}
                                   aria-label={`删除标签 ${tag.label}`}
                                 >
@@ -367,7 +384,10 @@ export function TagsPage() {
                                 <button
                                   type="button"
                                   className="admin-tag-card__edit"
-                                  onClick={() => setEditingTag(tag)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setEditingTag(tag);
+                                  }}
                                   aria-label={`编辑标签 ${tag.label}`}
                                 >
                                   <span>编辑</span>
@@ -389,14 +409,44 @@ export function TagsPage() {
                           {cardContent}
                         </button>
                       ) : (
-                        <div key={tag.id} className={cardClass}>
+                        <div
+                          key={tag.id}
+                          className={cardClass}
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={actionsOpen}
+                          aria-label={`标签 ${tag.label}`}
+                          onClick={() => toggleTagActions(tag.id)}
+                          onKeyDown={(event) => handleTagCardKeyDown(event, tag.id)}
+                        >
                           {cardContent}
                         </div>
                       );
                     })}
+                    {Array.from({ length: placeholderTags }, (_, index) => (
+                      <div
+                        key={`placeholder-${index}`}
+                        className="admin-tag-card admin-tag-card--placeholder"
+                        aria-hidden="true"
+                      >
+                        <div className="admin-tag-card__head">
+                          <span className="admin-tag-card__title">placeholder</span>
+                          <span className="admin-tag-card__source-badge">placeholder</span>
+                        </div>
+                        <div className="admin-tag-card__footer">
+                          <span className="admin-tag-card__count">
+                            <Film size={13} />
+                            <strong>0</strong> 视频
+                          </span>
+                          <div className="admin-tag-card__footer-actions">
+                            <span className="admin-tag-card__edit">placeholder</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
-                  {totalPages > 1 && (
+                  {showPagination && (
                     <div className="admin-table-pagination admin-tags-pagination">
                       <button
                         type="button"
@@ -415,7 +465,7 @@ export function TagsPage() {
                         上一页
                       </button>
                       <span className="admin-table-pagination__info">
-                        第 {currentPage} / {totalPages} 页，显示 {pageStart}-{pageEnd} / {filteredTags.length}，每页 {pageSize} 个
+                        第 {currentPage} / {totalPages} 页
                       </span>
                       <button
                         type="button"
@@ -464,11 +514,18 @@ export function TagsPage() {
             </button>
             <button
               type="button"
-              className="admin-btn is-danger admin-tags-bulk-actions__btn"
+              className="admin-btn admin-tags-bulk-actions__btn"
               onClick={handleBulkDelete}
               disabled={selected.size === 0 || bulkDeleting}
             >
-              <Trash2 size={13} /> {bulkDeleting ? "删除中..." : "删除选中"}
+              {bulkDeleting ? "删除中..." : "删除选中"}
+            </button>
+            <button
+              type="button"
+              className="admin-btn admin-tags-bulk-actions__btn admin-tags-bulk-actions__mobile-exit"
+              onClick={toggleSelectMode}
+            >
+              退出选择
             </button>
           </div>
         </div>
@@ -780,6 +837,11 @@ function RulePillEditor({
   );
 }
 
+type RuleDraft = {
+  keywords: string;
+  avCodePrefixes: string;
+};
+
 function useTagsPageSize() {
   const [pageSize, setPageSize] = useState(() =>
     window.matchMedia(TAGS_MOBILE_QUERY).matches
@@ -799,11 +861,6 @@ function useTagsPageSize() {
 
   return pageSize;
 }
-
-type RuleDraft = {
-  keywords: string;
-  avCodePrefixes: string;
-};
 
 function tagRuleDraft(tag: api.AdminTag): RuleDraft {
   const rules = tag.matchRules ?? {};
