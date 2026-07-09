@@ -425,7 +425,9 @@ function CurrentVideosTab({
         </div>
       )}
 
-      {loading ? null : loadError ? (
+      {loading ? (
+        <LoadingState />
+      ) : loadError ? (
         <ErrorState message={loadError} onRetry={refresh} />
       ) : listItems.length === 0 ? (
         <AdminEmptyVisual
@@ -870,7 +872,9 @@ function BlacklistTab({
         </div>
       )}
 
-      {loading ? null : loadError ? (
+      {loading ? (
+        <LoadingState />
+      ) : loadError ? (
         <ErrorState message={loadError} onRetry={refresh} />
       ) : list.length === 0 ? (
         <AdminEmptyVisual
@@ -1123,6 +1127,15 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
       <button type="button" className="admin-btn" onClick={onRetry}>
         <RefreshCw size={13} /> 重试
       </button>
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="admin-loading-state admin-page-loading" role="status" aria-live="polite">
+      <RefreshCw size={18} className="admin-spin" />
+      <span>加载中...</span>
     </div>
   );
 }

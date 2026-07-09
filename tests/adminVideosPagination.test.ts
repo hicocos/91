@@ -105,17 +105,16 @@ test("empty video tabs use the correct visual and distinguish search misses", ()
   assert.doesNotMatch(adminCss, /translateY\(-48px\)/);
 });
 
-test("video tabs do not show the loading state while switching tabs", () => {
+test("video tabs show a loading state while fetching data", () => {
   const currentSource = videosPageSource.slice(
     videosPageSource.indexOf("function CurrentVideosTab"),
     videosPageSource.indexOf("// ---------- 拉黑视频 ----------")
   );
   const blacklistSource = videosPageSource.slice(videosPageSource.indexOf("function BlacklistTab"));
-  assert.match(currentSource, /loading \? null : loadError \?/);
-  assert.match(blacklistSource, /loading \? null : loadError \?/);
-  assert.doesNotMatch(videosPageSource, /function LoadingState/);
-  assert.doesNotMatch(currentSource, /loading \? \(\s*<LoadingState \/>/);
-  assert.doesNotMatch(blacklistSource, /loading \? \(\s*<LoadingState \/>/);
+  assert.match(currentSource, /loading \? \(\s*<LoadingState \/>/);
+  assert.match(blacklistSource, /loading \? \(\s*<LoadingState \/>/);
+  assert.match(videosPageSource, /function LoadingState\(\)/);
+  assert.match(videosPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
 });
 
 test("admin videos batch delete runs deletions sequentially", () => {

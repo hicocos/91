@@ -758,6 +758,7 @@ test("admin loading spinner rotates around icon center", () => {
   assert.match(usersPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
   assert.match(tagsPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
   assert.match(crawlersPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
+  assert.match(videosPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
   assert.equal(
     Array.from(drivesPageSource.matchAll(/className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/g)).length,
     2
