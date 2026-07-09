@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   Ban,
-  CheckCircle,
   ChevronDown,
   Key,
+  RefreshCw,
   ShieldOff,
   Trash2,
 } from "lucide-react";
@@ -11,6 +11,7 @@ import * as api from "./api";
 import { useToast } from "./ToastContext";
 import { Modal } from "./Modal";
 import { ConfirmModal } from "./ConfirmModal";
+import { PasswordInput } from "./PasswordInput";
 
 type Tab = "users" | "ips";
 const MIN_PASSWORD_LENGTH = 6;
@@ -134,6 +135,11 @@ export function UsersPage() {
     }
   }
 
+  function closeResetPassword() {
+    setResetPasswordId(null);
+    setResetPasswordValue("");
+  }
+
   async function handleUnbanIP() {
     if (!unbanIPConfirm) return;
     try {
@@ -175,7 +181,7 @@ export function UsersPage() {
         </div>
         <div className="admin-users-toolbar-actions">
           {tab === "users" && (
-            <button className="admin-btn" onClick={() => setShowCreate(true)}>
+            <button className="admin-btn admin-users-create-fab" onClick={() => setShowCreate(true)}>
               新建用户
             </button>
           )}
@@ -183,7 +189,10 @@ export function UsersPage() {
       </div>
 
       {loading ? (
-        <div className="admin-loading">加载中...</div>
+        <div className="admin-loading-state admin-page-loading" role="status" aria-live="polite">
+          <RefreshCw size={20} className="admin-spin" />
+          <span>加载中...</span>
+        </div>
       ) : tab === "users" ? (
         <div className="admin-table-wrap admin-users-table-wrap">
           <table className="admin-table admin-users-table">
@@ -286,11 +295,11 @@ export function UsersPage() {
                     </td>
                     <td className="admin-banned-ips-table__actions is-actions" data-label="操作">
                       <button
-                        className="admin-btn admin-btn--small is-primary"
+                        className="admin-btn admin-btn--small"
                         onClick={() => setUnbanIPConfirm(ip.ip)}
                         title="解除封禁"
                       >
-                        <CheckCircle size={14} /> 解除封禁
+                        解除封禁
                       </button>
                     </td>
                   </tr>
@@ -331,8 +340,7 @@ export function UsersPage() {
           </div>
           <div className="admin-form__row">
             <label>密码</label>
-            <input
-              type="password"
+            <PasswordInput
               value={createPassword}
               onChange={(e) => setCreatePassword(e.target.value)}
               className={createPasswordError ? "is-invalid" : undefined}
@@ -366,10 +374,11 @@ export function UsersPage() {
       <Modal
         open={resetPasswordId !== null}
         title="重置密码"
-        onClose={() => setResetPasswordId(null)}
+        className="admin-modal--password-reset"
+        onClose={closeResetPassword}
         footer={
           <>
-            <button className="admin-btn" onClick={() => setResetPasswordId(null)}>取消</button>
+            <button className="admin-btn" onClick={closeResetPassword}>取消</button>
             <button
               className="admin-btn is-primary"
               onClick={handleResetPassword}
@@ -383,8 +392,7 @@ export function UsersPage() {
         <div className="admin-form">
           <div className="admin-form__row">
             <label>新密码</label>
-            <input
-              type="password"
+            <PasswordInput
               value={resetPasswordValue}
               onChange={(e) => setResetPasswordValue(e.target.value)}
               autoFocus
@@ -405,9 +413,10 @@ export function UsersPage() {
       <ConfirmModal
         open={deleteConfirm !== null}
         title="删除用户"
-        message={`确定要删除用户「${deleteConfirm?.username ?? ""}」吗？此操作不可撤销。`}
-        confirmText={deleting ? "删除中..." : "删除"}
+        message={`确定要删除用户「${deleteConfirm?.username ?? ""}」吗？`}
+        hideIcon
         danger
+        modalClassName="admin-modal--user-delete"
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
         loading={deleting}
@@ -418,7 +427,8 @@ export function UsersPage() {
         open={unbanIPConfirm !== null}
         title="解除IP封禁"
         message={`确定要解除 IP「${unbanIPConfirm ?? ""}」的封禁吗？`}
-        confirmText="解除封禁"
+        hideIcon
+        modalClassName="admin-modal--ip-unban"
         onConfirm={handleUnbanIP}
         onCancel={() => setUnbanIPConfirm(null)}
       />

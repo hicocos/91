@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { useToast } from "./ToastContext";
 import * as api from "./api";
+import { PasswordInput } from "./PasswordInput";
 
 export function LoginPage() {
   const { status, login, refresh } = useAuth();
@@ -98,9 +99,8 @@ export function LoginPage() {
           </div>
           <div className="admin-form__row">
             <label htmlFor="admin-login-password">密码</label>
-            <input
+            <PasswordInput
               id="admin-login-password"
-              type="password"
               value={p}
               onChange={(e) => setP(e.target.value)}
               autoComplete={setupRequired ? "new-password" : "current-password"}
@@ -109,9 +109,8 @@ export function LoginPage() {
           {setupRequired && (
             <div className="admin-form__row">
               <label htmlFor="admin-login-password-confirm">确认密码</label>
-              <input
+              <PasswordInput
                 id="admin-login-password-confirm"
-                type="password"
                 value={p2}
                 onChange={(e) => setP2(e.target.value)}
                 autoComplete="new-password"

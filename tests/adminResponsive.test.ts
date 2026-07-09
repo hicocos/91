@@ -18,6 +18,14 @@ const tagsPageSource = readFileSync(
   new URL("../src/admin/TagsPage.tsx", import.meta.url),
   "utf8"
 );
+const crawlersPageSource = readFileSync(
+  new URL("../src/admin/CrawlersPage.tsx", import.meta.url),
+  "utf8"
+);
+const drivesPageSource = readFileSync(
+  new URL("../src/admin/DrivesPage.tsx", import.meta.url),
+  "utf8"
+);
 const apiSource = readFileSync(
   new URL("../src/admin/api.ts", import.meta.url),
   "utf8"
@@ -72,6 +80,35 @@ test("admin login card fits narrow phone screens", () => {
   assert.match(body, /box-sizing\s*:\s*border-box/);
 });
 
+test("admin password fields use shared PasswordInput with eye toggle", () => {
+  const passwordInputSource = readFileSync(
+    new URL("../src/admin/PasswordInput.tsx", import.meta.url),
+    "utf8"
+  );
+  const loginPageSource = readFileSync(
+    new URL("../src/admin/LoginPage.tsx", import.meta.url),
+    "utf8"
+  );
+  const driveFormSource = readFileSync(
+    new URL("../src/admin/drive/DriveForm.tsx", import.meta.url),
+    "utf8"
+  );
+
+  assert.match(passwordInputSource, /from "lucide-react"/);
+  assert.match(passwordInputSource, /EyeOff/);
+  assert.match(passwordInputSource, /type=\{visible \? "text" : "password"\}/);
+  assert.match(passwordInputSource, /aria-label=\{visible \? "隐藏密码" : "显示密码"\}/);
+  assert.match(loginPageSource, /import \{ PasswordInput \} from "\.\/PasswordInput"/);
+  assert.match(loginPageSource, /<PasswordInput[\s\S]*?id="admin-login-password"/);
+  assert.match(loginPageSource, /<PasswordInput[\s\S]*?id="admin-login-password-confirm"/);
+  assert.doesNotMatch(loginPageSource, /type="password"/);
+  assert.match(driveFormSource, /import \{ PasswordInput \} from "\.\.\/PasswordInput"/);
+  assert.match(driveFormSource, /isSecretCredential\(f\.key\) \? \(/);
+  assert.match(driveFormSource, /<PasswordInput[\s\S]*?id=\{`\$\{idPrefix\}-credential-\$\{f\.key\}`\}/);
+  assert.doesNotMatch(usersPageSource, /type="password"/);
+  assert.doesNotMatch(driveFormSource, /type="password"/);
+});
+
 test("admin tables scroll inside the mobile viewport", () => {
   const css = mobileCss();
   // 视频/标签等"长内容"表的 mobile 形态：用 `.admin-table:not(.admin-drives-table)`
@@ -93,10 +130,16 @@ test("mobile user management cards keep identity, metadata, and actions separate
   const userStatus = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-status");
   const userStatusDot = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-status::before");
   const actionRow = ruleBody(css, ".admin-users-table__action-row");
-  const createUserModal = ruleBody(adminCss, ".admin-modal--user-create");
+  const createUserModal = ruleBody(adminCss, ".admin-modal.admin-modal--user-create");
   const createUserModalChrome = ruleBodyByContains(adminCss, ".admin-modal--user-create .admin-modal__header");
   const createUserSelect = ruleBody(adminCss, ".admin-modal--user-create .admin-form-select");
   const createUserSelectIcon = ruleBody(adminCss, ".admin-modal--user-create .admin-form-select__icon");
+  const passwordResetModal = ruleBody(adminCss, ".admin-modal.admin-modal--password-reset");
+  const passwordResetChrome = ruleBodyByContains(adminCss, ".admin-modal--password-reset .admin-modal__header");
+  const passwordResetClose = ruleBody(adminCss, ".admin-modal--password-reset .admin-modal__header .admin-btn");
+  const pageLoading = ruleBody(adminCss, ".admin-page-loading");
+  const userToolbarActions = ruleBody(css, ".admin-users-toolbar-actions");
+  const createUserFab = ruleBody(css, ".admin-users-create-fab");
   const ipIdentity = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__ip");
   const ipReason = ruleBodyByContains(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__reason");
   const ipActions = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions");
@@ -108,6 +151,12 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.doesNotMatch(usersPageSource, /<th>ID<\/th>/);
   assert.doesNotMatch(usersPageSource, /admin-users-table__id/);
   assert.match(usersPageSource, /title="创建用户"[\s\S]*?className="admin-modal--user-create"/);
+  assert.match(usersPageSource, /className="admin-loading-state admin-page-loading"/);
+  assert.match(usersPageSource, /<RefreshCw size=\{20\} className="admin-spin" \/>/);
+  assert.match(usersPageSource, /<span>加载中\.\.\.<\/span>/);
+  assert.doesNotMatch(usersPageSource, /className="admin-loading">加载中\.\.\.<\/div>/);
+  assert.match(pageLoading, /min-height\s*:\s*calc\(100dvh - 48px - var\(--space-7\) \* 2 - 44px - var\(--space-4\)\)/);
+  assert.match(createUserModal, /width\s*:\s*min\(380px,\s*100%\)/);
   assert.match(createUserModal, /border\s*:\s*0/);
   assert.match(createUserModal, /box-shadow\s*:\s*none/);
   assert.match(createUserModalChrome, /border\s*:\s*0/);
@@ -115,7 +164,65 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.match(usersPageSource, /className="admin-form-select"[\s\S]*?<ChevronDown size=\{15\} className="admin-form-select__icon"/);
   assert.match(createUserSelect, /padding-right\s*:\s*44px/);
   assert.match(createUserSelectIcon, /right\s*:\s*15px/);
+  assert.match(usersPageSource, /title="重置密码"[\s\S]*?className="admin-modal--password-reset"/);
+  assert.match(usersPageSource, /import \{ PasswordInput \} from "\.\/PasswordInput"/);
+  assert.match(usersPageSource, /<PasswordInput[\s\S]*?value=\{createPassword\}/);
+  assert.match(usersPageSource, /<PasswordInput[\s\S]*?value=\{resetPasswordValue\}/);
+  assert.match(
+    usersPageSource,
+    /title="删除用户"[\s\S]*?message=\{`确定要删除用户「\$\{deleteConfirm\?\.username \?\? ""\}」吗\？`\}/
+  );
+  assert.doesNotMatch(usersPageSource, /此操作不可撤销/);
+  assert.match(
+    usersPageSource,
+    /title="删除用户"\s*message=\{`确定要删除用户「\$\{deleteConfirm\?\.username \?\? ""\}」吗\？`\}\s*hideIcon\s*danger\s*modalClassName="admin-modal--user-delete"/
+  );
+  assert.doesNotMatch(
+    usersPageSource,
+    /title="删除用户"[\s\S]{0,200}?confirmText=/
+  );
+  assert.match(
+    usersPageSource,
+    /title="解除IP封禁"\s*message=\{`确定要解除 IP「\$\{unbanIPConfirm \?\? ""\}」的封禁吗\？`\}\s*hideIcon\s*modalClassName="admin-modal--ip-unban"/
+  );
+  assert.doesNotMatch(
+    usersPageSource,
+    /title="解除IP封禁"[\s\S]{0,200}?confirmText=/
+  );
+  assert.match(passwordResetModal, /width\s*:\s*min\(380px,\s*100%\)/);
+  assert.match(ruleBodyByContains(adminCss, ".admin-modal.admin-modal--user-delete"), /width\s*:\s*min\(380px,\s*100%\)/);
+  assert.match(ruleBodyByContains(adminCss, ".admin-modal.admin-modal--ip-unban"), /width\s*:\s*min\(380px,\s*100%\)/);
+  assert.match(passwordResetModal, /border\s*:\s*0/);
+  assert.match(passwordResetModal, /box-shadow\s*:\s*none/);
+  assert.match(passwordResetChrome, /border\s*:\s*0/);
+  assert.match(passwordResetChrome, /background\s*:\s*var\(--bg-surface\)/);
+  assert.match(passwordResetClose, /border-color\s*:\s*transparent/);
+  assert.match(passwordResetClose, /background\s*:\s*transparent/);
+  assert.match(ruleBody(adminCss, ".admin-password-input"), /position\s*:\s*relative/);
+  assert.match(ruleBody(adminCss, ".admin-password-input input"), /padding-right\s*:\s*42px/);
+  assert.match(ruleBody(adminCss, ".admin-password-input__toggle"), /position\s*:\s*absolute/);
   assert.match(usersPageSource, /className="admin-btn admin-btn--small is-danger"/);
+  assert.match(usersPageSource, /className="admin-btn admin-btn--small"[\s\S]*?title="解除封禁"[\s\S]*?>\s*解除封禁\s*<\/button>/);
+  assert.doesNotMatch(usersPageSource, /className="admin-btn admin-btn--small is-primary"[\s\S]*?解除封禁/);
+  assert.doesNotMatch(usersPageSource, /<CheckCircle size=\{14\} \/> 解除封禁/);
+  assert.match(userToolbarActions, /position\s*:\s*fixed/);
+  assert.match(userToolbarActions, /right\s*:\s*var\(--space-3\)/);
+  assert.match(userToolbarActions, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(userToolbarActions, /z-index\s*:\s*calc\(var\(--z-nav\)\s*\+\s*2\)/);
+  assert.match(createUserFab, /min-height\s*:\s*44px/);
+  assert.match(createUserFab, /background\s*:\s*var\(--bg-surface\)/);
+  assert.match(createUserFab, /box-shadow\s*:\s*0\s+12px\s+32px/);
+  assert.match(
+    usersPageSource,
+    /className="admin-users-toolbar"[\s\S]*?className="admin-users-tabs[\s\S]*?className="admin-users-toolbar-actions"[\s\S]*?tab === "users" && \(/
+  );
+  assert.match(ruleBody(adminCss, ".admin-users-toolbar"), /display\s*:\s*flex/);
+  assert.match(ruleBody(adminCss, ".admin-users-toolbar"), /justify-content\s*:\s*flex-end/);
+  assert.match(ruleBody(adminCss, ".admin-users-toolbar"), /position\s*:\s*relative/);
+  assert.match(ruleBody(adminCss, ".admin-users-tabs"), /position\s*:\s*absolute/);
+  assert.match(ruleBody(adminCss, ".admin-users-tabs"), /left\s*:\s*50%/);
+  assert.match(ruleBody(adminCss, ".admin-users-tabs"), /transform\s*:\s*translateX\(-50%\)/);
+  assert.match(ruleBody(adminCss, ".admin-users-toolbar-actions"), /justify-content\s*:\s*flex-end/);
   assert.match(userCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(userCard, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(ipCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
@@ -136,7 +243,16 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.match(ipReason, /grid-row\s*:\s*2/);
   assert.match(ipReason, /border-top\s*:\s*1px\s+solid\s+var\(--border-subtle\)/);
   assert.match(ipActions, /grid-row\s*:\s*4/);
-  assert.match(ipActions, /display\s*:\s*block/);
+  assert.match(ipActions, /display\s*:\s*flex/);
+  assert.match(ipActions, /justify-content\s*:\s*center/);
+  assert.match(
+    ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions .admin-btn"),
+    /width\s*:\s*auto/
+  );
+  assert.doesNotMatch(
+    ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions .admin-btn"),
+    /width\s*:\s*100%/
+  );
 });
 
 test("admin video management omits drive filters and page title", () => {
@@ -630,11 +746,20 @@ test("admin video management controls wrap instead of covering text on mobile", 
 
 test("admin loading spinner rotates around icon center", () => {
   const spinner = ruleBody(adminCss, ".admin-spin");
+  const pageLoading = ruleBody(adminCss, ".admin-page-loading");
 
   assert.match(spinner, /animation\s*:\s*admin-update-spin\s+0\.9s\s+linear\s+infinite/);
   assert.match(spinner, /transform-box\s*:\s*fill-box/);
   assert.match(spinner, /transform-origin\s*:\s*center/);
   assert.match(spinner, /will-change\s*:\s*transform/);
+  assert.match(pageLoading, /min-height\s*:\s*calc\(100dvh - 48px - var\(--space-7\) \* 2 - 44px - var\(--space-4\)\)/);
+  assert.match(usersPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
+  assert.match(tagsPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
+  assert.match(crawlersPageSource, /className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/);
+  assert.equal(
+    Array.from(drivesPageSource.matchAll(/className="admin-loading-state admin-page-loading" role="status" aria-live="polite"/g)).length,
+    2
+  );
   assert.match(adminCss, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.admin-spin\s*\{\s*animation-duration\s*:\s*0\.9s\s*!important/s);
 });
 

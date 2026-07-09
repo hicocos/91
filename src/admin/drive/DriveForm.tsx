@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { PasswordInput } from "../PasswordInput";
 import { P123QRCodeLogin } from "./P123QRCodeLogin";
 import { WopanQRCodeLogin } from "./WopanQRCodeLogin";
 import { GuangYaPanQRCodeLogin } from "./GuangYaPanQRCodeLogin";
@@ -233,10 +234,17 @@ export function DriveForm({
                       onChange={(e) => setCred(f.key, e.target.value)}
                       required={f.required && !isEdit}
                     />
+                  ) : isSecretCredential(f.key) ? (
+                    <PasswordInput
+                      id={`${idPrefix}-credential-${f.key}`}
+                      value={form.creds[f.key] ?? ""}
+                      onChange={(e) => setCred(f.key, e.target.value)}
+                      required={f.required && !isEdit}
+                    />
                   ) : (
                     <input
                       id={`${idPrefix}-credential-${f.key}`}
-                      type={credentialInputType(f.key)}
+                      type="text"
                       value={form.creds[f.key] ?? ""}
                       onChange={(e) => setCred(f.key, e.target.value)}
                       required={f.required && !isEdit}
@@ -252,6 +260,6 @@ export function DriveForm({
   );
 }
 
-function credentialInputType(key: string): string {
-  return /password|token|secret/i.test(key) ? "password" : "text";
+function isSecretCredential(key: string): boolean {
+  return /password|token|secret/i.test(key);
 }

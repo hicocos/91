@@ -241,7 +241,7 @@ export function CrawlersPage() {
       <div className="admin-crawler-console">
         <div className="admin-card admin-crawler-list">
           {loading ? (
-            <div className="admin-loading-state">
+            <div className="admin-loading-state admin-page-loading" role="status" aria-live="polite">
               <RefreshCw size={18} className="admin-spin" />
               <span>加载中...</span>
             </div>

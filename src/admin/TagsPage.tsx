@@ -325,7 +325,7 @@ export function TagsPage() {
             <div className="admin-tags-board">
               <div className="admin-tags-cards">
                 {loading ? (
-                  <div className="admin-loading-state">
+                  <div className="admin-loading-state admin-page-loading" role="status" aria-live="polite">
                     <RefreshCw size={20} className="admin-spin" />
                     <span>加载中...</span>
                   </div>
