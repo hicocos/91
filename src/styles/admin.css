@@ -2282,11 +2282,38 @@
 
 .admin-modal--release-notes {
   width: min(680px, 100%);
+  border: 0;
+  box-shadow: none;
+}
+
+.admin-modal--release-notes .admin-modal__header,
+.admin-modal--release-notes .admin-modal__footer {
+  border: 0;
+  background: var(--bg-surface);
+}
+
+.admin-modal--release-notes .admin-modal__header .admin-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.admin-modal--release-notes .admin-modal__header .admin-btn:hover:not(:disabled) {
+  border-color: transparent;
+}
+
+.admin-modal--release-notes .admin-modal__body {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.admin-modal--release-notes .admin-modal__footer {
+  padding-top: 0;
 }
 
 .admin-release-notes {
   display: grid;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .admin-release-notes__versions {

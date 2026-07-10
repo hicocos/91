@@ -225,21 +225,16 @@ export function AdminLayout() {
           className="admin-modal--release-notes"
           onClose={() => setAvailableUpdate(null)}
           footer={
-            <>
-              <button type="button" className="admin-btn" onClick={() => setAvailableUpdate(null)}>
-                关闭
-              </button>
-              {availableUpdate.releaseUrl && (
-                <a
-                  className="admin-btn is-primary"
-                  href={availableUpdate.releaseUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  查看发布页
-                </a>
-              )}
-            </>
+            availableUpdate.releaseUrl ? (
+              <a
+                className="admin-btn is-primary"
+                href={availableUpdate.releaseUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                查看发布页
+              </a>
+            ) : undefined
           }
         >
           <div className="admin-release-notes">

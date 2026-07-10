@@ -14,6 +14,9 @@ test("available updates open a release notes dialog", () => {
   assert.match(layoutSource, /aria-label="Release Note"/);
   assert.match(layoutSource, /availableUpdate\.releaseNotes\?\.trim\(\) \|\| "该版本未提供 Release Note。"/);
   assert.match(layoutSource, /href=\{availableUpdate\.releaseUrl\}/);
+  assert.doesNotMatch(layoutSource, /onClick=\{\(\) => setAvailableUpdate\(null\)\}>\s*关闭\s*<\/button>/);
   assert.match(adminCss, /\.admin-release-notes__content div\s*\{[^}]*white-space:\s*pre-wrap/s);
+  assert.match(adminCss, /\.admin-modal--release-notes\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/s);
+  assert.match(adminCss, /\.admin-modal--release-notes \.admin-modal__header,[\s\S]*?\.admin-modal--release-notes \.admin-modal__footer\s*\{[^}]*border:\s*0;/);
   assert.doesNotMatch(layoutSource, /dangerouslySetInnerHTML/);
 });
