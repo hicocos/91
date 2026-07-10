@@ -4223,7 +4223,7 @@
 
   .admin-videos-filter--blacklist {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     gap: 6px;
   }
@@ -4244,13 +4244,26 @@
   }
 
   .admin-videos-filter--blacklist .admin-videos-filter__actions {
-    grid-column: 2;
-    justify-self: end;
-    max-width: 100%;
+    position: fixed;
+    right: var(--space-3);
+    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    z-index: calc(var(--z-nav) + 2);
+    display: flex;
+    grid-column: auto;
+    justify-self: auto;
+    align-items: stretch;
+    width: max-content;
+    max-width: calc(100vw - (var(--space-3) * 2));
+    padding: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    background: var(--bg-surface);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+    gap: 0;
+    overflow: hidden;
   }
 
-  .admin-videos-filter--current .admin-videos-filter__batch-select,
-  .admin-videos-filter--blacklist .admin-videos-filter__batch-select {
+  .admin-videos-filter--current .admin-videos-filter__batch-select {
     position: fixed;
     right: var(--space-3);
     bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
@@ -4270,13 +4283,58 @@
     white-space: nowrap;
   }
 
+  .admin-videos-filter--blacklist .admin-videos-filter__actions .admin-videos-filter__batch {
+    position: relative;
+    grid-column: auto;
+    justify-self: auto;
+    justify-content: center;
+    min-height: 44px;
+    width: auto;
+    min-width: 76px;
+    max-width: none;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    white-space: nowrap;
+  }
+
+  .admin-videos-filter--blacklist
+    .admin-videos-filter__actions
+    .admin-videos-filter__batch:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--bg-elevated);
+    box-shadow: none;
+  }
+
+  .admin-videos-filter--blacklist
+    .admin-videos-filter__actions
+    .admin-videos-filter__batch
+    + .admin-videos-filter__batch::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 1px;
+    height: 18px;
+    background: var(--border-subtle);
+    transform: translateY(-50%);
+  }
+
+  .admin-videos-filter--blacklist .admin-blacklist-source-delete__status {
+    flex: 1 0 100%;
+    padding: 8px 12px 0;
+    text-align: center;
+  }
+
   .admin-videos-current,
   .admin-videos-blacklist {
     padding-bottom: calc(72px + env(safe-area-inset-bottom));
   }
 
   .admin-videos-current.has-bulk-actions .admin-videos-filter__batch-select,
-  .admin-videos-blacklist.has-bulk-actions .admin-videos-filter__batch-select {
+  .admin-videos-blacklist.has-bulk-actions .admin-videos-filter__actions {
     display: none;
   }
 
@@ -4355,6 +4413,17 @@
     background: var(--admin-video-card-bg);
     border-color: var(--border-accent);
     box-shadow: var(--admin-video-card-selected-shadow);
+  }
+
+  .admin-videos-table:not(.admin-drives-table).is-row-select-mode
+    tr.is-selected,
+  .admin-blacklist-table:not(.admin-drives-table).is-row-select-mode
+    tr.is-selected {
+    background: color-mix(in srgb, var(--admin-video-card-bg) 88%, var(--accent) 12%);
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      var(--shadow-md);
   }
 
   .admin-blacklist-table:not(.admin-drives-table) td[data-label="文件名"] {

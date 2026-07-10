@@ -668,7 +668,10 @@ test("admin video management controls wrap instead of covering text on mobile", 
   const blacklistFilter = allRuleBodies(css, ".admin-videos-filter--blacklist");
   const blacklistFilterField = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__search");
   const blacklistFilterActions = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__actions");
-  const blacklistFilterBatch = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__batch");
+  const blacklistFilterBatch = ruleBodyByContains(
+    css,
+    ".admin-videos-filter--blacklist .admin-videos-filter__actions .admin-videos-filter__batch"
+  );
   const bulkToolbar = ruleBodyByContains(css, ".admin-videos-current .admin-videos-list-toolbar");
   const blacklistBulkToolbar = ruleBodyByContains(css, ".admin-blacklist-bulk-toolbar");
   const currentWithBulk = ruleBodyByContains(css, ".admin-videos-current.has-bulk-actions");
@@ -711,13 +714,25 @@ test("admin video management controls wrap instead of covering text on mobile", 
   assert.match(currentFilterBatch, /background\s*:\s*var\(--bg-surface\)/);
   assert.match(currentFilterBatch, /white-space\s*:\s*nowrap/);
   assert.match(blacklistFilter, /display\s*:\s*grid/);
-  assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
   assert.match(blacklistFilterField, /min-width\s*:\s*0/);
-  assert.match(blacklistFilterActions, /grid-column\s*:\s*2/);
-  assert.match(blacklistFilterActions, /max-width\s*:\s*100%/);
-  assert.match(blacklistFilterBatch, /position\s*:\s*fixed/);
+  assert.match(blacklistFilterActions, /position\s*:\s*fixed/);
+  assert.match(blacklistFilterActions, /right\s*:\s*var\(--space-3\)/);
+  assert.match(blacklistFilterActions, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+  assert.match(blacklistFilterActions, /grid-column\s*:\s*auto/);
+  assert.match(blacklistFilterActions, /width\s*:\s*max-content/);
+  assert.match(blacklistFilterActions, /max-width\s*:\s*calc\(100vw\s*-\s*\(var\(--space-3\)\s*\*\s*2\)\)/);
+  assert.match(blacklistFilterActions, /border\s*:\s*1px solid var\(--border-subtle\)/);
+  assert.match(blacklistFilterActions, /background\s*:\s*var\(--bg-surface\)/);
+  assert.match(blacklistFilterActions, /overflow\s*:\s*hidden/);
+  assert.match(blacklistFilterBatch, /position\s*:\s*relative/);
+  assert.match(blacklistFilterBatch, /min-height\s*:\s*44px/);
+  assert.match(blacklistFilterBatch, /border\s*:\s*0/);
+  assert.match(blacklistFilterBatch, /border-radius\s*:\s*0/);
+  assert.match(blacklistFilterBatch, /background\s*:\s*transparent/);
+  assert.match(blacklistFilterBatch, /box-shadow\s*:\s*none/);
   assert.match(blacklistFilterBatch, /white-space\s*:\s*nowrap/);
-  assert.match(css, /\.admin-videos-current\.has-bulk-actions \.admin-videos-filter__batch-select,[\s\S]*?\.admin-videos-blacklist\.has-bulk-actions \.admin-videos-filter__batch-select\s*\{[^}]*display\s*:\s*none/s);
+  assert.match(css, /\.admin-videos-current\.has-bulk-actions \.admin-videos-filter__batch-select,[\s\S]*?\.admin-videos-blacklist\.has-bulk-actions \.admin-videos-filter__actions\s*\{[^}]*display\s*:\s*none/s);
   assert.match(bulkToolbar, /position\s*:\s*fixed/);
   assert.match(bulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkToolbar, /margin\s*:\s*0/);
@@ -782,6 +797,10 @@ test("mobile video management uses compact theme-aware video cards", () => {
   const actionsLabel = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions::before");
   const actionButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn");
   const dangerButton = ruleBody(css, ".admin-videos-table:not(.admin-drives-table) td.is-actions .admin-btn.is-danger");
+  const selectedCard = ruleBodyByContains(
+    css,
+    ".admin-videos-table:not(.admin-drives-table).is-row-select-mode"
+  );
 
   assert.match(card, /--admin-video-card-bg\s*:\s*var\(--bg-surface\)/);
   assert.match(card, /background\s*:\s*var\(--admin-video-card-bg\)/);
@@ -830,6 +849,16 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.match(actionButton, /border-radius\s*:\s*8px/);
   assert.match(dangerButton, /border-color\s*:\s*var\(--admin-video-card-danger-border\)/);
   assert.match(dangerButton, /color\s*:\s*var\(--admin-video-card-danger\)/);
+  assert.match(
+    css,
+    /\.admin-videos-table:not\(\.admin-drives-table\)\.is-row-select-mode\s+tr\.is-selected,\s*\.admin-blacklist-table:not\(\.admin-drives-table\)\.is-row-select-mode\s+tr\.is-selected\s*\{/s
+  );
+  assert.doesNotMatch(css, /:root\[data-theme="sky"\][^{}]*\.admin-videos-table[^{}]*\.is-row-select-mode/);
+  assert.match(selectedCard, /background\s*:\s*color-mix\(in srgb,\s*var\(--admin-video-card-bg\) 88%,\s*var\(--accent\) 12%\)/);
+  assert.match(selectedCard, /border-color\s*:\s*var\(--accent\)/);
+  assert.match(selectedCard, /0 0 0 1px var\(--accent\)/);
+  assert.doesNotMatch(selectedCard, /0 0 0 3px/);
+  assert.match(selectedCard, /var\(--shadow-md\)/);
 });
 
 test("video edit modal stays focused on common metadata", () => {
