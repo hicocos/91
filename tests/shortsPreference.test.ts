@@ -54,6 +54,21 @@ test("shorts horizontal video swipe seeks relative to the current playback time"
   assert.doesNotMatch(shortsPageSource, /touch\.clientX - rect\.left\) \/ Math\.max\(1,\s*rect\.width\)/);
 });
 
+test("shorts long-press release does not become a click that pauses playback", () => {
+  assert.match(
+    shortsPageSource,
+    /const handleTouchEnd = \(event: TouchEvent\) => \{[\s\S]*?const wasFastPress = active;[\s\S]*?if \(wasSeeking \|\| wasFastPress\) \{\s*suppressNextSyntheticClick\(\);/
+  );
+  assert.match(
+    shortsPageSource,
+    /function suppressNextSyntheticClick\(\) \{[\s\S]*?suppressNextClickRef\.current = true;[\s\S]*?SHORTS_SYNTHETIC_CLICK_RESET_MS/
+  );
+  assert.match(
+    shortsPageSource,
+    /if \(suppressNextClickRef\.current\) \{\s*suppressNextClickRef\.current = false;\s*clearSuppressNextClickResetTimer\(\);[\s\S]*?return;/
+  );
+});
+
 test("shorts progress listeners rebind when deferred videos mount", () => {
   assert.match(
     shortsPageSource,
@@ -62,7 +77,7 @@ test("shorts progress listeners rebind when deferred videos mount", () => {
   assert.match(shortsPageSource, /if \(!shouldMount\) \{\s*setDuration\(0\);\s*setCurrentTime\(0\);/);
   assert.match(
     shortsPageSource,
-    /\}, \[shouldMount, shouldLoad, item\.id, index, isActive, muted, volume, setMuted, setVolume, onActiveReadyForPreload, onActiveNeedsPriority, onSourceCached, isVideoPausedByUser\]\);/
+    /getVideoElement,[\s\S]*?shouldLoad,[\s\S]*?shouldMount,[\s\S]*?usesSharedVideo,[\s\S]*?volume,[\s\S]*?\]\);/
   );
 });
 
@@ -83,11 +98,11 @@ test("shorts paused overlay follows native video playback events", () => {
 
 test("shorts preserves a user pause while the active video is still loading", () => {
   assert.match(shortsPageSource, /const userPausedIndexRef = useRef<number \| null>\(null\);/);
-  assert.match(shortsPageSource, /const \[userPausedIndex, setUserPausedIndexState\] = useState<number \| null>\(null\);/);
+  assert.match(shortsPageSource, /const \[, setUserPausedIndexState\] = useState<number \| null>\(null\);/);
   assert.match(shortsPageSource, /const setUserPausedForIndex = useCallback/);
   assert.match(
     shortsPageSource,
-    /if \(userPausedIndex === idx\) \{\s*if \(!video\.paused\) video\.pause\(\);\s*\} else if \(video\.paused\) \{\s*video\.play\(\)\.catch/
+    /const canContinue = \(\) =>[\s\S]*?!isVideoPausedByUser\(index\);/
   );
   assert.match(
     shortsPageSource,
@@ -103,7 +118,7 @@ test("shorts preserves a user pause while the active video is still loading", ()
   );
   assert.match(
     shortsPageSource,
-    /const shouldResume =\s*isVideoPausedByUser\(index\) \|\| \(video\.paused && paused && !isBuffering\);/
+    /const shouldResume =\s*isVideoPausedByUser\(index\) \|\| \(video\.paused && !isBuffering\);/
   );
   assert.match(
     shortsPageSource,
@@ -111,7 +126,27 @@ test("shorts preserves a user pause while the active video is still loading", ()
   );
   assert.match(
     shortsPageSource,
-    /const handlePlayingOrCanPlay = \(\) => \{[\s\S]*?if \(isActive && isVideoPausedByUser\(index\)\) \{[\s\S]*?video\.pause\(\);[\s\S]*?setPaused\(true\);[\s\S]*?return;/
+    /const handleCanPlay = \(\) => \{[\s\S]*?if \(isActive && isVideoPausedByUser\(index\)\) \{[\s\S]*?video\.pause\(\);[\s\S]*?setPaused\(true\);[\s\S]*?return;/
+  );
+});
+
+test("shorts retries interrupted active playback and exposes rejected autoplay", () => {
+  assert.match(shortsPageSource, /const attemptPlay = \(\) => \{/);
+  assert.match(shortsPageSource, /request = video\.play\(\);/);
+  assert.match(
+    shortsPageSource,
+    /errorName === "AbortError" && retryCount < 2[\s\S]*?window\.setTimeout\(attemptPlay, retryCount \* 120\)/
+  );
+  assert.match(shortsPageSource, /video\.addEventListener\("loadeddata", retryWhenReady\);/);
+  assert.match(shortsPageSource, /video\.addEventListener\("canplay", retryWhenReady\);/);
+  assert.match(
+    shortsPageSource,
+    /const markPlayBlocked = \(\) => \{[\s\S]*?setIsBuffering\(false\);[\s\S]*?setPaused\(true\);/
+  );
+  assert.match(shortsPageSource, /autoPlay=\{isActive\}/);
+  assert.match(
+    shortsPageSource,
+    /if \(video\?\.paused && !isBuffering\) \{[\s\S]*?video\.play\(\)\.catch[\s\S]*?\/\/ \u5355\u51fb\u6302\u8d77/
   );
 });
 
@@ -227,12 +262,12 @@ test("shorts keeps buffered sources inside a six video window", () => {
   );
   assert.match(
     shortsPageSource,
-    /const shouldMount = isActiveSlide \|\| isInCacheWindow \|\| shouldPreload;/
+    /const shouldMount =\s*isActiveSlide \|\|\s*\(!useIOSSharedVideo && \(isInCacheWindow \|\| shouldPreload\)\);/
   );
   // 视频窗口内已缓冲过的视频都保留 src，来回切换均复用缓存
   assert.match(
     shortsPageSource,
-    /const shouldRetainCached =\s*isInCacheWindow && !isActiveSlide && cacheableSourceIds\.has\(item\.id\);/
+    /const shouldRetainCached =\s*!useIOSSharedVideo &&\s*isInCacheWindow &&\s*!isActiveSlide &&\s*cacheableSourceIds\.has\(item\.id\);/
   );
   // 窗口内视频一旦 canplay 就标记可复用，快速划走的视频回滑也有缓存
   assert.match(
@@ -244,15 +279,178 @@ test("shorts keeps buffered sources inside a six video window", () => {
     shortsPageSource,
     /if \(shouldLoad && videoHasBufferedData\(video\)\) \{\s*onSourceCached\(item\.id\);/
   );
-  const playbackBlock = /\/\/ 控制每个 video 的播放状态[\s\S]*?\}, \[activeIndex, items\.length, userPausedIndex\]\);/.exec(shortsPageSource);
-  assert.ok(playbackBlock, "parent playback effect should be present");
+  const playbackBlock = /\/\/ 先停掉所有非当前屏[\s\S]*?\}, \[activeIndex, items\.length\]\);/.exec(shortsPageSource);
+  assert.ok(playbackBlock, "parent inactive-video pause effect should be present");
+  assert.doesNotMatch(playbackBlock[0], /video\.play\(\)/);
   assert.doesNotMatch(playbackBlock[0], /currentTime\s*=\s*0/);
-  assert.doesNotMatch(playbackBlock[0], /video\.muted|video\.volume|applyVideoAudioState/);
   assert.match(shortsPageSource, /shouldEagerLoad=\{shouldEagerLoad\}/);
   assert.match(shortsPageSource, /preload=\{shouldLoad \? \(shouldEagerLoad \? "auto" : "metadata"\) : "none"\}/);
 });
 
-test("shorts volume changes do not trigger playback control", () => {
+test("shorts reuses one persistent media element across iOS slides", () => {
+  assert.match(shortsPageSource, /const useIOSSharedVideo = shouldUseIOSSharedVideo\(\);/);
+  assert.match(shortsPageSource, /function shouldUseIOSSharedVideo\(\)/);
+  assert.match(shortsPageSource, /\\biPhone\\b\|\\biPad\\b\|\\biPod\\b/);
+  assert.match(shortsPageSource, /navigator\.platform === "MacIntel" && navigator\.maxTouchPoints > 1/);
+  assert.match(
+    shortsPageSource,
+    /const shouldPreload =\s*!useIOSSharedVideo &&\s*activeReadyForPreload/
+  );
+  assert.match(shortsPageSource, /const iosSharedVideoRef = useRef<HTMLVideoElement \| null>\(null\);/);
+  assert.match(shortsPageSource, /if \(!video\) \{\s*video = document\.createElement\("video"\);/);
+  assert.match(shortsPageSource, /slot\.appendChild\(video\);/);
+  assert.match(
+    shortsPageSource,
+    /video\.dataset\.shortsVideoId = item\.id;[\s\S]*?video\.src = item\.videoSrc;[\s\S]*?video\.load\(\);/
+  );
+  assert.match(shortsPageSource, /className="shorts-slide__ios-video-slot"/);
+  assert.match(shortsPageSource, /sharedVideoRef=\{\s*useIOSSharedVideo \? iosSharedVideoRef : undefined/);
+  assert.match(
+    shortsCssSource,
+    /\.shorts-slide__video--ios-shared\s*\{[\s\S]*?z-index:\s*2;/
+  );
+  assert.doesNotMatch(shortsPageSource, /key=\{item\.id\}[\s\S]{0,300}document\.createElement\("video"\)/);
+});
+
+test("stale iOS play work cannot control a later shared source", () => {
+  assert.match(shortsPageSource, /let disposed = false;/);
+  assert.match(shortsPageSource, /disposed = true;/);
+  assert.match(shortsPageSource, /if \(retryTimer !== null\) window\.clearTimeout\(retryTimer\);/);
+  assert.match(
+    shortsPageSource,
+    /getVideoElement\(\) === video[\s\S]*?video\.dataset\.shortsVideoId === item\.id/
+  );
+  assert.match(
+    shortsPageSource,
+    /const belongsToSlide = \(\) =>[\s\S]*?video\.dataset\.shortsVideoId === item\.id/
+  );
+});
+
+test("iOS loops restart under app control and progress follows presented frames", () => {
+  assert.match(shortsPageSource, /video\.loop = false;/);
+  assert.match(shortsPageSource, /const loopRestartPendingRef = useRef\(false\);/);
+  assert.match(shortsPageSource, /const handleIOSLoopEnded = \(\) => \{/);
+  assert.match(shortsPageSource, /video\.addEventListener\("ended", handleIOSLoopEnded\);/);
+  assert.match(
+    shortsPageSource,
+    /loopRestartPendingRef\.current = true;[\s\S]*?setCurrentTime\(0\);[\s\S]*?setIsBuffering\(true\);[\s\S]*?video\.currentTime = 0;/
+  );
+  assert.match(
+    shortsPageSource,
+    /const handleIOSLoopEnded = \(\) => \{[\s\S]*?if \(loopRestartPendingRef\.current\) \{\s*failRestart\(loopRestartAttemptRef\.current\);\s*return;/
+  );
+  assert.match(shortsPageSource, /const IOS_LOOP_FRAME_WATCHDOG_MS = \d+;/);
+  assert.match(shortsPageSource, /const IOS_LOOP_RELOAD_TIMEOUT_MS = \d+;/);
+  assert.match(shortsPageSource, /\}, timeoutMs\);/);
+  assert.match(
+    shortsPageSource,
+    /if \(loopRestartReloadedRef\.current\) \{[\s\S]*?failRestart\(attempt\);[\s\S]*?loopRestartReloadedRef\.current = true;[\s\S]*?loopFrameBarrierRef\.current = null;[\s\S]*?video\.load\(\);/
+  );
+  assert.match(shortsPageSource, /video\.requestVideoFrameCallback\(handlePresentedFrame\)/);
+  assert.match(shortsPageSource, /const mediaTime = metadata\.mediaTime;/);
+  assert.match(
+    shortsPageSource,
+    /loopRestartPendingRef\.current[\s\S]*?metadata\.presentationTime >= frameBarrier/
+  );
+  assert.match(shortsPageSource, /loopFrameBarrierRef\.current = performance\.now\(\);/);
+  assert.match(
+    shortsPageSource,
+    /if \(canObservePresentedFrames\) \{[\s\S]*?video\.currentTime = 0;[\s\S]*?\} else \{[\s\S]*?loopRestartReloadedRef\.current = true;[\s\S]*?video\.load\(\);/
+  );
+  assert.match(shortsPageSource, /confirmPresentedPlayback\(mediaTime\);/);
+  assert.match(shortsPageSource, /video\.cancelVideoFrameCallback\(frameCallbackId\);/);
+
+  const playingStart = shortsPageSource.indexOf("const handlePlaying = () => {");
+  const playingEnd = shortsPageSource.indexOf("const handleProgress = () => {", playingStart);
+  assert.ok(playingStart >= 0 && playingEnd > playingStart);
+  const playingBlock = shortsPageSource.slice(playingStart, playingEnd);
+  const waitingForFrameBranch =
+    /if \(waitForIOSPlaybackMotion\) \{([\s\S]*?)\} else \{([\s\S]*?)\}/.exec(
+      playingBlock
+    );
+  assert.ok(waitingForFrameBranch);
+  assert.doesNotMatch(waitingForFrameBranch[1], /confirmPresentedPlayback|setIsBuffering\(false\)/);
+  assert.match(waitingForFrameBranch[2], /confirmPresentedPlayback\(\);/);
+
+  const confirmationStart = shortsPageSource.indexOf(
+    "const confirmPresentedPlayback = useCallback("
+  );
+  const confirmationEnd = shortsPageSource.indexOf(
+    "// 点赞数和\"是否已点过赞\"状态",
+    confirmationStart
+  );
+  assert.ok(confirmationStart >= 0 && confirmationEnd > confirmationStart);
+  const confirmationBlock = shortsPageSource.slice(
+    confirmationStart,
+    confirmationEnd
+  );
+  assert.match(confirmationBlock, /clearLoopRestartWatchdog\(\);/);
+  assert.match(confirmationBlock, /loopRestartPendingRef\.current = false;/);
+  assert.match(confirmationBlock, /loopRestartAwaitingFrameRef\.current = false;/);
+  assert.match(confirmationBlock, /hasStartedPlayingRef\.current = true;/);
+  assert.match(confirmationBlock, /setIsBuffering\(false\);/);
+  assert.match(confirmationBlock, /setCurrentTime\(mediaTime\);/);
+  assert.match(shortsPageSource, /const presentedFrameAdvanced =/);
+  assert.match(
+    shortsPageSource,
+    /if \(playbackNeedsMotionConfirmation\) \{[\s\S]*?playbackMotionFrameCountRef\.current \+= 1;[\s\S]*?playbackMotionFrameCountRef\.current >= 2[\s\S]*?confirmPresentedPlayback\(mediaTime\);/
+  );
+
+  // The ordinary per-slide videos keep native looping; only the iOS shared
+  // element uses the controlled restart path.
+  assert.match(
+    shortsPageSource,
+    /<video[\s\S]*?autoPlay=\{isActive\}[\s\S]*?playsInline[\s\S]*?loop[\s\S]*?muted=\{muted\}/
+  );
+});
+
+test("shorts buffering state survives stalled and self-heals on real progress", () => {
+  const stalledStart = shortsPageSource.indexOf("const handleStalled = () => {");
+  const stalledEnd = shortsPageSource.indexOf("const handleError = () => {", stalledStart);
+  assert.ok(stalledStart >= 0 && stalledEnd > stalledStart);
+  const stalledBlock = shortsPageSource.slice(stalledStart, stalledEnd);
+  assert.doesNotMatch(stalledBlock, /setIsBuffering\(true\)/);
+  assert.doesNotMatch(stalledBlock, /hasStartedPlayingRef\.current = false/);
+  assert.match(stalledBlock, /onActiveNeedsPriority\(index\);/);
+
+  const timeStart = shortsPageSource.indexOf("const handleTime = () => {");
+  const timeEnd = shortsPageSource.indexOf("const handleWaiting = () => {", timeStart);
+  assert.ok(timeStart >= 0 && timeEnd > timeStart);
+  const timeBlock = shortsPageSource.slice(timeStart, timeEnd);
+  assert.match(timeBlock, /const mediaTimeAdvanced =/);
+  assert.match(
+    timeBlock,
+    /if \(\s*!usesPresentedFrameProgress &&\s*!loopRestartPendingRef\.current &&\s*!video\.seeking &&\s*!scrubbingRef\.current\s*\) \{\s*setCurrentTime\(mediaTime\);/
+  );
+  assert.match(timeBlock, /!video\.paused/);
+  assert.match(timeBlock, /!video\.seeking/);
+  assert.match(timeBlock, /confirmPresentedPlayback\(mediaTime\);/);
+
+  const waitingStart = shortsPageSource.indexOf("const handleWaiting = () => {");
+  const waitingEnd = shortsPageSource.indexOf("const cacheAvailableSource", waitingStart);
+  assert.ok(waitingStart >= 0 && waitingEnd > waitingStart);
+  const waitingBlock = shortsPageSource.slice(waitingStart, waitingEnd);
+  assert.match(waitingBlock, /SHORTS_BUFFERING_INDICATOR_DELAY_MS/);
+  assert.match(waitingBlock, /hasStartedPlayingRef\.current/);
+});
+
+test("shorts grants preload only after the active video really started", () => {
+  assert.match(shortsPageSource, /const hasStartedPlayingRef = useRef\(false\);/);
+  assert.match(
+    shortsPageSource,
+    /const confirmPresentedPlayback = useCallback\([\s\S]*?hasStartedPlayingRef\.current = true;/
+  );
+  assert.match(
+    shortsPageSource,
+    /const handlePlaying = \(\) => \{[\s\S]*?confirmPresentedPlayback\(\);/
+  );
+  assert.match(
+    shortsPageSource,
+    /currentVideo\.paused \|\|[\s\S]*?!hasStartedPlayingRef\.current \|\|[\s\S]*?onActiveNeedsPriority\(index\);/
+  );
+});
+
+test("shorts sound toggle grants playback in the direct user click", () => {
   assert.match(shortsPageSource, /function applyVideoAudioState/);
   assert.doesNotMatch(shortsPageSource, /onFirstPointer/);
   assert.doesNotMatch(shortsPageSource, /currentPage\.addEventListener\("pointerdown"/);
@@ -267,15 +465,19 @@ test("shorts volume changes do not trigger playback control", () => {
   assert.match(shortsPageSource, /function normalizeVideoPlaybackRate/);
   assert.match(shortsPageSource, /function stabilizeVideoAfterAudioToggle/);
   assert.match(shortsPageSource, /normalizeVideoPlaybackRate\(activeVideo\);/);
-  assert.match(shortsPageSource, /videoRefs\.current\.get\(activeIndexRef\.current\) === activeVideo/);
-  assert.match(shortsPageSource, /stabilizeVideoAfterAudioToggle\(\s*activeVideo,\s*\(\) => wasPlaying && canResumeActiveVideo\(\)\s*\);/);
+  assert.match(shortsPageSource, /getVideoAtIndex\(activeIndexRef\.current\) === activeVideo/);
+  assert.match(
+    shortsPageSource,
+    /applyVideoAudioState\(activeVideo, next, volume\);[\s\S]*?activeVideo\.play\(\)\.catch[\s\S]*?setMuted\(next\);/
+  );
+  assert.match(shortsPageSource, /stabilizeVideoAfterAudioToggle\(\s*activeVideo,\s*canResumeActiveVideo\s*\);/);
   assert.match(shortsPageSource, /if \(shouldResume\(\) && video\.paused && !video\.ended\) \{/);
   assert.match(shortsPageSource, /for \(const delay of \[80, 240, 600\]\)/);
   assert.match(
     shortsPageSource,
-    /useEffect\(\(\) => \{\s*videoRefs\.current\.forEach\(\(video\) => \{\s*applyVideoAudioState\(video, muted, volume\);/
+    /const sharedVideo = iosSharedVideoRef\.current;\s*if \(sharedVideo\) applyVideoAudioState\(sharedVideo, muted, volume\);/
   );
-  assert.match(shortsPageSource, /\}, \[muted, volume, items\.length\]\);/);
+  assert.match(shortsPageSource, /\}, \[muted, volume, items\.length, useIOSSharedVideo\]\);/);
 });
 
 test("shorts page defaults to immersive playback without fullscreen controls", () => {
