@@ -34,6 +34,7 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
   const [view, setView] = useState<ViewMode>("grid");
   const [page, setPage] = useState(1);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [listingError, setListingError] = useState(false);
   const [items, setItems] = useState<VideoItem[]>([]);
   const [total, setTotal] = useState(0);
   const hasActiveFilter = keyword.trim().length > 0 || tag.trim().length > 0;
@@ -50,13 +51,20 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
     if (isInitialLoad) {
       setInitialLoading(true);
     }
-    fetchListing(page, tag ? PAGE_SIZE_TAG : PAGE_SIZE_DEFAULT, { q: keyword, tag, sort }).then((r) => {
-      if (!active) return;
-      setItems(r.items ?? []);
-      setTotal(r.total ?? 0);
-      hasLoadedListingRef.current = true;
-      setInitialLoading(false);
-    });
+    setListingError(false);
+    fetchListing(page, tag ? PAGE_SIZE_TAG : PAGE_SIZE_DEFAULT, { q: keyword, tag, sort })
+      .then((r) => {
+        if (!active) return;
+        setItems(r.items ?? []);
+        setTotal(r.total ?? 0);
+        hasLoadedListingRef.current = true;
+      })
+      .catch(() => {
+        if (active) setListingError(true);
+      })
+      .finally(() => {
+        if (active) setInitialLoading(false);
+      });
     return () => {
       active = false;
     };
@@ -85,6 +93,12 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
         />
         {initialLoading ? (
           <VideoGrid videos={items} loading compact={view === "compact"} skeletonCount={12} />
+        ) : listingError && items.length === 0 ? (
+          <AdminEmptyVisual
+            variant="no-results"
+            text="视频列表加载失败，请刷新重试"
+            className="admin-empty-state admin-empty-state--plain listing-empty-state"
+          />
         ) : items.length === 0 ? (
           <AdminEmptyVisual
             variant={hasActiveFilter ? "no-results" : "empty"}

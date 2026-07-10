@@ -327,6 +327,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": mapVideos(items),
 		"total": total,

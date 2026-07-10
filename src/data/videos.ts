@@ -8,6 +8,9 @@ export async function fetchHomeVideos(excludeIds?: string[]): Promise<VideoItem[
       .filter((id) => id.length > 0)
   );
   const firstBatch = await apiGet<VideoItem[]>("/api/home");
+  if (!Array.isArray(firstBatch)) {
+    throw new Error("Invalid /api/home response");
+  }
   if (recentIds.size === 0 || firstBatch.every((item) => !recentIds.has(item.id))) {
     return firstBatch;
   }
@@ -35,7 +38,7 @@ export async function fetchHomeVideos(excludeIds?: string[]): Promise<VideoItem[
   return selected;
 }
 
-export function fetchListing(
+export async function fetchListing(
   page: number,
   pageSize: number,
   params?: { q?: string; tag?: string; sort?: string; includeTotal?: boolean }
@@ -48,9 +51,17 @@ export function fetchListing(
   if (params?.tag) qs.set("tag", params.tag);
   if (params?.sort) qs.set("sort", params.sort);
   if (params?.includeTotal === false) qs.set("count", "false");
-  return apiGet<{ items: VideoItem[]; total: number }>(
+  const result = await apiGet<{ items: VideoItem[]; total: number }>(
     `/api/list?${qs.toString()}`
-  ).catch(() => ({ items: [], total: 0 }));
+  );
+  if (
+    !result ||
+    !Array.isArray(result.items) ||
+    typeof result.total !== "number"
+  ) {
+    throw new Error("Invalid /api/list response");
+  }
+  return result;
 }
 
 export function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
@@ -176,10 +187,57 @@ export function fetchShortsNext(
   }).catch(() => ({ items: [], total: 0, roundComplete: false }));
 }
 
+const API_GET_MAX_ATTEMPTS = 2;
+const API_GET_RETRY_DELAY_MS = 200;
+const API_GET_TIMEOUT_MS = 10_000;
+
+class HTTPStatusError extends Error {
+  constructor(readonly status: number) {
+    super(`HTTP ${status}`);
+    this.name = "HTTPStatusError";
+  }
+}
+
+function isRetryableGetError(error: unknown): boolean {
+  if (!(error instanceof HTTPStatusError)) return true;
+  return error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: "include" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= API_GET_MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutID = globalThis.setTimeout(
+      () => controller.abort(),
+      API_GET_TIMEOUT_MS
+    );
+    try {
+      const res = await fetch(path, {
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new HTTPStatusError(res.status);
+      return (await res.json()) as T;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= API_GET_MAX_ATTEMPTS || !isRetryableGetError(error)) {
+        throw error;
+      }
+    } finally {
+      globalThis.clearTimeout(timeoutID);
+    }
+
+    await wait(API_GET_RETRY_DELAY_MS);
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("API request failed");
 }
 
 async function apiJSON<T>(path: string, init: RequestInit): Promise<T> {

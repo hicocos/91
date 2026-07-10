@@ -126,11 +126,13 @@ export default function HomePage() {
   const [rankingLoading, setRankingLoading] = useState(cachedRanking === null);
   const [rankingError, setRankingError] = useState(false);
   const [latestLoading, setLatestLoading] = useState(cachedLatestBatch === null);
+  const [latestError, setLatestError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchPage, setSearchPage] = useState(1);
   const [searchItems, setSearchItems] = useState<VideoItem[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
   const [searchSort, setSearchSort] = useState<SortKey>("hot");
   const [searchView, setSearchView] = useState<ViewMode>("grid");
   const homeRequestVersion = useRef(1);
@@ -147,6 +149,7 @@ export default function HomePage() {
     setRankingLoading(true);
     setRankingError(false);
     setLatestLoading(true);
+    setLatestError(false);
 
     const excludeIds = loadRecentHomeVideoIds();
     const [rankingResult, latestResult] = await Promise.allSettled([
@@ -160,14 +163,14 @@ export default function HomePage() {
       cachedRanking = rankingResult.value;
       setRankingVideos(rankingResult.value);
     } else {
-      cachedRanking = null;
-      setRankingVideos([]);
       setRankingError(true);
     }
     if (latestResult.status === "fulfilled") {
       cachedLatestPool = latestResult.value.items;
       const latestBatch = cacheNextLatestBatch(latestResult.value.items, DESKTOP_COUNT);
       setLatestVideos(latestBatch);
+    } else {
+      setLatestError(true);
     }
     setRankingLoading(false);
     setLatestLoading(false);
@@ -214,11 +217,10 @@ export default function HomePage() {
           rememberHomeVideos(rankingItems);
           cachedRanking = rankingItems;
           setRankingVideos(rankingItems);
+          setRankingError(false);
         })
         .catch(() => {
           if (!active || requestVersion !== homeRequestVersion.current) return;
-          cachedRanking = null;
-          setRankingVideos([]);
           setRankingError(true);
         })
         .finally(() => {
@@ -230,11 +232,17 @@ export default function HomePage() {
 
     if (cachedLatestPool === null) {
       setLatestLoading(true);
+      setLatestError(false);
       fetchListing(1, LATEST_POOL_SIZE, { sort: "latest", includeTotal: false })
         .then((latestResult) => {
           if (!active || requestVersion !== homeRequestVersion.current) return;
           cachedLatestPool = latestResult.items;
           setLatestVideos(cacheNextLatestBatch(latestResult.items, DESKTOP_COUNT));
+          setLatestError(false);
+        })
+        .catch(() => {
+          if (!active || requestVersion !== homeRequestVersion.current) return;
+          setLatestError(true);
         })
         .finally(() => {
           if (active && requestVersion === homeRequestVersion.current) {
@@ -254,11 +262,13 @@ export default function HomePage() {
       setSearchItems([]);
       setSearchTotal(0);
       setSearchLoading(false);
+      setSearchError(false);
       return;
     }
 
     let active = true;
     setSearchLoading(true);
+    setSearchError(false);
     fetchListing(searchPage, HOME_SEARCH_PAGE_SIZE, {
       q: activeSearchQuery,
       tag: activeTag,
@@ -268,6 +278,12 @@ export default function HomePage() {
         if (!active) return;
         setSearchItems(result.items ?? []);
         setSearchTotal(result.total ?? 0);
+      })
+      .catch(() => {
+        if (!active) return;
+        setSearchItems([]);
+        setSearchTotal(0);
+        setSearchError(true);
       })
       .finally(() => {
         if (active) setSearchLoading(false);
@@ -291,7 +307,8 @@ export default function HomePage() {
   const hasActiveFilter = hasActiveSearch || hasActiveTag;
   const searchTotalPages = Math.max(1, Math.ceil(searchTotal / HOME_SEARCH_PAGE_SIZE));
   const hasAnyVideos = ranking.length > 0 || latest.length > 0;
-  const showEmptyHome = !homeLoading && !rankingError && !hasAnyVideos;
+  const hasHomeError = rankingError || latestError;
+  const showEmptyHome = !homeLoading && !hasHomeError && !hasAnyVideos;
 
   return (
     <AppShell mobileAutoHideNav>
@@ -321,6 +338,12 @@ export default function HomePage() {
           />
           {searchLoading ? (
             <VideoGrid videos={searchItems} loading compact={searchView === "compact"} skeletonCount={12} />
+          ) : searchError ? (
+            <AdminEmptyVisual
+              variant="no-results"
+              text="视频列表加载失败，请刷新重试"
+              className="admin-empty-state admin-empty-state--plain home-empty-state"
+            />
           ) : searchItems.length === 0 ? (
             <AdminEmptyVisual
               variant="no-results"
@@ -365,7 +388,12 @@ export default function HomePage() {
 
           <div className="container page-section">
             <SectionHeader title="最新视频" />
-            <VideoGrid videos={latest} loading={latestLoading} skeletonCount={displayCount} />
+            <VideoGrid
+              videos={latest}
+              loading={latestLoading}
+              emptyText={latestError ? "最新视频加载失败，请刷新重试" : undefined}
+              skeletonCount={displayCount}
+            />
           </div>
         </>
       )}

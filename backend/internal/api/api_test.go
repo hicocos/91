@@ -617,6 +617,9 @@ func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	var got struct {
 		Items []VideoDTO `json:"items"`
 		Total int        `json:"total"`

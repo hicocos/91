@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchHomeVideos } from "../src/data/videos";
+import { fetchHomeVideos, fetchListing } from "../src/data/videos";
 
 test("home recommendations use a body-free GET request", async (t) => {
   const originalFetch = globalThis.fetch;
@@ -24,6 +24,31 @@ test("home recommendations use a body-free GET request", async (t) => {
   assert.equal(requestPath, "/api/home");
   assert.equal(requestInit?.method, undefined);
   assert.equal(requestInit?.body, undefined);
+  assert.equal(requestInit?.cache, "no-store");
+  assert.equal(new Headers(requestInit?.headers).get("Accept"), "application/json");
+});
+
+test("home recommendations retry one transient GET failure", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response("unavailable", { status: 503 });
+    }
+    return new Response(JSON.stringify([{ id: "video-after-retry" }]), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const result = await fetchHomeVideos();
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.map((item) => item.id), ["video-after-retry"]);
 });
 
 test("home recommendations replace recently shown candidates", async (t) => {
@@ -76,7 +101,7 @@ test("home recommendations keep the first batch when replacement fails", async (
 
   const result = await fetchHomeVideos(["recent-video"]);
 
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.deepEqual(
     result.map((item) => item.id),
     ["recent-video", "new-video"]
@@ -85,11 +110,33 @@ test("home recommendations keep the first batch when replacement fails", async (
 
 test("home recommendation request failures remain observable", async (t) => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response("unavailable", { status: 503 })) as typeof fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response("unavailable", { status: 503 });
+  }) as typeof fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
 
   await assert.rejects(() => fetchHomeVideos(), /HTTP 503/);
+  assert.equal(calls, 2);
+});
+
+test("listing request failures are not converted to an empty library", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response("unauthorized", { status: 401 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await assert.rejects(
+    () => fetchListing(1, 96, { sort: "latest", includeTotal: false }),
+    /HTTP 401/
+  );
+  assert.equal(calls, 1);
 });
