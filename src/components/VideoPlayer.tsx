@@ -54,6 +54,7 @@ type VideoElementWithHls = HTMLVideoElement & {
 type MobileGestureMode = "seek" | "volume" | "brightness";
 type MobileGestureSide = "left" | "right";
 type PlayerGestureHudKind = "volume" | "brightness";
+type KeyboardSeekKey = "ArrowLeft" | "ArrowRight";
 type MobileGestureState = {
   startX: number;
   startY: number;
@@ -99,10 +100,11 @@ const NORMAL_RATE = 1;
 const ARTPLAYER_RECONNECT_TIME_MAX = 3;
 /** 键盘左右键单次快进/快退秒数。 */
 const KEYBOARD_SEEK_SECONDS = 15;
+/** 浏览器丢失 keyup 时，最后一次重复按键后的兜底提交延迟。 */
+const KEYBOARD_SEEK_IDLE_COMMIT_MS = 1_500;
 
 Artplayer.FAST_FORWARD_VALUE = FAST_RATE;
 Artplayer.RECONNECT_TIME_MAX = ARTPLAYER_RECONNECT_TIME_MAX;
-Artplayer.SEEK_STEP = KEYBOARD_SEEK_SECONDS;
 
 const DEFAULT_SETTINGS: PlayerSettings = {
   volume: 0.7,
@@ -359,7 +361,9 @@ function mountArtPlayer({
     playbackRate: true,
     aspectRatio: true,
     setting: true,
-    hotkey: true,
+    // 左右键需要在松键时只提交一次真实 seek，不能使用 ArtPlayer
+    // 每个 keydown 都改 currentTime 的内置实现。其它快捷键在下方重新绑定。
+    hotkey: false,
     pip: true,
     mutex: true,
     fullscreen: true,
@@ -456,6 +460,7 @@ function mountArtPlayer({
     mount,
     onPreviewHover
   );
+  const unbindKeyboardHotkeys = bindPlayerKeyboardHotkeys(art);
   const unbindOrientationToggle = enableOrientationControl
     ? bindOrientationToggle(art)
     : noop;
@@ -476,6 +481,7 @@ function mountArtPlayer({
     unbindFastRate();
     unbindMobileGestures();
     unbindProgressPreview();
+    unbindKeyboardHotkeys();
     unbindOrientationToggle();
     setPlayerFastRateHint(art, false);
     mount.removeEventListener("contextmenu", preventContextMenu);
@@ -494,6 +500,143 @@ function mountArtPlayer({
       artRef.current = null;
     }
     onPreviewHover(null);
+  };
+}
+
+function bindPlayerKeyboardHotkeys(art: Artplayer) {
+  let keyboardSeekTarget: number | null = null;
+  let keyboardSeekIdleTimer: number | null = null;
+  const heldSeekKeys = new Set<KeyboardSeekKey>();
+
+  function clearKeyboardSeekIdleTimer() {
+    if (keyboardSeekIdleTimer === null) return;
+    window.clearTimeout(keyboardSeekIdleTimer);
+    keyboardSeekIdleTimer = null;
+  }
+
+  function scheduleKeyboardSeekIdleCommit() {
+    clearKeyboardSeekIdleTimer();
+    keyboardSeekIdleTimer = window.setTimeout(() => {
+      keyboardSeekIdleTimer = null;
+      commitKeyboardSeek();
+    }, KEYBOARD_SEEK_IDLE_COMMIT_MS);
+  }
+
+  function renderKeyboardSeekTarget(showNotice: boolean) {
+    const duration = art.duration;
+    if (
+      keyboardSeekTarget === null ||
+      !Number.isFinite(duration) ||
+      duration <= 0
+    ) {
+      return;
+    }
+
+    keyboardSeekTarget = clamp(keyboardSeekTarget, 0, duration);
+    art.emit("setBar", "played", keyboardSeekTarget / duration);
+    if (showNotice) {
+      art.notice.show = `${formatClock(keyboardSeekTarget)} / ${formatClock(duration)}`;
+    }
+  }
+
+  function previewKeyboardSeek(delta: number, key: KeyboardSeekKey) {
+    const duration = art.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return;
+
+    heldSeekKeys.add(key);
+    const baseTime = keyboardSeekTarget ?? art.currentTime;
+    keyboardSeekTarget = clamp(baseTime + delta, 0, duration);
+    renderKeyboardSeekTarget(true);
+    scheduleKeyboardSeekIdleCommit();
+  }
+
+  function commitKeyboardSeek() {
+    if (keyboardSeekTarget === null) return;
+
+    clearKeyboardSeekIdleTimer();
+    const duration = art.duration;
+    const target = Number.isFinite(duration) && duration > 0
+      ? clamp(keyboardSeekTarget, 0, duration)
+      : keyboardSeekTarget;
+    keyboardSeekTarget = null;
+    heldSeekKeys.clear();
+
+    art.seek = target;
+    if (Number.isFinite(duration) && duration > 0) {
+      art.emit("setBar", "played", target / duration);
+    }
+  }
+
+  const handleEscape = () => {
+    commitKeyboardSeek();
+    if (art.fullscreenWeb) art.fullscreenWeb = false;
+  };
+  const handleSpace = (event: KeyboardEvent) => {
+    if (event.repeat) return;
+    commitKeyboardSeek();
+    art.toggle();
+  };
+  const handleArrowUp = () => {
+    commitKeyboardSeek();
+    art.volume += Artplayer.VOLUME_STEP;
+  };
+  const handleArrowDown = () => {
+    commitKeyboardSeek();
+    art.volume -= Artplayer.VOLUME_STEP;
+  };
+  const handleArrowLeft = () => {
+    previewKeyboardSeek(-KEYBOARD_SEEK_SECONDS, "ArrowLeft");
+  };
+  const handleArrowRight = () => {
+    previewKeyboardSeek(KEYBOARD_SEEK_SECONDS, "ArrowRight");
+  };
+
+  function handleKeyUp(event: KeyboardEvent) {
+    if (event.code !== "ArrowLeft" && event.code !== "ArrowRight") return;
+    if (keyboardSeekTarget === null) return;
+
+    event.preventDefault();
+    heldSeekKeys.delete(event.code);
+    if (heldSeekKeys.size === 0) commitKeyboardSeek();
+  }
+
+  function handleTimeUpdate() {
+    // 播放中的 timeupdate 会把进度条写回真实媒体时间；按键尚未松开时，
+    // 再写回累计目标，确保长按预览不抖动。
+    if (keyboardSeekTarget !== null) renderKeyboardSeekTarget(false);
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) commitKeyboardSeek();
+  }
+
+  art.hotkey.add("Escape", handleEscape);
+  art.hotkey.add("Space", handleSpace);
+  art.hotkey.add("ArrowUp", handleArrowUp);
+  art.hotkey.add("ArrowDown", handleArrowDown);
+  art.hotkey.add("ArrowLeft", handleArrowLeft);
+  art.hotkey.add("ArrowRight", handleArrowRight);
+  art.on("video:timeupdate", handleTimeUpdate);
+  art.on("blur", commitKeyboardSeek);
+  document.addEventListener("keyup", handleKeyUp);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("blur", commitKeyboardSeek);
+
+  return () => {
+    clearKeyboardSeekIdleTimer();
+    keyboardSeekTarget = null;
+    heldSeekKeys.clear();
+    art.hotkey.remove("Escape", handleEscape);
+    art.hotkey.remove("Space", handleSpace);
+    art.hotkey.remove("ArrowUp", handleArrowUp);
+    art.hotkey.remove("ArrowDown", handleArrowDown);
+    art.hotkey.remove("ArrowLeft", handleArrowLeft);
+    art.hotkey.remove("ArrowRight", handleArrowRight);
+    art.off("video:timeupdate", handleTimeUpdate);
+    art.off("blur", commitKeyboardSeek);
+    document.removeEventListener("keyup", handleKeyUp);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+    window.removeEventListener("blur", commitKeyboardSeek);
   };
 }
 

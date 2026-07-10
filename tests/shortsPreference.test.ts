@@ -121,15 +121,15 @@ test("shorts preserves a user pause while the active video is still loading", ()
   );
   assert.match(
     shortsPageSource,
-    /userPausedIndexRef\.current === activeIndex \|\|\s*\(activeVideo\.paused && activeVideo\.readyState >= 3\)/
+    /userPausedIndexRef\.current === videoIndex \|\|\s*\(activeVideo\.paused && activeVideo\.readyState >= 3\)/
   );
   assert.match(
     shortsPageSource,
-    /setUserPausedForIndex\(activeIndex, false\);\s*activeVideo\.play\(\)\.catch/
+    /setUserPausedForIndex\(videoIndex, false\);\s*activeVideo\.play\(\)\.catch/
   );
   assert.match(
     shortsPageSource,
-    /setUserPausedForIndex\(activeIndex, true\);\s*activeVideo\.pause\(\);/
+    /setUserPausedForIndex\(videoIndex, true\);\s*activeVideo\.pause\(\);/
   );
   assert.match(
     shortsPageSource,
@@ -171,22 +171,37 @@ test("shorts keyboard play pause does not show a toast", () => {
   assert.doesNotMatch(keyboardBlock[0], /showHud\("播放"|showHud\("暂停"/);
 });
 
-test("Windows held arrow-key seeking shows progress at the top", () => {
+test("desktop held arrow-key seeking previews progress and commits once", () => {
   assert.match(
     shortsPageSource,
-    /const \[keyboardSeekPreview, setKeyboardSeekPreview\] = useState<[\s\S]*?currentTime: number;[\s\S]*?duration: number;/
+    /type ShortsKeyboardSeekPreview = \{[\s\S]*?videoIndex: number;[\s\S]*?currentTime: number;[\s\S]*?duration: number;/
   );
   assert.match(
     shortsPageSource,
-    /e\.key === "ArrowRight"[\s\S]*?activeVideo\.currentTime = newTime;[\s\S]*?if \(isWindowsShortsPlatform\) \{\s*showKeyboardSeekPreview\(newTime, activeVideo\.duration\);/
+    /const baseTime = canContinuePendingTarget[\s\S]*?pendingTarget\.currentTime[\s\S]*?: activeVideo\.currentTime;[\s\S]*?const currentTime = clamp\(baseTime \+ delta, 0, duration\);/
   );
   assert.match(
     shortsPageSource,
-    /e\.key === "ArrowLeft"[\s\S]*?activeVideo\.currentTime = newTime;[\s\S]*?if \(isWindowsShortsPlatform\) \{\s*showKeyboardSeekPreview\(newTime, activeVideo\.duration\);/
+    /setKeyboardSeekPreview\(\{ videoIndex, currentTime, duration \}\);/
   );
   assert.match(
     shortsPageSource,
-    /const handleKeyUp = \(e: KeyboardEvent\) => \{[\s\S]*?SHORTS_KEYBOARD_SEEK_RELEASE_HIDE_MS/
+    /const handleKeyUp = \(e: KeyboardEvent\) => \{[\s\S]*?keyboardSeekHeldKeysRef\.current\.delete\(e\.key\);[\s\S]*?size === 0\) finishKeyboardSeek\(\)/
+  );
+  const previewStart = shortsPageSource.indexOf("const previewKeyboardSeek");
+  const keydownStart = shortsPageSource.indexOf("const handleKeyDown", previewStart);
+  assert.ok(previewStart >= 0 && keydownStart > previewStart);
+  assert.doesNotMatch(
+    shortsPageSource.slice(previewStart, keydownStart),
+    /\.currentTime\s*=/
+  );
+  assert.match(
+    shortsPageSource,
+    /const commitKeyboardSeek = \(\) => \{[\s\S]*?target\.video\.currentTime = nextTime;/
+  );
+  assert.match(
+    shortsPageSource,
+    /SHORTS_KEYBOARD_SEEK_IDLE_COMMIT_MS[\s\S]*?scheduleKeyboardSeekIdleCommit/
   );
   assert.match(shortsPageSource, /window\.addEventListener\("keyup", handleKeyUp\);/);
   assert.match(
@@ -196,6 +211,18 @@ test("Windows held arrow-key seeking shows progress at the top", () => {
   assert.match(
     shortsCssSource,
     /\.shorts-keyboard-seek-time \{\s*top: calc\(env\(safe-area-inset-top\) \+ 76px\);\s*z-index: 40;/
+  );
+  assert.match(
+    shortsPageSource,
+    /keyboardSeekPreview=\{[\s\S]*?keyboardSeekPreview\?\.videoIndex === index[\s\S]*?\? keyboardSeekPreview/
+  );
+  assert.match(
+    shortsPageSource,
+    /const progressCurrentTime = keyboardSeekPreview\?\.currentTime \?\? currentTime;[\s\S]*?const progressDuration = keyboardSeekPreview\?\.duration \?\? duration;[\s\S]*?clamp\(progressCurrentTime \/ progressDuration, 0, 1\)/
+  );
+  assert.match(
+    shortsPageSource,
+    /useLayoutEffect\(\(\) => \{[\s\S]*?lastKeyboardSeekPreviewTimeRef\.current = keyboardSeekPreview\.currentTime;[\s\S]*?setCurrentTime\(lastPreviewTime\);[\s\S]*?\}, \[keyboardSeekPreview\]\);/
   );
 });
 

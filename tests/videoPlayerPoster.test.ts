@@ -94,6 +94,56 @@ test("detail player limits ArtPlayer automatic reconnect attempts", () => {
   );
 });
 
+test("detail player previews held arrow-key seeks and commits once on release", () => {
+  const keyboardStart = playerSource.indexOf("function bindPlayerKeyboardHotkeys");
+  const keyboardEnd = playerSource.indexOf(
+    "function shouldEnableMobileOrientationControl"
+  );
+  assert.ok(keyboardStart >= 0 && keyboardEnd > keyboardStart);
+  const keyboardBlock = playerSource.slice(keyboardStart, keyboardEnd);
+
+  assert.match(playerSource, /hotkey:\s*false/);
+  assert.doesNotMatch(playerSource, /Artplayer\.SEEK_STEP\s*=/);
+  assert.match(keyboardBlock, /let keyboardSeekTarget: number \| null = null/);
+  assert.match(
+    keyboardBlock,
+    /const baseTime = keyboardSeekTarget \?\? art\.currentTime;[\s\S]*?keyboardSeekTarget = clamp\(baseTime \+ delta, 0, duration\)/
+  );
+  assert.match(
+    keyboardBlock,
+    /art\.emit\("setBar", "played", keyboardSeekTarget \/ duration\)/
+  );
+  assert.match(
+    keyboardBlock,
+    /art\.on\("video:timeupdate", handleTimeUpdate\)/
+  );
+  assert.match(
+    keyboardBlock,
+    /document\.addEventListener\("keyup", handleKeyUp\)/
+  );
+  assert.match(
+    keyboardBlock,
+    /scheduleKeyboardSeekIdleCommit\(\)[\s\S]*?KEYBOARD_SEEK_IDLE_COMMIT_MS/
+  );
+  assert.match(
+    keyboardBlock,
+    /heldSeekKeys\.size === 0\) commitKeyboardSeek\(\)/
+  );
+
+  const previewStart = keyboardBlock.indexOf("function previewKeyboardSeek");
+  const commitStart = keyboardBlock.indexOf("function commitKeyboardSeek");
+  const escapeStart = keyboardBlock.indexOf("const handleEscape");
+  assert.ok(previewStart >= 0 && commitStart > previewStart && escapeStart > commitStart);
+  assert.doesNotMatch(
+    keyboardBlock.slice(previewStart, commitStart),
+    /art\.seek\s*=/
+  );
+  assert.match(
+    keyboardBlock.slice(commitStart, escapeStart),
+    /art\.seek = target/
+  );
+});
+
 test("detail loading skeleton matches current desktop video page layout", () => {
   assert.match(detailPageSource, /className="vd-layout vd-skeleton"/);
   assert.match(detailPageSource, /className="vd-skeleton__summary"/);
@@ -149,7 +199,7 @@ test("detail player uses custom mobile gestures instead of ArtPlayer native gest
   assert.match(playerSource, /gesture:\s*false/);
   assert.match(playerSource, /fastForward:\s*false/);
   assert.match(playerSource, /const KEYBOARD_SEEK_SECONDS = 15;/);
-  assert.match(playerSource, /Artplayer\.SEEK_STEP = KEYBOARD_SEEK_SECONDS;/);
+  assert.match(playerSource, /bindPlayerKeyboardHotkeys\(art\)/);
   assert.doesNotMatch(playerSource, /GESTURE_SEEK_MIN_SECONDS/);
   assert.doesNotMatch(playerSource, /GESTURE_SEEK_MAX_SECONDS/);
   assert.doesNotMatch(playerSource, /GESTURE_SEEK_DURATION_RATIO/);
