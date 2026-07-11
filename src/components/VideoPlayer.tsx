@@ -107,7 +107,7 @@ Artplayer.FAST_FORWARD_VALUE = FAST_RATE;
 Artplayer.RECONNECT_TIME_MAX = ARTPLAYER_RECONNECT_TIME_MAX;
 
 const DEFAULT_SETTINGS: PlayerSettings = {
-  volume: 0.7,
+  volume: 1,
   muted: false,
   playbackRate: 1,
   brightness: 1,
