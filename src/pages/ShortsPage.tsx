@@ -19,13 +19,15 @@ import {
 import {
   fetchShortsNext,
   hideVideo,
+  ShortsFeedExpiredError,
+  type ShortsFeedItem,
   type ShortsItem,
 } from "@/data/videos";
 import { useAuth } from "@/admin/AuthContext";
 import "@/styles/shorts.css";
 
-// 短视频"已看过"列表存在 localStorage，与普通详情页历史完全独立。
-const SEEN_STORAGE_KEY = "shorts_seen_ids_v1";
+// 只保存固定大小的服务端 feed 令牌和已实际看到的游标。
+const SHORTS_FEED_STORAGE_KEY = "shorts_feed_v2";
 
 // 每次向后端取多少条续到队列尾。值不要太大避免一次返回过多浪费；
 // 也不要太小导致频繁请求和滑动卡顿。
@@ -81,23 +83,51 @@ type ShortsKeyboardSeekTarget = ShortsKeyboardSeekPreview & {
   video: HTMLVideoElement;
 };
 
-function loadSeenIds(): string[] {
+type ShortsFeedState = {
+  feedToken: string;
+  cursor: number;
+};
+
+type QueuedShortsItem = ShortsFeedItem & {
+  feedToken: string;
+};
+
+const EMPTY_SHORTS_FEED: ShortsFeedState = { feedToken: "", cursor: 0 };
+
+function loadShortsFeedState(): ShortsFeedState {
   try {
-    const raw = localStorage.getItem(SEEN_STORAGE_KEY);
-    if (!raw) return [];
+    const raw = localStorage.getItem(SHORTS_FEED_STORAGE_KEY);
+    if (!raw) return EMPTY_SHORTS_FEED;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x): x is string => typeof x === "string");
+    if (
+      !parsed ||
+      typeof parsed.feedToken !== "string" ||
+      parsed.feedToken.length === 0 ||
+      parsed.feedToken.length > 128 ||
+      !Number.isInteger(parsed.cursor) ||
+      parsed.cursor < 0
+    ) {
+      return EMPTY_SHORTS_FEED;
+    }
+    return { feedToken: parsed.feedToken, cursor: parsed.cursor };
   } catch {
-    return [];
+    return EMPTY_SHORTS_FEED;
   }
 }
 
-function saveSeenIds(ids: string[]) {
+function saveShortsFeedState(feed: ShortsFeedState) {
   try {
-    localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(ids));
+    localStorage.setItem(SHORTS_FEED_STORAGE_KEY, JSON.stringify(feed));
   } catch {
-    // 配额满或隐私模式：忽略，最多导致下一轮可能重复，不影响功能
+    // 隐私模式或存储不可用时只影响刷新后的续播，不影响当前 feed。
+  }
+}
+
+function clearShortsFeedState() {
+  try {
+    localStorage.removeItem(SHORTS_FEED_STORAGE_KEY);
+  } catch {
+    // ignore
   }
 }
 
@@ -105,7 +135,7 @@ export default function ShortsPage() {
   const { isAdmin } = useAuth();
   const navigate = useNavigate();
   // 已加入页面的视频队列（按出现顺序）
-  const [items, setItems] = useState<ShortsItem[]>([]);
+  const [items, setItems] = useState<QueuedShortsItem[]>([]);
   // 当前在视口里的视频索引
   const [activeIndex, setActiveIndex] = useState(0);
   // 是否静音；首次必须静音才能 autoplay，用户点击后切换
@@ -178,13 +208,16 @@ export default function ShortsPage() {
 
   // 是否正在加载下一批，避免并发请求
   const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
   // 后端报告"本轮已耗尽"，下次请求前会自动重置
   const [roundComplete, setRoundComplete] = useState(false);
   // 没有任何视频可放（库为空 / 全部隐藏）
   const [empty, setEmpty] = useState(false);
-
-  // seenIds 用 ref 维护，方便在异步 callback 里读到最新值
-  const seenIdsRef = useRef<string[]>(loadSeenIds());
+  // 请求失败和真实空库必须分开，不能再把断网误报为"没有视频"。
+  const [loadError, setLoadError] = useState(false);
+  const [initialFeedState] = useState(loadShortsFeedState);
+  // 指向已经取到队列尾部的位置；只在内存中预取，不直接写 localStorage。
+  const requestFeedRef = useRef<ShortsFeedState>(initialFeedState);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const itemsLengthRef = useRef(items.length);
@@ -344,30 +377,85 @@ export default function ShortsPage() {
   );
 
   /**
-   * 向后端请求下一批不重复的短视频，追加到 items 末尾。
+   * 向后端 token/cursor feed 请求下一批视频。GET 本身会重试；令牌因
+   * 后端重启或超时失效时自动开新一轮。只有真实空库才设置 empty。
    */
   const loadMore = useCallback(async () => {
-    if (loading) return;
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
+    setLoadError(false);
     try {
-      const seen = seenIdsRef.current;
-      const resp = await fetchShortsNext(seen, BATCH_SIZE);
-      if (resp.items.length === 0) {
-        setEmpty((prev) => prev || true /* 维持 true 即可 */);
-        setRoundComplete(true);
+      let requestFeed = requestFeedRef.current;
+      for (let recoveryAttempt = 0; recoveryAttempt < 3; recoveryAttempt += 1) {
+        let resp;
+        try {
+          resp = await fetchShortsNext(
+            requestFeed.feedToken,
+            requestFeed.cursor,
+            BATCH_SIZE
+          );
+        } catch (error) {
+          if (
+            error instanceof ShortsFeedExpiredError &&
+            requestFeed.feedToken
+          ) {
+            requestFeed = EMPTY_SHORTS_FEED;
+            requestFeedRef.current = requestFeed;
+            clearShortsFeedState();
+            continue;
+          }
+          throw error;
+        }
+
+        if (resp.total === 0) {
+          setEmpty(true);
+          setRoundComplete(true);
+          requestFeedRef.current = EMPTY_SHORTS_FEED;
+          return;
+        }
+
+        requestFeed = {
+          feedToken: resp.feedToken,
+          cursor: resp.nextCursor,
+        };
+        requestFeedRef.current = requestFeed;
+
+        // A snapshot can become empty if its remaining videos were deleted or
+        // hidden. Start a fresh snapshot instead of showing an empty-library lie.
+        if (resp.items.length === 0 && resp.roundComplete) {
+          requestFeed = EMPTY_SHORTS_FEED;
+          requestFeedRef.current = requestFeed;
+          continue;
+        }
+        if (resp.items.length === 0) {
+          throw new Error("Shorts feed returned no items before completion");
+        }
+
+        setEmpty(false);
+        setItems((prev) => {
+          const existing = new Set(
+            prev.map((item) => `${item.feedToken}:${item.feedCursor}`)
+          );
+          const fresh = resp.items
+            .map((item) => ({ ...item, feedToken: resp.feedToken }))
+            .filter(
+              (item) =>
+                !existing.has(`${item.feedToken}:${item.feedCursor}`)
+            );
+          return [...prev, ...fresh];
+        });
+        setRoundComplete(resp.roundComplete);
         return;
       }
-      setEmpty(false);
-      setItems((prev) => {
-        const existing = new Set(prev.map((v) => v.id));
-        const fresh = resp.items.filter((v) => !existing.has(v.id));
-        return [...prev, ...fresh];
-      });
-      setRoundComplete(resp.roundComplete);
+      throw new Error("Unable to create a playable shorts feed");
+    } catch {
+      setLoadError(true);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
-  }, [loading]);
+  }, []);
 
   // 首次加载
   useEffect(() => {
@@ -375,37 +463,29 @@ export default function ShortsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 仅当 items 还是空时，把 empty 设回 false 是没必要的；上面 loadMore 已处理
-  useEffect(() => {
-    if (items.length > 0) setEmpty(false);
-  }, [items.length]);
-
-  // 把当前活跃视频的 id 写入已看列表，并在剩余不足时续取
+  // 只提交真正进入当前屏的视频游标。预取但尚未观看的条目不会被跳过，刷新
+  // 页面后会从当前视频之后恢复，而不是从已预取的队列末尾恢复。
   useEffect(() => {
     const active = items[activeIndex];
     if (!active) return;
 
     setCacheWindowHighIndex((prev) => Math.max(prev, activeIndex));
-
-    if (!seenIdsRef.current.includes(active.id)) {
-      seenIdsRef.current = [...seenIdsRef.current, active.id];
-      saveSeenIds(seenIdsRef.current);
-    }
+    saveShortsFeedState({
+      feedToken: active.feedToken,
+      cursor: active.feedCursor,
+    });
 
     const remaining = items.length - 1 - activeIndex;
-    if (remaining < PREFETCH_THRESHOLD && !loading) {
+    if (remaining < PREFETCH_THRESHOLD && !loading && !loadError) {
       if (roundComplete) {
-        // 上一次后端说"本轮已耗尽"时，必须等用户真正滑到当前队列最后一条
-        // 再清空已看记录开新一轮。否则退出后重新进入会把未完成轮次提前重置，
-        // 导致刚刷过的视频再次出现在下一次会话里。
+        // 最后一批仍在队列中时不提前换轮；真正滑到最后一条才开新 feed。
         if (remaining > 0) return;
-        seenIdsRef.current = [];
-        saveSeenIds([]);
+        requestFeedRef.current = EMPTY_SHORTS_FEED;
         setRoundComplete(false);
       }
       void loadMore();
     }
-  }, [activeIndex, items, loading, roundComplete, loadMore]);
+  }, [activeIndex, items, loading, loadError, roundComplete, loadMore]);
 
   // 全屏与窗口模式的可用高度不同。Chrome/Edge 退出全屏后会保留原来的
   // scrollTop 像素值，而每条 slide 的 100svh 已经变矮；索引越靠后，误差
@@ -961,12 +1041,38 @@ export default function ShortsPage() {
       )}
 
       <div className="shorts-feed" ref={containerRef}>
-        {empty && (
+        {loading && items.length === 0 && !empty && !loadError && (
+          <div className="shorts-empty shorts-loading" aria-live="polite">
+            <div className="shorts-empty__content">
+              <ShortsLoadingSpinner size={30} />
+              <p>正在加载短视频</p>
+            </div>
+          </div>
+        )}
+
+        {loadError && items.length === 0 && (
+          <div className="shorts-empty" role="alert">
+            <div className="shorts-empty__content">
+              <p>短视频加载失败，请检查网络后重试</p>
+              <button
+                type="button"
+                className="shorts-empty__link"
+                onClick={() => void loadMore()}
+              >
+                重新加载
+              </button>
+            </div>
+          </div>
+        )}
+
+        {empty && items.length === 0 && (
           <div className="shorts-empty">
-            <p>当前没有可播放的视频</p>
-            <Link to="/" className="shorts-empty__link">
-              返回首页
-            </Link>
+            <div className="shorts-empty__content">
+              <p>当前没有可播放的视频</p>
+              <Link to="/" className="shorts-empty__link">
+                返回首页
+              </Link>
+            </div>
           </div>
         )}
 
@@ -994,7 +1100,7 @@ export default function ShortsPage() {
           const shouldEagerLoad = isActiveSlide || shouldPreload;
           return (
             <ShortsSlide
-              key={item.id}
+              key={`${item.feedToken}:${item.feedCursor}`}
               item={item}
               index={index}
               isActive={isActiveSlide}
@@ -1032,6 +1138,21 @@ export default function ShortsPage() {
             />
           );
         })}
+
+        {loadError && items.length > 0 && (
+          <div className="shorts-empty" role="alert">
+            <div className="shorts-empty__content">
+              <p>后续视频加载失败</p>
+              <button
+                type="button"
+                className="shorts-empty__link"
+                onClick={() => void loadMore()}
+              >
+                重新加载
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

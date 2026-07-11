@@ -27,7 +27,9 @@ test("shorts does not keep recommendation preference from likes or watch time", 
   assert.ok(match, "handleLikeToggle block should be present");
 
   assert.doesNotMatch(match[0], /preferred/i);
-  assert.match(videosDataSource, /body: JSON\.stringify\(\{ seenIds, count \}\)/);
+  assert.doesNotMatch(videosDataSource, /JSON\.stringify\(\{ seenIds, count \}\)/);
+  assert.match(videosDataSource, /const params = new URLSearchParams\(\{\s*cursor: String\(cursor\),\s*count: String\(count\),/);
+  assert.match(videosDataSource, /apiGet<ShortsNextResponse>/);
 });
 
 test("shorts progress dragging uses immediate pointer state", () => {
@@ -246,7 +248,7 @@ test("shorts hud toast keeps icon and text close together", () => {
   );
 });
 
-test("shorts loading spinner uses a dedicated animated ring", () => {
+test("shorts loading spinner covers video buffering and initial feed loading", () => {
   assert.match(shortsPageSource, /function ShortsLoadingSpinner/);
   assert.match(shortsPageSource, /requestAnimationFrame\(tick\)/);
   assert.match(shortsPageSource, /spinner\.style\.transform = `rotate\(\$\{rotation\}deg\)`;/);
@@ -254,13 +256,13 @@ test("shorts loading spinner uses a dedicated animated ring", () => {
   assert.match(shortsPageSource, /<ShortsLoadingSpinner size=\{30\} \/>/);
   assert.doesNotMatch(shortsPageSource, /<ShortsLoadingSpinner size=\{16\} \/>/);
   assert.doesNotMatch(shortsPageSource, /加载中…/);
-  assert.doesNotMatch(shortsPageSource, /className="shorts-loading"/);
+  assert.match(shortsPageSource, /className="shorts-empty shorts-loading" aria-live="polite"/);
+  assert.match(shortsPageSource, /正在加载短视频/);
   assert.match(
     shortsCssSource,
     /\.shorts-slide__loading-spinner\s*\{[\s\S]*width:\s*var\(--shorts-spinner-size,\s*30px\);[\s\S]*height:\s*var\(--shorts-spinner-size,\s*30px\);[\s\S]*border:\s*3px solid rgba\(255,\s*255,\s*255,\s*0\.24\);[\s\S]*border-top-color:\s*rgba\(255,\s*255,\s*255,\s*0\.98\);[\s\S]*border-radius:\s*50%;/
   );
-  assert.doesNotMatch(shortsCssSource, /\.shorts-loading\s*\{/);
-  assert.doesNotMatch(shortsCssSource, /\.shorts-loading \.shorts-slide__loading-spinner/);
+  assert.match(shortsCssSource, /\.shorts-loading \.shorts-slide__loading-spinner\s*\{/);
   assert.match(
     shortsCssSource,
     /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.shorts-slide__buffering\s*\{[\s\S]*--shorts-spinner-size:\s*24px;[\s\S]*width:\s*56px;[\s\S]*height:\s*56px;/
@@ -307,10 +309,26 @@ test("shorts preload grant uses high/low watermark hysteresis", () => {
   );
 });
 
-test("shorts waits for the queue end before starting a new seen round", () => {
+test("shorts commits viewed cursors and waits for queue end before starting a new feed", () => {
+  assert.doesNotMatch(shortsPageSource, /seenIdsRef|saveSeenIds/);
   assert.match(
     shortsPageSource,
-    /if \(roundComplete\) \{[\s\S]*?if \(remaining > 0\) return;[\s\S]*?seenIdsRef\.current = \[\];[\s\S]*?saveSeenIds\(\[\]\);/
+    /saveShortsFeedState\(\{\s*feedToken: active\.feedToken,\s*cursor: active\.feedCursor,/
+  );
+  assert.match(
+    shortsPageSource,
+    /if \(roundComplete\) \{[\s\S]*?if \(remaining > 0\) return;[\s\S]*?requestFeedRef\.current = EMPTY_SHORTS_FEED;/
+  );
+});
+
+test("shorts distinguishes feed failures from a genuinely empty library", () => {
+  assert.match(shortsPageSource, /if \(resp\.total === 0\) \{\s*setEmpty\(true\);/);
+  assert.match(shortsPageSource, /catch \{\s*setLoadError\(true\);/);
+  assert.match(shortsPageSource, /短视频加载失败，请检查网络后重试/);
+  assert.match(shortsPageSource, /onClick=\{\(\) => void loadMore\(\)\}/);
+  assert.doesNotMatch(
+    videosDataSource,
+    /\.catch\(\(\) => \(\{ items: \[\], total: 0/
   );
 });
 

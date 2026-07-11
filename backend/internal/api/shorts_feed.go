@@ -1,0 +1,273 @@
+package api
+
+import (
+	"context"
+	crand "crypto/rand"
+	"encoding/hex"
+	"errors"
+	"math/rand/v2"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/video-site/backend/internal/catalog"
+)
+
+const (
+	defaultShortsBatchSize = 5
+	maxShortsBatchSize     = 20
+	shortsFeedLookupChunk  = 32
+	shortsFeedTTL          = 24 * time.Hour
+	maxShortsFeedSessions  = 64
+)
+
+var errShortsFeedExpired = errors.New("shorts feed expired")
+
+// ShortsItemDTO is a compact feed item that can be handed directly to a video
+// element. FeedCursor is the resume position immediately after this item.
+type ShortsItemDTO struct {
+	VideoDTO
+	VideoSrc   string `json:"videoSrc"`
+	Poster     string `json:"poster"`
+	FeedCursor int    `json:"feedCursor,omitempty"`
+}
+
+type shortsFeedSession struct {
+	videoIDs   []string
+	lastAccess time.Time
+}
+
+type shortsFeedResponse struct {
+	Items         []ShortsItemDTO `json:"items"`
+	Total         int             `json:"total"`
+	FeedToken     string          `json:"feedToken"`
+	NextCursor    int             `json:"nextCursor"`
+	RoundComplete bool            `json:"roundComplete"`
+}
+
+// handleShortsNext serves an idempotent, body-free feed endpoint. A new feed
+// snapshots and shuffles the visible video IDs once. Later requests send only
+// the opaque token and numeric cursor, so request size stays constant even for
+// libraries with many thousands of videos.
+func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
+	count, err := shortsQueryInt(r, "count", defaultShortsBatchSize)
+	if err != nil || count < 1 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid shorts count"))
+		return
+	}
+	if count > maxShortsBatchSize {
+		count = maxShortsBatchSize
+	}
+
+	cursor, err := shortsQueryInt(r, "cursor", 0)
+	if err != nil || cursor < 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid shorts cursor"))
+		return
+	}
+
+	feedToken := strings.TrimSpace(r.URL.Query().Get("feedToken"))
+	if len(feedToken) > 128 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid shorts feed token"))
+		return
+	}
+	var videoIDs []string
+	if feedToken == "" {
+		if cursor != 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("shorts cursor requires a feed token"))
+			return
+		}
+		videoIDs, err = s.Catalog.ListVisibleVideoIDs(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if len(videoIDs) > 0 {
+			rand.Shuffle(len(videoIDs), func(i, j int) {
+				videoIDs[i], videoIDs[j] = videoIDs[j], videoIDs[i]
+			})
+			feedToken, err = newShortsFeedToken()
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+			s.storeShortsFeed(feedToken, videoIDs)
+		}
+	} else {
+		videoIDs, err = s.loadShortsFeed(feedToken)
+		if err != nil {
+			writeErr(w, http.StatusGone, err)
+			return
+		}
+	}
+
+	if cursor > len(videoIDs) {
+		writeErr(w, http.StatusBadRequest, errors.New("shorts cursor is outside the feed"))
+		return
+	}
+
+	videos, itemCursors, nextCursor, err := s.loadShortsFeedBatch(
+		r.Context(),
+		videoIDs,
+		cursor,
+		count,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, shortsFeedResponse{
+		Items:         s.mapShortsItems(r.Context(), videos, itemCursors),
+		Total:         len(videoIDs),
+		FeedToken:     feedToken,
+		NextCursor:    nextCursor,
+		RoundComplete: nextCursor >= len(videoIDs),
+	})
+}
+
+func shortsQueryInt(r *http.Request, name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	return strconv.Atoi(raw)
+}
+
+func newShortsFeedToken() (string, error) {
+	var token [16]byte
+	if _, err := crand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func (s *Server) shortsNow() time.Time {
+	if s.shortsFeedNow != nil {
+		return s.shortsFeedNow()
+	}
+	return time.Now()
+}
+
+func (s *Server) storeShortsFeed(token string, videoIDs []string) {
+	now := s.shortsNow()
+	s.shortsFeedMu.Lock()
+	defer s.shortsFeedMu.Unlock()
+
+	if s.shortsFeeds == nil {
+		s.shortsFeeds = make(map[string]*shortsFeedSession)
+	}
+	s.pruneShortsFeedsLocked(now)
+	for len(s.shortsFeeds) >= maxShortsFeedSessions {
+		var oldestToken string
+		var oldestAccess time.Time
+		for candidateToken, feed := range s.shortsFeeds {
+			if oldestToken == "" || feed.lastAccess.Before(oldestAccess) {
+				oldestToken = candidateToken
+				oldestAccess = feed.lastAccess
+			}
+		}
+		if oldestToken == "" {
+			break
+		}
+		delete(s.shortsFeeds, oldestToken)
+	}
+
+	// The slice is immutable after insertion, so readers can safely retain it
+	// after releasing the mutex.
+	s.shortsFeeds[token] = &shortsFeedSession{
+		videoIDs:   videoIDs,
+		lastAccess: now,
+	}
+}
+
+func (s *Server) loadShortsFeed(token string) ([]string, error) {
+	now := s.shortsNow()
+	s.shortsFeedMu.Lock()
+	defer s.shortsFeedMu.Unlock()
+
+	s.pruneShortsFeedsLocked(now)
+	feed := s.shortsFeeds[token]
+	if feed == nil {
+		return nil, errShortsFeedExpired
+	}
+	feed.lastAccess = now
+	return feed.videoIDs, nil
+}
+
+func (s *Server) pruneShortsFeedsLocked(now time.Time) {
+	for token, feed := range s.shortsFeeds {
+		if now.Sub(feed.lastAccess) >= shortsFeedTTL {
+			delete(s.shortsFeeds, token)
+		}
+	}
+}
+
+// loadShortsFeedBatch advances over snapshot entries that are no longer
+// visible and records the precise resume cursor after each returned item.
+func (s *Server) loadShortsFeedBatch(
+	ctx context.Context,
+	videoIDs []string,
+	cursor int,
+	count int,
+) ([]*catalog.Video, []int, int, error) {
+	videos := make([]*catalog.Video, 0, count)
+	itemCursors := make([]int, 0, count)
+
+	for cursor < len(videoIDs) && len(videos) < count {
+		end := cursor + shortsFeedLookupChunk
+		if end > len(videoIDs) {
+			end = len(videoIDs)
+		}
+		visible, err := s.Catalog.VisibleVideosByIDs(ctx, videoIDs[cursor:end])
+		if err != nil {
+			return nil, nil, cursor, err
+		}
+		visibleByID := make(map[string]*catalog.Video, len(visible))
+		for _, video := range visible {
+			visibleByID[video.ID] = video
+		}
+
+		for cursor < end && len(videos) < count {
+			videoID := videoIDs[cursor]
+			cursor++
+			if video := visibleByID[videoID]; video != nil {
+				videos = append(videos, video)
+				itemCursors = append(itemCursors, cursor)
+			}
+		}
+	}
+
+	return videos, itemCursors, cursor, nil
+}
+
+func (s *Server) mapShortsItems(
+	ctx context.Context,
+	videos []*catalog.Video,
+	itemCursors []int,
+) []ShortsItemDTO {
+	driveLabels := make(map[string]string)
+	out := make([]ShortsItemDTO, 0, len(videos))
+	for index, video := range videos {
+		dto := mapVideo(video)
+		if label, ok := driveLabels[video.DriveID]; ok {
+			dto.SourceLabel = label
+		} else if drive, err := s.Catalog.GetDrive(ctx, video.DriveID); err == nil {
+			label := driveKindLabel(drive.Kind)
+			driveLabels[video.DriveID] = label
+			dto.SourceLabel = label
+		}
+		feedCursor := 0
+		if index < len(itemCursors) {
+			feedCursor = itemCursors[index]
+		}
+		out = append(out, ShortsItemDTO{
+			VideoDTO:   dto,
+			VideoSrc:   s.videoSource(video),
+			Poster:     thumbnailURL(video),
+			FeedCursor: feedCursor,
+		})
+	}
+	return out
+}

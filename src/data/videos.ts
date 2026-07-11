@@ -163,28 +163,75 @@ export type ShortsItem = VideoItem & {
   poster: string;
 };
 
+export type ShortsFeedItem = ShortsItem & {
+  /** Resume position immediately after this item in the server-side feed. */
+  feedCursor: number;
+};
+
 /** 短视频"取下一批"接口的响应。 */
 export type ShortsNextResponse = {
-  items: ShortsItem[];
+  items: ShortsFeedItem[];
   total: number;
-  /** true 表示这批返回少于 count，前端播放完毕后应清空 seenIds 开新一轮 */
+  feedToken: string;
+  nextCursor: number;
+  /** true 表示当前服务端随机轮次已经读到末尾。 */
   roundComplete: boolean;
 };
 
+export class ShortsFeedExpiredError extends Error {
+  constructor() {
+    super("Shorts feed expired");
+    this.name = "ShortsFeedExpiredError";
+  }
+}
+
 /**
- * 拉取短视频流的下一批候选。把当前轮已看过的 video id 列表传给后端，
- * 服务器从未在列表中的视频里随机抽 count 条返回。
- *
- * 失败时返回空批 + roundComplete=false，由调用方决定是否重试。
+ * 拉取服务端随机 feed 的下一批候选。请求只携带固定大小的令牌和游标，
+ * 不会再随已看视频数量增长，也没有请求体。
  */
-export function fetchShortsNext(
-  seenIds: string[],
+export async function fetchShortsNext(
+  feedToken: string,
+  cursor: number,
   count: number
 ): Promise<ShortsNextResponse> {
-  return apiJSON<ShortsNextResponse>("/api/shorts/next", {
-    method: "POST",
-    body: JSON.stringify({ seenIds, count }),
-  }).catch(() => ({ items: [], total: 0, roundComplete: false }));
+  const params = new URLSearchParams({
+    cursor: String(cursor),
+    count: String(count),
+  });
+  if (feedToken) params.set("feedToken", feedToken);
+
+  let result: ShortsNextResponse;
+  try {
+    result = await apiGet<ShortsNextResponse>(
+      `/api/shorts/next?${params.toString()}`
+    );
+  } catch (error) {
+    if (error instanceof HTTPStatusError && error.status === 410) {
+      throw new ShortsFeedExpiredError();
+    }
+    throw error;
+  }
+
+  if (
+    !result ||
+    !Array.isArray(result.items) ||
+    !Number.isInteger(result.total) ||
+    result.total < 0 ||
+    typeof result.feedToken !== "string" ||
+    (result.total > 0 && result.feedToken.length === 0) ||
+    !Number.isInteger(result.nextCursor) ||
+    result.nextCursor < 0 ||
+    typeof result.roundComplete !== "boolean" ||
+    result.items.some(
+      (item) =>
+        !Number.isInteger(item.feedCursor) ||
+        item.feedCursor < 1 ||
+        item.feedCursor > result.nextCursor
+    )
+  ) {
+    throw new Error("Invalid /api/shorts/next response");
+  }
+  return result;
 }
 
 const API_GET_MAX_ATTEMPTS = 2;

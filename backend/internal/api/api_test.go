@@ -1039,130 +1039,228 @@ func TestHandleTagsReturnsUnifiedTagPool(t *testing.T) {
 	}
 }
 
-func TestHandleShortsNextReturnsRandomBatchExcludingSeen(t *testing.T) {
+func TestShortsRouteRejectsRemovedPostEndpoint(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	now := time.Now()
-	for _, v := range []*catalog.Video{
-		{ID: "current", DriveID: "drive", FileID: "f-current", Title: "current", Tags: []string{"common", "rare"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "common-1", DriveID: "drive", FileID: "f-common-1", Title: "common 1", Tags: []string{"common"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "common-2", DriveID: "drive", FileID: "f-common-2", Title: "common 2", Tags: []string{"common"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "rare-1", DriveID: "drive", FileID: "f-rare-1", Title: "rare 1", Tags: []string{"rare"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-	} {
-		if err := cat.UpsertVideo(ctx, v); err != nil {
-			t.Fatalf("seed %s: %v", v.ID, err)
-		}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.CreateSession(ctx, "shorts-route-token", time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/shorts/next", strings.NewReader(`{"seenIds":["current"],"count":3}`))
+	router := chi.NewRouter()
+	(&Server{Catalog: cat}).RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
+	req := httptest.NewRequest(http.MethodPost, "/api/shorts/next", nil)
+	req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "shorts-route-token"})
 	rr := httptest.NewRecorder()
-	(&Server{Catalog: cat}).handleShortsNext(rr, req)
+	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got struct {
-		Items         []ShortsItemDTO `json:"items"`
-		Total         int             `json:"total"`
-		RoundComplete bool            `json:"roundComplete"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	ids := make([]string, 0, len(got.Items))
-	for _, item := range got.Items {
-		ids = append(ids, item.ID)
-	}
-	if got.Total != 4 {
-		t.Fatalf("total = %d, want 4", got.Total)
-	}
-	if got.RoundComplete {
-		t.Fatalf("roundComplete = true, want false with a full remaining batch")
-	}
-	if containsString(ids, "current") {
-		t.Fatalf("ids = %#v, should exclude current", ids)
-	}
-	if len(ids) != 3 {
-		t.Fatalf("ids = %#v, want 3 items", ids)
-	}
-	for _, want := range []string{"common-1", "common-2", "rare-1"} {
-		if !containsString(ids, want) {
-			t.Fatalf("ids = %#v, want remaining id %s", ids, want)
-		}
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want %d; body = %s", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
 	}
 }
 
-func TestHandleShortsNextDoesNotResetForStaleSeenIDs(t *testing.T) {
+func TestHandleShortsNextUsesStableFeedTokenAndCursor(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
+	t.Cleanup(func() { _ = cat.Close() })
 
 	now := time.Now()
-	for _, v := range []*catalog.Video{
-		{ID: "seen-1", DriveID: "drive", FileID: "f-seen-1", Title: "seen 1", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "fresh-1", DriveID: "drive", FileID: "f-fresh-1", Title: "fresh 1", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "fresh-2", DriveID: "drive", FileID: "f-fresh-2", Title: "fresh 2", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "hidden-1", DriveID: "drive", FileID: "f-hidden-1", Title: "hidden 1", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-	} {
-		if err := cat.UpsertVideo(ctx, v); err != nil {
-			t.Fatalf("seed %s: %v", v.ID, err)
+	for index := 0; index < 7; index++ {
+		id := "feed-" + strconv.Itoa(index)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID:          id,
+			DriveID:     "drive",
+			FileID:      "file-" + id,
+			Title:       id,
+			PublishedAt: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	if err := cat.HideVideo(ctx, "hidden-1"); err != nil {
-		t.Fatalf("hide hidden-1: %v", err)
+
+	server := &Server{Catalog: cat}
+	requestBatch := func(path string) shortsFeedResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.handleShortsNext(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+		var response shortsFeedResponse
+		if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return response
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/shorts/next", strings.NewReader(`{"seenIds":["seen-1","hidden-1","deleted-stale"],"count":3}`))
-	rr := httptest.NewRecorder()
-	(&Server{Catalog: cat}).handleShortsNext(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	first := requestBatch("/api/shorts/next?count=3")
+	if first.FeedToken == "" {
+		t.Fatal("new feed did not return a token")
 	}
-	var got struct {
-		Items         []ShortsItemDTO `json:"items"`
-		Total         int             `json:"total"`
-		RoundComplete bool            `json:"roundComplete"`
+	if first.Total != 7 || len(first.Items) != 3 || first.NextCursor != 3 || first.RoundComplete {
+		t.Fatalf("first response = %#v, want 3 of 7 with cursor 3", first)
 	}
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	ids := make([]string, 0, len(got.Items))
-	for _, item := range got.Items {
-		ids = append(ids, item.ID)
-	}
-	if got.Total != 3 {
-		t.Fatalf("total = %d, want 3", got.Total)
-	}
-	if !got.RoundComplete {
-		t.Fatalf("roundComplete = false, want true after returning all unviewed visible videos")
-	}
-	if containsString(ids, "seen-1") || containsString(ids, "hidden-1") {
-		t.Fatalf("ids = %#v, should not reset and return seen or hidden videos", ids)
-	}
-	for _, want := range []string{"fresh-1", "fresh-2"} {
-		if !containsString(ids, want) {
-			t.Fatalf("ids = %#v, want %s", ids, want)
+	for index, item := range first.Items {
+		if item.FeedCursor != index+1 {
+			t.Fatalf("item %d cursor = %d, want %d", index, item.FeedCursor, index+1)
 		}
 	}
-	if len(ids) != 2 {
-		t.Fatalf("ids = %#v, want exactly the two unviewed visible videos", ids)
+
+	repeated := requestBatch("/api/shorts/next?feedToken=" + first.FeedToken + "&cursor=0&count=3")
+	for index := range first.Items {
+		if repeated.Items[index].ID != first.Items[index].ID || repeated.Items[index].FeedCursor != first.Items[index].FeedCursor {
+			t.Fatalf("repeated cursor changed item %d: first=%#v repeated=%#v", index, first.Items[index], repeated.Items[index])
+		}
+	}
+
+	seen := make(map[string]struct{}, first.Total)
+	current := first
+	for {
+		for _, item := range current.Items {
+			if _, duplicate := seen[item.ID]; duplicate {
+				t.Fatalf("feed returned duplicate video %s", item.ID)
+			}
+			seen[item.ID] = struct{}{}
+		}
+		if current.RoundComplete {
+			break
+		}
+		current = requestBatch(
+			"/api/shorts/next?feedToken=" + first.FeedToken +
+				"&cursor=" + strconv.Itoa(current.NextCursor) + "&count=3",
+		)
+	}
+	if len(seen) != first.Total {
+		t.Fatalf("feed returned %d unique videos, want %d", len(seen), first.Total)
+	}
+}
+
+func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	for index := 0; index < 3; index++ {
+		id := "feed-visible-" + strconv.Itoa(index)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID: id, DriveID: "drive", FileID: "file-" + id, Title: id,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	server := &Server{Catalog: cat}
+	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?count=1", nil)
+	firstRR := httptest.NewRecorder()
+	server.handleShortsNext(firstRR, firstReq)
+	var first shortsFeedResponse
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("create feed status = %d, body = %s", firstRR.Code, firstRR.Body.String())
+	}
+	if err := json.NewDecoder(firstRR.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+
+	feed := server.shortsFeeds[first.FeedToken]
+	if feed == nil || len(feed.videoIDs) != 3 {
+		t.Fatalf("stored feed = %#v, want 3 ids", feed)
+	}
+	hiddenID := feed.videoIDs[first.NextCursor]
+	if err := cat.HideVideo(ctx, hiddenID); err != nil {
+		t.Fatalf("hide %s: %v", hiddenID, err)
+	}
+
+	nextReq := httptest.NewRequest(
+		http.MethodGet,
+		"/api/shorts/next?feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
+		nil,
+	)
+	nextRR := httptest.NewRecorder()
+	server.handleShortsNext(nextRR, nextReq)
+	if nextRR.Code != http.StatusOK {
+		t.Fatalf("next status = %d, body = %s", nextRR.Code, nextRR.Body.String())
+	}
+	var next shortsFeedResponse
+	if err := json.NewDecoder(nextRR.Body).Decode(&next); err != nil {
+		t.Fatalf("decode next: %v", err)
+	}
+	if len(next.Items) != 1 || next.Items[0].ID == hiddenID {
+		t.Fatalf("next items = %#v, should skip hidden %s", next.Items, hiddenID)
+	}
+	if next.Items[0].FeedCursor <= first.NextCursor+1 {
+		t.Fatalf("next cursor = %d, should advance past hidden entry", next.Items[0].FeedCursor)
+	}
+}
+
+func TestHandleShortsNextRejectsExpiredFeedToken(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "feed-video", DriveID: "drive", FileID: "file", Title: "feed video",
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	clock := now
+	server := &Server{Catalog: cat, shortsFeedNow: func() time.Time { return clock }}
+	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?count=1", nil)
+	firstRR := httptest.NewRecorder()
+	server.handleShortsNext(firstRR, firstReq)
+	var first shortsFeedResponse
+	if err := json.NewDecoder(firstRR.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+
+	clock = clock.Add(shortsFeedTTL)
+	expiredReq := httptest.NewRequest(
+		http.MethodGet,
+		"/api/shorts/next?feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
+		nil,
+	)
+	expiredRR := httptest.NewRecorder()
+	server.handleShortsNext(expiredRR, expiredReq)
+	if expiredRR.Code != http.StatusGone {
+		t.Fatalf("expired status = %d, want %d; body = %s", expiredRR.Code, http.StatusGone, expiredRR.Body.String())
+	}
+}
+
+func TestShortsFeedStoreEvictsLeastRecentlyUsedSession(t *testing.T) {
+	clock := time.Now()
+	server := &Server{shortsFeedNow: func() time.Time { return clock }}
+	for index := 0; index <= maxShortsFeedSessions; index++ {
+		server.storeShortsFeed("feed-"+strconv.Itoa(index), []string{"video"})
+		clock = clock.Add(time.Second)
+	}
+
+	if len(server.shortsFeeds) != maxShortsFeedSessions {
+		t.Fatalf("stored feeds = %d, want bounded size %d", len(server.shortsFeeds), maxShortsFeedSessions)
+	}
+	if server.shortsFeeds["feed-0"] != nil {
+		t.Fatal("oldest feed was not evicted")
+	}
+	if server.shortsFeeds["feed-"+strconv.Itoa(maxShortsFeedSessions)] == nil {
+		t.Fatal("newest feed was unexpectedly evicted")
 	}
 }
 

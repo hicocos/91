@@ -67,6 +67,10 @@ type Server struct {
 	tagCacheUntil time.Time
 	tagCache      []TagDTO
 
+	shortsFeedMu  sync.Mutex
+	shortsFeeds   map[string]*shortsFeedSession
+	shortsFeedNow func() time.Time
+
 	// GetTheme 返回当前生效的主题（"dark" | "pink" | "sky"）。前台 /api/settings/theme 用，
 	// 不需要登录。无注入时返回 "dark"。
 	GetTheme func() string
@@ -160,7 +164,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Delete("/api/video/{id}/like", s.handleUnlike)
 		r.Post("/api/video/{id}/view", s.handleView)
 		r.Get("/api/tags", s.handleTags)
-		r.Post("/api/shorts/next", s.handleShortsNext)
+		r.Get("/api/shorts/next", s.handleShortsNext)
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/*", s.handleStream)
@@ -546,93 +550,6 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Cache-Control", "private, max-age=15")
 	writeJSON(w, http.StatusOK, out)
-}
-
-// shortsNextReq 客户端把当前轮已看过的 video id 列表传上来。
-type shortsNextReq struct {
-	SeenIDs []string `json:"seenIds"`
-	Count   int      `json:"count"`
-}
-
-// ShortsItemDTO 是短视频流单条的精简结构。比 VideoDTO 多 videoSrc / poster，
-// 方便前端直接喂给 <video>，不必再为每条请求 /api/video/:id。
-type ShortsItemDTO struct {
-	VideoDTO
-	VideoSrc string `json:"videoSrc"`
-	Poster   string `json:"poster"`
-}
-
-// handleShortsNext 为短视频模式提供"不重复随机视频"接口。
-//
-// 行为：
-//   - 入参 seenIds 为客户端当前轮已看过的视频 id（来自 localStorage）
-//   - 服务器从未在 seenIds 中的可见视频里随机抽至多 count 条返回
-//   - 当返回数量 < count 且小于全库可见总数时，说明本轮即将结束，
-//     返回 roundComplete=true，前端应在用户看完返回的这些后清空本地已看记录开新一轮
-//   - 当 seenIds 真实覆盖当前全部可见视频时，本接口直接返回新一轮的随机一批
-//     （不能仅看 seenIds 长度，里面可能有隐藏、删除或历史脏 ID）
-func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
-	var body shortsNextReq
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	count := body.Count
-	if count <= 0 {
-		count = 5
-	}
-	if count > 20 {
-		count = 20
-	}
-
-	total, err := s.Catalog.CountVisibleVideos(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	items, err := s.Catalog.RandomVideosExcluding(r.Context(), body.SeenIDs, count)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if total > 0 && len(items) == 0 && len(body.SeenIDs) > 0 {
-		items, err = s.Catalog.RandomVideosExcluding(r.Context(), nil, count)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-
-	// 注入 sourceLabel 以便前端展示来源网盘
-	driveLabels := make(map[string]string)
-	out := make([]ShortsItemDTO, 0, len(items))
-	for _, v := range items {
-		dto := mapVideo(v)
-		if label, ok := driveLabels[v.DriveID]; ok {
-			dto.SourceLabel = label
-		} else if d, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err == nil {
-			label := driveKindLabel(d.Kind)
-			driveLabels[v.DriveID] = label
-			dto.SourceLabel = label
-		}
-		out = append(out, ShortsItemDTO{
-			VideoDTO: dto,
-			VideoSrc: s.videoSource(v),
-			Poster:   thumbnailURL(v),
-		})
-	}
-
-	// roundComplete: 服务端能给出的视频数小于 count，说明剩余可选已耗尽，
-	// 前端把这批播完后应该清空本地 seenIds 开新一轮。
-	roundComplete := len(out) < count
-
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items":         out,
-		"total":         total,
-		"roundComplete": roundComplete,
-	})
 }
 
 type updateVideoTagsReq struct {

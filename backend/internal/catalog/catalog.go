@@ -1898,8 +1898,85 @@ func (c *Catalog) CountVisibleVideos(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// ListVisibleVideoIDs returns a stable snapshot of every video currently
+// eligible for the public feed. The shorts API shuffles this snapshot once per
+// feed session so clients only need to send a small token and cursor afterward.
+func (c *Catalog) ListVisibleVideoIDs(ctx context.Context) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT videos.id FROM videos
+		  WHERE COALESCE(videos.hidden, 0) = 0
+		    AND `+activeDriveWhereSQL+`
+		    AND `+uniqueVideoWhereSQL+`
+		  ORDER BY videos.id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// VisibleVideosByIDs loads the still-visible subset of ids while preserving
+// the caller's order. Feed sessions are snapshots, so videos deleted, hidden,
+// or superseded by deduplication after the snapshot was created are skipped.
+func (c *Catalog) VisibleVideosByIDs(ctx context.Context, ids []string) ([]*Video, error) {
+	cleaned := cleanVideoIDs(ids)
+	if len(cleaned) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cleaned)), ",")
+	args := make([]any, 0, len(cleaned))
+	for _, id := range cleaned {
+		args = append(args, id)
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos
+		  WHERE videos.id IN (`+placeholders+`)
+		    AND COALESCE(videos.hidden, 0) = 0
+		    AND `+activeDriveWhereSQL+`
+		    AND `+uniqueVideoWhereSQL,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := make(map[string]*Video, len(cleaned))
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		byID[v.ID] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]*Video, 0, len(byID))
+	for _, id := range cleaned {
+		if v := byID[id]; v != nil {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
 // RandomVideosExcluding 从对前台可见的视频里，随机返回 limit 个不在 excludeIDs 中的视频。
-// 短视频模式用：客户端把当前轮已看的视频 id 传过来，避免本轮重复。
+// 首页随机推荐不足时用它补齐，并排除已经选中的视频。
 // 如果剩余可选数量 < limit，就返回所有可选项；调用方负责判断是否需要开新一轮。
 // limit <= 0 时返回 nil, nil。
 func (c *Catalog) RandomVideosExcluding(ctx context.Context, excludeIDs []string, limit int) ([]*Video, error) {
