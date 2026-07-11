@@ -17,8 +17,6 @@ const DESKTOP_COUNT = 12;
 const MOBILE_COUNT = 8;
 const HOME_SEARCH_PAGE_SIZE = 24;
 const LATEST_POOL_SIZE = 96;
-const HOME_RECENT_KEY = "home.random.recentVideoIds";
-const HOME_RECENT_LIMIT = 72;
 const HOME_LATEST_CURSOR_KEY = "home.latest.cursor";
 
 function useIsMobile() {
@@ -36,45 +34,6 @@ function useIsMobile() {
 let cachedRanking: VideoItem[] | null = null;
 let cachedLatestPool: VideoItem[] | null = null;
 let cachedLatestBatch: VideoItem[] | null = null;
-
-function loadRecentHomeVideoIds(): string[] {
-  try {
-    const raw = window.localStorage.getItem(HOME_RECENT_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-
-    const seen = new Set<string>();
-    const recent: string[] = [];
-    for (const value of parsed) {
-      if (typeof value !== "string") continue;
-      const id = value.trim();
-      if (!id || id.length > 512 || seen.has(id)) continue;
-      seen.add(id);
-      recent.push(id);
-      if (recent.length >= HOME_RECENT_LIMIT) break;
-    }
-    return recent;
-  } catch {
-    return [];
-  }
-}
-
-function rememberHomeVideos(items: VideoItem[]) {
-  const merged = [...items.map((item) => item.id), ...loadRecentHomeVideoIds()];
-  const seen = new Set<string>();
-  const recent: string[] = [];
-  for (const id of merged) {
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    recent.push(id);
-    if (recent.length >= HOME_RECENT_LIMIT) break;
-  }
-  try {
-    window.localStorage.setItem(HOME_RECENT_KEY, JSON.stringify(recent));
-  } catch {
-    // localStorage 不可用时只影响连续刷新去重，不影响首页展示。
-  }
-}
 
 function loadLatestCursor(poolLength: number): number {
   if (poolLength <= 0) return 0;
@@ -104,7 +63,10 @@ function nextLatestBatch(items: VideoItem[], count: number): VideoItem[] {
 
   const start = loadLatestCursor(items.length);
   const batch: VideoItem[] = [];
-  for (let i = 0; i < count; i += 1) {
+  // 缓存最多 12 条以便页面在桌面/手机断点之间切换，但续取游标只前进
+  // 实际展示数量；手机显示 8 条时不会再悄悄跳过后面的 4 条。
+  const batchSize = Math.min(DESKTOP_COUNT, items.length);
+  for (let i = 0; i < batchSize; i += 1) {
     batch.push(items[(start + i) % items.length]);
   }
   saveLatestCursor((start + count) % items.length);
@@ -137,6 +99,9 @@ export default function HomePage() {
   const [searchView, setSearchView] = useState<ViewMode>("grid");
   const homeRequestVersion = useRef(1);
   const isMobile = useIsMobile();
+  const displayCount = isMobile ? MOBILE_COUNT : DESKTOP_COUNT;
+  const displayCountRef = useRef(displayCount);
+  displayCountRef.current = displayCount;
 
   const resetSearchResults = useCallback(() => {
     setSearchPage(1);
@@ -151,15 +116,13 @@ export default function HomePage() {
     setLatestLoading(true);
     setLatestError(false);
 
-    const excludeIds = loadRecentHomeVideoIds();
     const [rankingResult, latestResult] = await Promise.allSettled([
-      fetchHomeVideos(excludeIds),
+      fetchHomeVideos(displayCountRef.current),
       fetchListing(1, LATEST_POOL_SIZE, { sort: "latest", includeTotal: false }),
     ]);
     if (requestVersion !== homeRequestVersion.current) return;
 
     if (rankingResult.status === "fulfilled") {
-      rememberHomeVideos(rankingResult.value);
       cachedRanking = rankingResult.value;
       setRankingVideos(rankingResult.value);
     } else {
@@ -167,7 +130,10 @@ export default function HomePage() {
     }
     if (latestResult.status === "fulfilled") {
       cachedLatestPool = latestResult.value.items;
-      const latestBatch = cacheNextLatestBatch(latestResult.value.items, DESKTOP_COUNT);
+      const latestBatch = cacheNextLatestBatch(
+        latestResult.value.items,
+        displayCountRef.current
+      );
       setLatestVideos(latestBatch);
     } else {
       setLatestError(true);
@@ -210,11 +176,9 @@ export default function HomePage() {
     if (cachedRanking === null) {
       setRankingLoading(true);
       setRankingError(false);
-      const excludeIds = loadRecentHomeVideoIds();
-      fetchHomeVideos(excludeIds)
+      fetchHomeVideos(displayCountRef.current)
         .then((rankingItems) => {
           if (!active || requestVersion !== homeRequestVersion.current) return;
-          rememberHomeVideos(rankingItems);
           cachedRanking = rankingItems;
           setRankingVideos(rankingItems);
           setRankingError(false);
@@ -237,7 +201,12 @@ export default function HomePage() {
         .then((latestResult) => {
           if (!active || requestVersion !== homeRequestVersion.current) return;
           cachedLatestPool = latestResult.items;
-          setLatestVideos(cacheNextLatestBatch(latestResult.items, DESKTOP_COUNT));
+          setLatestVideos(
+            cacheNextLatestBatch(
+              latestResult.items,
+              displayCountRef.current
+            )
+          );
           setLatestError(false);
         })
         .catch(() => {
@@ -250,7 +219,10 @@ export default function HomePage() {
           }
         });
     } else {
-      setLatestVideos(cachedLatestBatch ?? cacheNextLatestBatch(cachedLatestPool, DESKTOP_COUNT));
+      setLatestVideos(
+        cachedLatestBatch ??
+          cacheNextLatestBatch(cachedLatestPool, displayCountRef.current)
+      );
       setLatestLoading(false);
     }
 
@@ -298,7 +270,6 @@ export default function HomePage() {
     setSearchSort("hot");
   }, [activeSearchQuery, activeTag]);
 
-  const displayCount = isMobile ? MOBILE_COUNT : DESKTOP_COUNT;
   const ranking = rankingVideos.slice(0, displayCount);
   const latest = latestVideos.slice(0, displayCount);
   const homeLoading = rankingLoading || latestLoading;

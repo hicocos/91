@@ -234,6 +234,48 @@ func TestRequiredDoesNotRenewSessionWhenMoreThanHalfRemaining(t *testing.T) {
 	}
 }
 
+func TestRequiredProvidesOpaqueSessionIdentity(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	token := "identity-token"
+	if err := cat.CreateSession(ctx, token, time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	authr := &Authenticator{Catalog: cat}
+
+	var identity string
+	req := httptest.NewRequest(http.MethodGet, "/api/home", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	res := httptest.NewRecorder()
+	authr.Required(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ok bool
+		identity, ok = SessionIdentityFromContext(r.Context())
+		if !ok {
+			t.Error("authenticated request is missing its session identity")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", res.Code)
+	}
+	if identity == "" {
+		t.Fatal("session identity is empty")
+	}
+	if identity == token || strings.Contains(identity, token) {
+		t.Fatalf("session identity exposed the raw token: %q", identity)
+	}
+}
+
 func TestRequiredRejectsBannedUserSession(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

@@ -1,41 +1,14 @@
 import type { VideoDetail, VideoItem, VideoSubtitle } from "@/types";
 
 // 真实后端接口调用。未配置网盘时，各接口返回空数据。
-export async function fetchHomeVideos(excludeIds?: string[]): Promise<VideoItem[]> {
-  const recentIds = new Set(
-    (excludeIds ?? [])
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0)
-  );
-  const firstBatch = await apiGet<VideoItem[]>("/api/home");
-  if (!Array.isArray(firstBatch)) {
+export async function fetchHomeVideos(count?: number): Promise<VideoItem[]> {
+  // 整库随机轮次由服务端按登录会话维护；前端只需告知本次展示数量。
+  const path = count === undefined ? "/api/home" : `/api/home?count=${count}`;
+  const items = await apiGet<VideoItem[]>(path);
+  if (!Array.isArray(items)) {
     throw new Error("Invalid /api/home response");
   }
-  if (recentIds.size === 0 || firstBatch.every((item) => !recentIds.has(item.id))) {
-    return firstBatch;
-  }
-
-  // Some client networks fail to deliver segmented request bodies reliably, so
-  // keep this request body-free. A second random batch replaces recent items.
-  let candidates = firstBatch;
-  try {
-    const secondBatch = await apiGet<VideoItem[]>("/api/home");
-    candidates = [...firstBatch, ...secondBatch];
-  } catch {
-    return firstBatch;
-  }
-  const selected: VideoItem[] = [];
-  const selectedIds = new Set<string>();
-  for (const includeRecent of [false, true]) {
-    for (const item of candidates) {
-      if (!item?.id || selectedIds.has(item.id)) continue;
-      if (recentIds.has(item.id) !== includeRecent) continue;
-      selected.push(item);
-      selectedIds.add(item.id);
-      if (selected.length >= firstBatch.length) return selected;
-    }
-  }
-  return selected;
+  return items;
 }
 
 export async function fetchListing(

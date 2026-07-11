@@ -457,7 +457,8 @@ func TestHandleHomePrioritizesVideosWithReadyThumbnails(t *testing.T) {
 	}
 }
 
-func TestHandleHomeExcludesRecentlyShownVideos(t *testing.T) {
+func newHomeRecommendationTestRoute(t *testing.T, total, readyCount int) (*Server, http.Handler, string) {
+	t.Helper()
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -470,100 +471,203 @@ func TestHandleHomeExcludesRecentlyShownVideos(t *testing.T) {
 	})
 
 	now := time.Now()
-	for i := 0; i < homePageSize+4; i++ {
-		id := "ready-video-" + strconv.Itoa(i)
-		if err := cat.UpsertVideo(ctx, &catalog.Video{
-			ID:           id,
-			DriveID:      "drive",
-			FileID:       id,
-			Title:        id,
-			ThumbnailURL: "https://thumb.example/" + id + ".jpg",
-			PublishedAt:  now.Add(time.Duration(i) * time.Minute),
-			CreatedAt:    now.Add(time.Duration(i) * time.Minute),
-			UpdatedAt:    now.Add(time.Duration(i) * time.Minute),
-		}); err != nil {
-			t.Fatalf("seed ready video %s: %v", id, err)
+	for i := 0; i < total; i++ {
+		id := "session-home-video-" + strconv.Itoa(i)
+		video := &catalog.Video{
+			ID:          id,
+			DriveID:     "drive",
+			FileID:      id,
+			Title:       id,
+			PublishedAt: now.Add(time.Duration(i) * time.Minute),
+			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
+			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),
+		}
+		if i < readyCount {
+			video.ThumbnailURL = "https://thumb.example/" + id + ".jpg"
+		}
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatalf("seed home video %s: %v", id, err)
 		}
 	}
 
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/home?exclude=ready-video-0&exclude=ready-video-1", nil)
-	(&Server{Catalog: cat}).handleHome(rr, req)
+	const token = "home-recommendation-session"
+	if err := cat.CreateSession(ctx, token, time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	server := &Server{Catalog: cat}
+	router := chi.NewRouter()
+	server.RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
+	return server, router, token
+}
 
+func requestHomeRecommendationBatch(t *testing.T, handler http.Handler, token string, count int) []VideoDTO {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/home?count="+strconv.Itoa(count), nil)
+	req.AddCookie(&http.Cookie{Name: "vs_admin", Value: token})
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+		t.Fatalf("count %d status = %d, body = %s", count, rr.Code, rr.Body.String())
 	}
 	var got []VideoDTO
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode response: %v", err)
+		t.Fatalf("decode count %d response: %v", count, err)
 	}
-	if len(got) != homePageSize {
-		t.Fatalf("home items = %d, want %d", len(got), homePageSize)
-	}
+	return got
+}
+
+func assertUniqueHomeBatch(t *testing.T, got []VideoDTO) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(got))
 	for _, item := range got {
-		if item.ID == "ready-video-0" || item.ID == "ready-video-1" {
-			t.Fatalf("home returned excluded video %q; items=%#v", item.ID, got)
+		if _, duplicate := seen[item.ID]; duplicate {
+			t.Fatalf("home batch returned duplicate video %q; items=%#v", item.ID, got)
 		}
-		if !strings.HasPrefix(item.ID, "ready-video-") {
-			t.Fatalf("home returned %q without a ready thumbnail; items=%#v", item.ID, got)
+		seen[item.ID] = struct{}{}
+	}
+}
+
+func TestHomeRouteCompletesWholeLibraryBeforeRepeating(t *testing.T) {
+	// Twenty ready thumbnails are returned first; the final eight pending
+	// thumbnails still belong to the same complete-library round.
+	server, router, token := newHomeRecommendationTestRoute(t, 28, 20)
+	seen := make(map[string]struct{}, 28)
+	for _, count := range []int{8, 12, 8} {
+		batch := requestHomeRecommendationBatch(t, router, token, count)
+		if len(batch) != count {
+			t.Fatalf("count %d returned %d items", count, len(batch))
+		}
+		assertUniqueHomeBatch(t, batch)
+		for _, item := range batch {
+			if _, duplicate := seen[item.ID]; duplicate {
+				t.Fatalf("video %q repeated before the 28-video round completed", item.ID)
+			}
+			seen[item.ID] = struct{}{}
+		}
+	}
+	if len(seen) != 28 {
+		t.Fatalf("completed round contained %d unique videos, want 28", len(seen))
+	}
+
+	if len(server.homeRecommendationSessions) != 1 {
+		t.Fatalf("server session records = %d, want 1", len(server.homeRecommendationSessions))
+	}
+	for _, session := range server.homeRecommendationSessions {
+		if len(session.roundVideoIDs) != 28 || session.roundCursor != 28 {
+			t.Fatalf("round state = %d/%d, want 28/28", session.roundCursor, len(session.roundVideoIDs))
+		}
+	}
+
+	nextRound := requestHomeRecommendationBatch(t, router, token, 8)
+	if len(nextRound) != 8 {
+		t.Fatalf("next round returned %d items, want 8", len(nextRound))
+	}
+	assertUniqueHomeBatch(t, nextRound)
+}
+
+func TestHomeRouteSerializesConcurrentRefreshesWithinOneSession(t *testing.T) {
+	_, router, token := newHomeRecommendationTestRoute(t, 24, 24)
+	type batchResult struct {
+		items  []VideoDTO
+		status int
+		body   string
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan batchResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/api/home?count=12", nil)
+			req.AddCookie(&http.Cookie{Name: "vs_admin", Value: token})
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			var items []VideoDTO
+			err := json.NewDecoder(rr.Body).Decode(&items)
+			results <- batchResult{items: items, status: rr.Code, body: rr.Body.String(), err: err}
+		}()
+	}
+	close(start)
+
+	seen := make(map[string]struct{}, 24)
+	for range 2 {
+		result := <-results
+		if result.status != http.StatusOK || result.err != nil {
+			t.Fatalf("concurrent response status=%d decode=%v body=%s", result.status, result.err, result.body)
+		}
+		if len(result.items) != 12 {
+			t.Fatalf("concurrent batch returned %d items, want 12", len(result.items))
+		}
+		assertUniqueHomeBatch(t, result.items)
+		for _, item := range result.items {
+			if _, duplicate := seen[item.ID]; duplicate {
+				t.Fatalf("concurrent refreshes returned the same video %q", item.ID)
+			}
+			seen[item.ID] = struct{}{}
+		}
+	}
+	if len(seen) != 24 {
+		t.Fatalf("concurrent refreshes returned %d unique videos, want 24", len(seen))
+	}
+}
+
+func TestHomeRouteFinishesOldRoundBeforeFillingFromNextRound(t *testing.T) {
+	server, router, token := newHomeRecommendationTestRoute(t, 14, 14)
+	first := requestHomeRecommendationBatch(t, router, token, 12)
+	second := requestHomeRecommendationBatch(t, router, token, 12)
+	if len(first) != 12 || len(second) != 12 {
+		t.Fatalf("batch sizes = %d and %d, want 12 and 12", len(first), len(second))
+	}
+	assertUniqueHomeBatch(t, first)
+	assertUniqueHomeBatch(t, second)
+
+	firstIDs := make(map[string]struct{}, len(first))
+	for _, item := range first {
+		firstIDs[item.ID] = struct{}{}
+	}
+	allIDs := make(map[string]struct{}, 14)
+	for id := range firstIDs {
+		allIDs[id] = struct{}{}
+	}
+	newAtBoundary := 0
+	for index, item := range second {
+		_, appearedInFirst := firstIDs[item.ID]
+		if !appearedInFirst {
+			newAtBoundary++
+			if index >= 2 {
+				t.Fatalf("old-round remainder appeared after the next round started: %#v", second)
+			}
+		}
+		allIDs[item.ID] = struct{}{}
+	}
+	if newAtBoundary != 2 || len(allIDs) != 14 {
+		t.Fatalf("boundary batch exposed %d unseen videos and %d total, want 2 and 14", newAtBoundary, len(allIDs))
+	}
+	for _, session := range server.homeRecommendationSessions {
+		if len(session.roundVideoIDs) != 14 || session.roundCursor != 10 {
+			t.Fatalf("new round state = %d/%d, want 10/14", session.roundCursor, len(session.roundVideoIDs))
 		}
 	}
 }
 
-func TestHandleHomeStartsNewRoundWhenRecentExcludesAllVisibleVideos(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
+func TestHomeRouteDoesNotDuplicateCardsWhenLibraryIsSmallerThanGrid(t *testing.T) {
+	_, router, token := newHomeRecommendationTestRoute(t, 5, 3)
+	first := requestHomeRecommendationBatch(t, router, token, homePageSize)
+	second := requestHomeRecommendationBatch(t, router, token, homePageSize)
+	if len(first) != 5 || len(second) != 5 {
+		t.Fatalf("small-library batch sizes = %d and %d, want 5 and 5", len(first), len(second))
 	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
+	assertUniqueHomeBatch(t, first)
+	assertUniqueHomeBatch(t, second)
+}
 
-	now := time.Now()
-	excludes := make([]string, 0, homePageSize+2)
-	for i := 0; i < homePageSize+2; i++ {
-		id := "ready-video-" + strconv.Itoa(i)
-		excludes = append(excludes, "exclude="+id)
-		if err := cat.UpsertVideo(ctx, &catalog.Video{
-			ID:           id,
-			DriveID:      "drive",
-			FileID:       id,
-			Title:        id,
-			ThumbnailURL: "https://thumb.example/" + id + ".jpg",
-			PublishedAt:  now.Add(time.Duration(i) * time.Minute),
-			CreatedAt:    now.Add(time.Duration(i) * time.Minute),
-			UpdatedAt:    now.Add(time.Duration(i) * time.Minute),
-		}); err != nil {
-			t.Fatalf("seed ready video %s: %v", id, err)
-		}
-	}
-
+func TestHandleHomeRejectsInvalidRecommendationCount(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/home?"+strings.Join(excludes, "&"), nil)
-	(&Server{Catalog: cat}).handleHome(rr, req)
+	req := httptest.NewRequest(http.MethodGet, "/api/home?count=13", nil)
+	(&Server{}).handleHome(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
-	}
-	var got []VideoDTO
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(got) != homePageSize {
-		t.Fatalf("home items = %d, want %d; body=%s", len(got), homePageSize, rr.Body.String())
-	}
-	seen := map[string]bool{}
-	for _, item := range got {
-		if seen[item.ID] {
-			t.Fatalf("home returned duplicate video %q; items=%#v", item.ID, got)
-		}
-		seen[item.ID] = true
-		if !strings.HasPrefix(item.ID, "ready-video-") {
-			t.Fatalf("home returned unexpected video %q; items=%#v", item.ID, got)
-		}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
 }
 

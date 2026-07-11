@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
@@ -43,6 +45,16 @@ type Authenticator struct {
 type loginFailure struct {
 	Count int
 	First time.Time
+}
+
+type sessionIdentityContextKey struct{}
+
+// SessionIdentityFromContext returns an opaque, server-only identity for the
+// authenticated login session. The raw session token is never exposed to
+// downstream handlers or retained by their in-memory state.
+func SessionIdentityFromContext(ctx context.Context) (string, bool) {
+	identity, ok := ctx.Value(sessionIdentityContextKey{}).(string)
+	return identity, ok && identity != ""
 }
 
 func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request, user, pass string) (bool, error) {
@@ -192,8 +204,18 @@ func (a *Authenticator) Required(next http.Handler) http.Handler {
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, withSessionIdentity(r))
 	})
+}
+
+func withSessionIdentity(r *http.Request) *http.Request {
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil || cookie.Value == "" {
+		return r
+	}
+	digest := sha256.Sum256([]byte(cookie.Value))
+	identity := hex.EncodeToString(digest[:])
+	return r.WithContext(context.WithValue(r.Context(), sessionIdentityContextKey{}, identity))
 }
 
 func randomToken() (string, error) {
@@ -377,7 +399,7 @@ func (a *Authenticator) AdminRequired(next http.Handler) http.Handler {
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, withSessionIdentity(r))
 	})
 }
 

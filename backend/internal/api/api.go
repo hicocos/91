@@ -71,6 +71,10 @@ type Server struct {
 	shortsFeeds   map[string]*shortsFeedSession
 	shortsFeedNow func() time.Time
 
+	homeRecommendationMu       sync.Mutex
+	homeRecommendationSessions map[string]*homeRecommendationSession
+	homeRecommendationNow      func() time.Time
+
 	// GetTheme 返回当前生效的主题（"dark" | "pink" | "sky"）。前台 /api/settings/theme 用，
 	// 不需要登录。无注入时返回 "dark"。
 	GetTheme func() string
@@ -196,115 +200,49 @@ func (s *Server) handleGetTheme(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	// 首页优先从全量已有封面的视频里随机抽取，避免只在最近一小段候选中反复出现。
-	excludeIDs := parseVideoIDQuery(r, "exclude", 120)
-	items, err := s.Catalog.RandomVideosWithReadyThumbnailsExcluding(r.Context(), excludeIDs, homePageSize)
+	count, err := homeRecommendationCount(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	recommendationSession := &homeRecommendationSession{}
+	persistentSession := false
+	if identity, ok := auth.SessionIdentityFromContext(r.Context()); ok {
+		recommendationSession = s.homeRecommendationSession(identity)
+		persistentSession = true
+	}
+	recommendationSession.requestMu.Lock()
+	defer recommendationSession.requestMu.Unlock()
+
+	items, roundVideoIDs, roundCursor, err := s.nextHomeRecommendationBatch(
+		r.Context(),
+		recommendationSession,
+		count,
+	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(items) < homePageSize {
-		fallbackExclude := append([]string{}, excludeIDs...)
-		for _, item := range items {
-			if item != nil {
-				fallbackExclude = append(fallbackExclude, item.ID)
-			}
-		}
-		fallback, err := s.Catalog.RandomVideosExcluding(r.Context(), fallbackExclude, homePageSize-len(items))
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		items = appendUniqueVideos(items, fallback, homePageSize)
-	}
-	if len(items) < homePageSize && len(excludeIDs) > 0 {
-		// The browser keeps a recent-video exclude list so normal refreshes do not
-		// repeat too quickly. On small libraries that list can cover every visible
-		// video; when that happens, start a new random round instead of returning
-		// an empty home section.
-		roundExclude := videoIDs(items)
-		fallback, err := s.Catalog.RandomVideosWithReadyThumbnailsExcluding(r.Context(), roundExclude, homePageSize-len(items))
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		items = appendUniqueVideos(items, fallback, homePageSize)
-	}
-	if len(items) < homePageSize && len(excludeIDs) > 0 {
-		fallback, err := s.Catalog.RandomVideosExcluding(r.Context(), videoIDs(items), homePageSize-len(items))
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		items = appendUniqueVideos(items, fallback, homePageSize)
+	recommendationSession.roundVideoIDs = roundVideoIDs
+	recommendationSession.roundCursor = roundCursor
+	if persistentSession {
+		s.touchHomeRecommendationSession(recommendationSession)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, mapVideos(items))
 }
 
-func parseVideoIDQuery(r *http.Request, key string, limit int) []string {
-	if r == nil {
-		return nil
+func homeRecommendationCount(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("count"))
+	if raw == "" {
+		return homePageSize, nil
 	}
-	values := r.URL.Query()[key]
-	if len(values) == 0 {
-		return nil
+	count, err := strconv.Atoi(raw)
+	if err != nil || count < 1 || count > homePageSize {
+		return 0, errors.New("invalid home recommendation count")
 	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		for _, id := range strings.Split(value, ",") {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, id)
-			if limit > 0 && len(out) >= limit {
-				return out
-			}
-		}
-	}
-	return out
-}
-
-func appendUniqueVideos(dst []*catalog.Video, candidates []*catalog.Video, limit int) []*catalog.Video {
-	if len(dst) >= limit {
-		return dst[:limit]
-	}
-	seen := make(map[string]struct{}, len(dst))
-	for _, v := range dst {
-		if v != nil {
-			seen[v.ID] = struct{}{}
-		}
-	}
-	for _, v := range candidates {
-		if v == nil {
-			continue
-		}
-		if _, ok := seen[v.ID]; ok {
-			continue
-		}
-		dst = append(dst, v)
-		seen[v.ID] = struct{}{}
-		if len(dst) >= limit {
-			return dst
-		}
-	}
-	return dst
-}
-
-func videoIDs(items []*catalog.Video) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if item != nil && item.ID != "" {
-			out = append(out, item.ID)
-		}
-	}
-	return out
+	return count, nil
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {

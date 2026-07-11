@@ -1927,6 +1927,41 @@ func (c *Catalog) ListVisibleVideoIDs(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// ListVisibleVideoIDsByThumbnailReadiness returns a stable snapshot of every
+// public video, split so callers can randomize ready and pending thumbnails
+// independently while still preferring ready thumbnails within a full round.
+func (c *Catalog) ListVisibleVideoIDsByThumbnailReadiness(ctx context.Context) (readyIDs, pendingIDs []string, err error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT videos.id,
+		        CASE WHEN COALESCE(videos.thumbnail_url, '') != '' THEN 1 ELSE 0 END
+		   FROM videos
+		  WHERE COALESCE(videos.hidden, 0) = 0
+		    AND `+activeDriveWhereSQL+`
+		    AND `+uniqueVideoWhereSQL+`
+		  ORDER BY videos.id ASC`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var thumbnailReady int
+		if err := rows.Scan(&id, &thumbnailReady); err != nil {
+			return nil, nil, err
+		}
+		if thumbnailReady != 0 {
+			readyIDs = append(readyIDs, id)
+		} else {
+			pendingIDs = append(pendingIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return readyIDs, pendingIDs, nil
+}
+
 // VisibleVideosByIDs loads the still-visible subset of ids while preserving
 // the caller's order. Feed sessions are snapshots, so videos deleted, hidden,
 // or superseded by deduplication after the snapshot was created are skipped.
@@ -1976,7 +2011,6 @@ func (c *Catalog) VisibleVideosByIDs(ctx context.Context, ids []string) ([]*Vide
 }
 
 // RandomVideosExcluding 从对前台可见的视频里，随机返回 limit 个不在 excludeIDs 中的视频。
-// 首页随机推荐不足时用它补齐，并排除已经选中的视频。
 // 如果剩余可选数量 < limit，就返回所有可选项；调用方负责判断是否需要开新一轮。
 // limit <= 0 时返回 nil, nil。
 func (c *Catalog) RandomVideosExcluding(ctx context.Context, excludeIDs []string, limit int) ([]*Video, error) {

@@ -48,11 +48,19 @@ test("home page refresh button shares back-to-top slot until back-to-top is visi
   assert.match(homePageSource, /loadLatestCursor\(items\.length\)/);
   assert.match(homePageSource, /saveLatestCursor\(\(start \+ count\) % items\.length\)/);
   assert.match(homePageSource, /const refreshHome = useCallback\(async \(\) =>/);
-  assert.match(homePageSource, /fetchHomeVideos\(excludeIds\)/);
+  assert.match(homePageSource, /fetchHomeVideos\(displayCountRef\.current\)/);
   assert.match(homePageSource, /fetchListing\(1,\s*LATEST_POOL_SIZE,\s*\{ sort: "latest", includeTotal: false \}\)/);
   assert.match(homePageSource, /const HOME_SEARCH_PAGE_SIZE = 24;/);
   assert.match(homePageSource, /setLatestVideos\(latestBatch\)/);
-  assert.match(homePageSource, /setLatestVideos\(cachedLatestBatch \?\? cacheNextLatestBatch\(cachedLatestPool,\s*DESKTOP_COUNT\)\)/);
+  assert.match(homePageSource, /const displayCount = isMobile \? MOBILE_COUNT : DESKTOP_COUNT;/);
+  assert.match(homePageSource, /const displayCountRef = useRef\(displayCount\);/);
+  assert.match(homePageSource, /cacheNextLatestBatch\(\s*latestResult\.value\.items,\s*displayCountRef\.current\s*\)/);
+  assert.match(homePageSource, /cacheNextLatestBatch\(\s*latestResult\.items,\s*displayCountRef\.current\s*\)/);
+  assert.match(homePageSource, /const batchSize = Math\.min\(DESKTOP_COUNT, items\.length\);/);
+  assert.match(homePageSource, /saveLatestCursor\(\(start \+ count\) % items\.length\)/);
+  assert.doesNotMatch(homePageSource, /HOME_RECENT_KEY/);
+  assert.doesNotMatch(homePageSource, /loadRecentHomeVideoIds/);
+  assert.doesNotMatch(homePageSource, /rememberHomeVideos/);
   assert.match(homePageSource, /className=\{`home-refresh \$\{refreshing \? "is-refreshing" : ""\}`\}/);
   assert.match(homePageSource, /aria-label="刷新首页"/);
   assert.match(homePageSource, /<RefreshCw size=\{18\} \/>/);
@@ -77,7 +85,7 @@ test("home page refresh button shares back-to-top slot until back-to-top is visi
 test("home page reuses the cached latest batch when returning from detail", () => {
   assert.match(homePageSource, /const \[latestVideos,\s*setLatestVideos\] = useState<VideoItem\[\]>\(cachedLatestBatch \?\? \[\]\)/);
   assert.match(homePageSource, /const \[latestLoading,\s*setLatestLoading\] = useState\(cachedLatestBatch === null\)/);
-  assert.match(homePageSource, /setLatestVideos\(cachedLatestBatch \?\? cacheNextLatestBatch\(cachedLatestPool,\s*DESKTOP_COUNT\)\)/);
+  assert.match(homePageSource, /cachedLatestBatch \?\?\s*cacheNextLatestBatch\(cachedLatestPool, displayCountRef\.current\)/);
   assert.doesNotMatch(homePageSource, /setLatestVideos\(nextLatestBatch\(cachedLatestPool,\s*DESKTOP_COUNT\)\)/);
 });
 

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fetchHomeVideos, fetchListing } from "../src/data/videos";
 
-test("home recommendations use a body-free GET request", async (t) => {
+test("home recommendations send only the requested display count", async (t) => {
   const originalFetch = globalThis.fetch;
+  let calls = 0;
   let requestPath = "";
   let requestInit: RequestInit | undefined;
   globalThis.fetch = (async (input, init) => {
+    calls += 1;
     requestPath = String(input);
     requestInit = init;
     return new Response("[]", {
@@ -18,10 +20,14 @@ test("home recommendations use a body-free GET request", async (t) => {
     globalThis.fetch = originalFetch;
   });
 
-  const result = await fetchHomeVideos([" video-1 ", "", "video-2"]);
+  const result = await fetchHomeVideos(8);
 
   assert.deepEqual(result, []);
-  assert.equal(requestPath, "/api/home");
+  assert.equal(calls, 1);
+  assert.equal(
+    requestPath,
+    "/api/home?count=8"
+  );
   assert.equal(requestInit?.method, undefined);
   assert.equal(requestInit?.body, undefined);
   assert.equal(requestInit?.cache, "no-store");
@@ -51,18 +57,17 @@ test("home recommendations retry one transient GET failure", async (t) => {
   assert.deepEqual(result.map((item) => item.id), ["video-after-retry"]);
 });
 
-test("home recommendations replace recently shown candidates", async (t) => {
+test("home recommendations trust one server-filtered response", async (t) => {
   const originalFetch = globalThis.fetch;
-  const batches = [
-    [{ id: "recent-video" }, { id: "first-new-video" }],
-    [{ id: "second-new-video" }, { id: "recent-video" }],
-  ];
   let calls = 0;
-  const requestInits: Array<RequestInit | undefined> = [];
-  globalThis.fetch = (async (_input, init) => {
-    requestInits.push(init);
-    const body = JSON.stringify(batches[calls++] ?? []);
-    return new Response(body, {
+  let requestPath = "";
+  globalThis.fetch = (async (input) => {
+    calls += 1;
+    requestPath = String(input);
+    return new Response(JSON.stringify([
+      { id: "first-new-video" },
+      { id: "second-new-video" },
+    ]), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
@@ -71,41 +76,37 @@ test("home recommendations replace recently shown candidates", async (t) => {
     globalThis.fetch = originalFetch;
   });
 
-  const result = await fetchHomeVideos(["recent-video"]);
+  const result = await fetchHomeVideos(12);
 
-  assert.equal(calls, 2);
-  assert.ok(requestInits.every((init) => init?.method === undefined));
-  assert.ok(requestInits.every((init) => init?.body === undefined));
+  assert.equal(calls, 1);
+  assert.equal(requestPath, "/api/home?count=12");
   assert.deepEqual(
     result.map((item) => item.id),
     ["first-new-video", "second-new-video"]
   );
 });
 
-test("home recommendations keep the first batch when replacement fails", async (t) => {
+test("home recommendations keep the default request path short", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = (async () => {
+  let requestPath = "";
+  globalThis.fetch = (async (input) => {
     calls += 1;
-    if (calls === 1) {
-      return new Response(
-        JSON.stringify([{ id: "recent-video" }, { id: "new-video" }]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }
-    return new Response("unavailable", { status: 503 });
+    requestPath = String(input);
+    return new Response("[]", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }) as typeof fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
 
-  const result = await fetchHomeVideos(["recent-video"]);
+  const result = await fetchHomeVideos();
 
-  assert.equal(calls, 3);
-  assert.deepEqual(
-    result.map((item) => item.id),
-    ["recent-video", "new-video"]
-  );
+  assert.equal(calls, 1);
+  assert.equal(requestPath, "/api/home");
+  assert.deepEqual(result, []);
 });
 
 test("home recommendation request failures remain observable", async (t) => {
