@@ -11,24 +11,14 @@ import { VideoGrid } from "@/components/VideoGrid";
 import { Pagination } from "@/components/Pagination";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { fetchHomeVideos, fetchListing } from "@/data/videos";
+import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
 import type { SortKey, VideoItem } from "@/types";
 
 const DESKTOP_COUNT = 12;
 const MOBILE_COUNT = 8;
-const HOME_SEARCH_PAGE_SIZE = 24;
+const HOME_SEARCH_DESKTOP_PAGE_SIZE = 20;
 const LATEST_POOL_SIZE = 96;
 const HOME_LATEST_CURSOR_KEY = "home.latest.cursor";
-
-function useIsMobile() {
-  const [mobile, setMobile] = useState(window.innerWidth <= 640);
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 640px)");
-    const handler = () => setMobile(mq.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-  return mobile;
-}
 
 // 模块级缓存：SPA 生命周期内保持，刷新页面时重置
 let cachedRanking: VideoItem[] | null = null;
@@ -100,6 +90,9 @@ export default function HomePage() {
   const homeRequestVersion = useRef(1);
   const isMobile = useIsMobile();
   const displayCount = isMobile ? MOBILE_COUNT : DESKTOP_COUNT;
+  const searchPageSize = isMobile
+    ? MOBILE_VIDEO_PAGE_SIZE
+    : HOME_SEARCH_DESKTOP_PAGE_SIZE;
   const displayCountRef = useRef(displayCount);
   displayCountRef.current = displayCount;
 
@@ -241,7 +234,7 @@ export default function HomePage() {
     let active = true;
     setSearchLoading(true);
     setSearchError(false);
-    fetchListing(searchPage, HOME_SEARCH_PAGE_SIZE, {
+    fetchListing(searchPage, searchPageSize, {
       q: activeSearchQuery,
       tag: activeTag,
       sort: searchSort,
@@ -263,7 +256,11 @@ export default function HomePage() {
     return () => {
       active = false;
     };
-  }, [activeSearchQuery, activeTag, searchPage, searchSort]);
+  }, [activeSearchQuery, activeTag, searchPage, searchPageSize, searchSort]);
+
+  useEffect(() => {
+    setSearchPage(1);
+  }, [searchPageSize]);
 
   useEffect(() => {
     setSearchPage(1);
@@ -276,7 +273,7 @@ export default function HomePage() {
   const hasActiveSearch = activeSearchQuery.length > 0;
   const hasActiveTag = activeTag.length > 0;
   const hasActiveFilter = hasActiveSearch || hasActiveTag;
-  const searchTotalPages = Math.max(1, Math.ceil(searchTotal / HOME_SEARCH_PAGE_SIZE));
+  const searchTotalPages = Math.max(1, Math.ceil(searchTotal / searchPageSize));
   const hasAnyVideos = ranking.length > 0 || latest.length > 0;
   const hasHomeError = rankingError || latestError;
   const showEmptyHome = !homeLoading && !hasHomeError && !hasAnyVideos;
@@ -327,7 +324,7 @@ export default function HomePage() {
           {!searchLoading && searchTotalPages > 1 && (
             <Pagination
               page={searchPage}
-              pageSize={HOME_SEARCH_PAGE_SIZE}
+              pageSize={searchPageSize}
               total={searchTotal}
               onChange={(p) => {
                 setSearchPage(p);

@@ -10,6 +10,10 @@ const listingPageSource = readFileSync(
   new URL("../src/pages/ListingPage.tsx", import.meta.url),
   "utf8"
 );
+const responsiveSource = readFileSync(
+  new URL("../src/lib/responsive.ts", import.meta.url),
+  "utf8"
+);
 const layoutCss = readFileSync(
   new URL("../src/styles/layout.css", import.meta.url),
   "utf8"
@@ -38,8 +42,8 @@ test("list page sort toolbar only exposes active sort options", () => {
 });
 
 test("listing page uses compact spacing after the tag cloud", () => {
-  assert.match(listingPageSource, /function ListingContent\(\{ keyword, tag \}: ListingContentProps\)/);
-  assert.match(listingPageSource, /<ListingContent key=\{`\$\{keyword\}\\n\$\{tag\}`\} keyword=\{keyword\} tag=\{tag\} \/>/);
+  assert.match(listingPageSource, /function ListingContent\(\{ keyword, tag, pageSize \}: ListingContentProps\)/);
+  assert.match(listingPageSource, /key=\{`\$\{keyword\}\\n\$\{tag\}`\}/);
   assert.match(listingPageSource, /const \[sort, setSort\] = useState<SortKey>\("hot"\)/);
   assert.match(listingPageSource, /const \[view, setView\] = useState<ViewMode>\("grid"\)/);
   assert.match(listingPageSource, /const \[page, setPage\] = useState\(1\)/);
@@ -64,6 +68,16 @@ test("listing page uses compact spacing after the tag cloud", () => {
   const listingEmptyState = ruleBody(layoutCss, ".admin-empty-state.listing-empty-state");
   assert.match(listingEmptyState, /min-height\s*:\s*clamp\(360px,\s*58vh,\s*620px\)/);
   assert.match(listingEmptyState, /padding\s*:\s*72px 16px 24px/);
+});
+
+test("public video lists use fourteen mobile and twenty desktop items per page", () => {
+  assert.match(responsiveSource, /const MOBILE_LAYOUT_QUERY = "\(max-width: 640px\)";/);
+  assert.match(responsiveSource, /export const MOBILE_VIDEO_PAGE_SIZE = 14;/);
+  assert.match(listingPageSource, /const DESKTOP_PAGE_SIZE = 20;/);
+  assert.match(listingPageSource, /const pageSize = isMobile \? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;/);
+  assert.match(listingPageSource, /setPage\(1\);\s*\}, \[pageSize\]\)/);
+  assert.match(listingPageSource, /fetchListing\(page, pageSize, \{ q: keyword, tag, sort \}\)/);
+  assert.match(listingPageSource, /<Pagination[\s\S]*?page=\{page\}[\s\S]*?pageSize=\{pageSize\}/);
 });
 
 test("sort toolbar has no outer frame around its controls", () => {

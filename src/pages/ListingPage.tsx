@@ -9,25 +9,35 @@ import { VideoGrid } from "@/components/VideoGrid";
 import { Pagination } from "@/components/Pagination";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { fetchListing } from "@/data/videos";
+import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
 import type { SortKey, VideoItem } from "@/types";
 
-const PAGE_SIZE_DEFAULT = 24;
-const PAGE_SIZE_TAG = 12;
+const DESKTOP_PAGE_SIZE = 20;
 
 type ListingContentProps = {
   keyword: string;
   tag: string;
+  pageSize: number;
 };
 
 export default function ListingPage() {
   const [params] = useSearchParams();
   const keyword = params.get("q") ?? "";
   const tag = params.get("tag") ?? "";
+  const isMobile = useIsMobile();
+  const pageSize = isMobile ? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;
 
-  return <ListingContent key={`${keyword}\n${tag}`} keyword={keyword} tag={tag} />;
+  return (
+    <ListingContent
+      key={`${keyword}\n${tag}`}
+      keyword={keyword}
+      tag={tag}
+      pageSize={pageSize}
+    />
+  );
 }
 
-function ListingContent({ keyword, tag }: ListingContentProps) {
+function ListingContent({ keyword, tag, pageSize }: ListingContentProps) {
   const hasLoadedListingRef = useRef(false);
 
   const [sort, setSort] = useState<SortKey>("hot");
@@ -38,6 +48,10 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
   const [items, setItems] = useState<VideoItem[]>([]);
   const [total, setTotal] = useState(0);
   const hasActiveFilter = keyword.trim().length > 0 || tag.trim().length > 0;
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
 
   useEffect(() => {
     document.title = keyword
@@ -52,7 +66,7 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
       setInitialLoading(true);
     }
     setListingError(false);
-    fetchListing(page, tag ? PAGE_SIZE_TAG : PAGE_SIZE_DEFAULT, { q: keyword, tag, sort })
+    fetchListing(page, pageSize, { q: keyword, tag, sort })
       .then((r) => {
         if (!active) return;
         setItems(r.items ?? []);
@@ -68,7 +82,7 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
     return () => {
       active = false;
     };
-  }, [keyword, tag, sort, page]);
+  }, [keyword, tag, pageSize, sort, page]);
 
   return (
     <AppShell>
@@ -110,7 +124,7 @@ function ListingContent({ keyword, tag }: ListingContentProps) {
         )}
         <Pagination
           page={page}
-          pageSize={tag ? PAGE_SIZE_TAG : PAGE_SIZE_DEFAULT}
+          pageSize={pageSize}
           total={total}
           onChange={(p) => {
             setPage(p);

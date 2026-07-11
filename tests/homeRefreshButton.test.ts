@@ -50,7 +50,9 @@ test("home page refresh button shares back-to-top slot until back-to-top is visi
   assert.match(homePageSource, /const refreshHome = useCallback\(async \(\) =>/);
   assert.match(homePageSource, /fetchHomeVideos\(displayCountRef\.current\)/);
   assert.match(homePageSource, /fetchListing\(1,\s*LATEST_POOL_SIZE,\s*\{ sort: "latest", includeTotal: false \}\)/);
-  assert.match(homePageSource, /const HOME_SEARCH_PAGE_SIZE = 24;/);
+  assert.match(homePageSource, /const DESKTOP_COUNT = 12;/);
+  assert.match(homePageSource, /const MOBILE_COUNT = 8;/);
+  assert.match(homePageSource, /const HOME_SEARCH_DESKTOP_PAGE_SIZE = 20;/);
   assert.match(homePageSource, /setLatestVideos\(latestBatch\)/);
   assert.match(homePageSource, /const displayCount = isMobile \? MOBILE_COUNT : DESKTOP_COUNT;/);
   assert.match(homePageSource, /const displayCountRef = useRef\(displayCount\);/);
@@ -156,7 +158,9 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.match(homePageSource, /next\.delete\("q"\);/);
   assert.match(homePageSource, /\{ replace: true \}/);
   assert.match(homePageSource, /<SearchPanel value=\{activeSearchQuery\} onSearch=\{handleSearch\} \/>/);
-  assert.match(homePageSource, /fetchListing\(searchPage,\s*HOME_SEARCH_PAGE_SIZE,\s*\{[\s\S]*?q: activeSearchQuery,[\s\S]*?tag: activeTag,[\s\S]*?sort: searchSort/);
+  assert.match(homePageSource, /const searchPageSize = isMobile\s*\? MOBILE_VIDEO_PAGE_SIZE\s*:\s*HOME_SEARCH_DESKTOP_PAGE_SIZE/);
+  assert.match(homePageSource, /fetchListing\(searchPage,\s*searchPageSize,\s*\{[\s\S]*?q: activeSearchQuery,[\s\S]*?tag: activeTag,[\s\S]*?sort: searchSort/);
+  assert.match(homePageSource, /setSearchPage\(1\);\s*\}, \[searchPageSize\]\)/);
   assert.match(homePageSource, /setSearchPage\(1\);\s*setSearchSort\("hot"\);\s*\}, \[activeSearchQuery, activeTag\]\)/);
   assert.match(homePageSource, /const hasActiveTag = activeTag\.length > 0/);
   assert.match(homePageSource, /const hasActiveFilter = hasActiveSearch \|\| hasActiveTag/);
@@ -166,7 +170,8 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.match(homePageSource, /onViewChange=\{setSearchView\}/);
   assert.match(homePageSource, /compact=\{searchView === "compact"\}/);
   assert.match(homePageSource, /variant="no-results"[\s\S]*?text="未查询到"[\s\S]*?className="admin-empty-state admin-empty-state--plain home-empty-state"/);
-  assert.match(homePageSource, /<Pagination[\s\S]*?page=\{searchPage\}[\s\S]*?pageSize=\{HOME_SEARCH_PAGE_SIZE\}/);
+  assert.match(homePageSource, /const searchTotalPages = Math\.max\(1, Math\.ceil\(searchTotal \/ searchPageSize\)\)/);
+  assert.match(homePageSource, /<Pagination[\s\S]*?page=\{searchPage\}[\s\S]*?pageSize=\{searchPageSize\}/);
   assert.match(homePageSource, /const hasAnyVideos = ranking\.length > 0 \|\| latest\.length > 0/);
   assert.match(homePageSource, /const \[latestError, setLatestError\] = useState\(false\)/);
   assert.match(homePageSource, /const hasHomeError = rankingError \|\| latestError/);
