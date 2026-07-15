@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { PasswordInput } from "../PasswordInput";
+import { QuarkQRCodeLogin } from "./QuarkQRCodeLogin";
 import { P115QRCodeLogin } from "./P115QRCodeLogin";
 import { P123QRCodeLogin } from "./P123QRCodeLogin";
 import { WopanQRCodeLogin } from "./WopanQRCodeLogin";
@@ -159,6 +160,10 @@ export function DriveForm({
 
       {fields.length > 0 && (
         <div className="admin-form__section">
+          {form.kind === "quark" && (
+            <QuarkQRCodeLogin onCookie={(cookie) => setCred("cookie", cookie)} />
+          )}
+
           {form.kind === "p115" && (
             <P115QRCodeLogin onCookie={(cookie) => setCred("cookie", cookie)} />
           )}
@@ -205,6 +210,10 @@ export function DriveForm({
           )}
 
           {form.kind === "p115" && fields.length > 0 && (
+            <div className="admin-form__method-label">方式二</div>
+          )}
+
+          {form.kind === "quark" && fields.length > 0 && (
             <div className="admin-form__method-label">方式二</div>
           )}
 

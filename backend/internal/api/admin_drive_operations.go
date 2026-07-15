@@ -19,6 +19,7 @@ import (
 	"github.com/video-site/backend/internal/drives/guangyapan"
 	"github.com/video-site/backend/internal/drives/p115"
 	"github.com/video-site/backend/internal/drives/p123"
+	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/wopan"
 )
@@ -307,6 +308,59 @@ func (a *AdminServer) p123QRClient() *p123.QRClient {
 
 func (a *AdminServer) p115QRClient() *p115.QRClient {
 	return p115.NewQRClient(p115.QRConfig{HTTPClient: a.P115QRHTTPClient})
+}
+
+func (a *AdminServer) getQuarkQRClient() *quark.QRClient {
+	a.quarkQRMu.Lock()
+	defer a.quarkQRMu.Unlock()
+	if a.quarkQRClient == nil {
+		a.quarkQRClient = quark.NewQRClient(quark.QRConfig{
+			UOPBaseURL: a.QuarkQRUOPBaseURL,
+			PanBaseURL: a.QuarkQRPanBaseURL,
+			HTTPClient: a.QuarkQRHTTPClient,
+		})
+	}
+	return a.quarkQRClient
+}
+
+func (a *AdminServer) handleQuarkQRStart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	session, err := a.getQuarkQRClient().Generate(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+type quarkQRStatusRequest struct {
+	Token string `json:"token"`
+}
+
+func (a *AdminServer) handleQuarkQRStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	var body quarkQRStatusRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, errors.New("request body must contain one JSON object"))
+		return
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("token is required"))
+		return
+	}
+	status, err := a.getQuarkQRClient().Poll(r.Context(), body.Token)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (a *AdminServer) handleP115QRStart(w http.ResponseWriter, r *http.Request) {

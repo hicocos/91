@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/drives/quark"
 )
 
 type AdminServer struct {
@@ -79,6 +81,12 @@ type AdminServer struct {
 	P123HTTPClient     *http.Client
 	// 115网盘扫码登录接口测试注入；生产留空使用带超时的默认客户端。
 	P115QRHTTPClient *http.Client
+	// 夸克网盘扫码登录接口测试注入；生产留空走官方 uop.quark.cn 和 pan.quark.cn。
+	QuarkQRUOPBaseURL string
+	QuarkQRPanBaseURL string
+	QuarkQRHTTPClient *http.Client
+	quarkQRMu         sync.Mutex
+	quarkQRClient     *quark.QRClient
 	// 联通网盘扫码登录接口测试注入；生产留空走官方 panservice.mail.wo.cn。
 	WopanQRAPIBaseURL string
 	WopanQRHTTPClient *http.Client
@@ -184,6 +192,8 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/drives", a.handleListDrives)
 			r.Get("/drives/storage", a.handleDriveStorage)
 			r.Post("/drives", a.handleUpsertDrive)
+			r.Post("/drives/quark/qr", a.handleQuarkQRStart)
+			r.Post("/drives/quark/qr/status", a.handleQuarkQRStatus)
 			r.Post("/drives/p115/qr", a.handleP115QRStart)
 			r.Post("/drives/p115/qr/status", a.handleP115QRStatus)
 			r.Post("/drives/p123/qr", a.handleP123QRStart)

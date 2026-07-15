@@ -1978,6 +1978,117 @@ func TestHandleImportCrawlerScriptURLRejectsNonPython(t *testing.T) {
 	}
 }
 
+func TestHandleQuarkQRStartAndStatusReturnCookie(t *testing.T) {
+	var pollCalls int
+	var accountCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/cas/ajax/getTokenForQrcodeLogin":
+			http.SetCookie(w, &http.Cookie{Name: "_UP_LOGIN", Value: "temporary", Path: "/", HttpOnly: true})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": 2000000,
+				"data":   map[string]any{"members": map[string]string{"token": "quark-token"}},
+			})
+		case "/cas/ajax/getServiceTicketByQrcodeToken":
+			pollCalls++
+			if r.URL.Query().Get("token") != "quark-token" {
+				t.Errorf("poll token = %q", r.URL.Query().Get("token"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": 2000000,
+				"data":   map[string]any{"members": map[string]string{"service_ticket": "service-ticket"}},
+			})
+		case "/account/info":
+			accountCalls++
+			if r.URL.Query().Get("st") != "service-ticket" {
+				t.Errorf("service ticket = %q", r.URL.Query().Get("st"))
+			}
+			http.SetCookie(w, &http.Cookie{Name: "__pus", Value: "pus-value", Path: "/", HttpOnly: true})
+			http.SetCookie(w, &http.Cookie{Name: "__puus", Value: "puus-value", Path: "/", HttpOnly: true})
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "code": 0})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	server := &AdminServer{
+		QuarkQRUOPBaseURL: upstream.URL,
+		QuarkQRPanBaseURL: upstream.URL,
+	}
+	startReq := httptest.NewRequest(http.MethodPost, "/admin/api/drives/quark/qr", nil)
+	startRR := httptest.NewRecorder()
+	server.handleQuarkQRStart(startRR, startReq)
+	if startRR.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", startRR.Code, startRR.Body.String())
+	}
+	if startRR.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("start Cache-Control = %q", startRR.Header().Get("Cache-Control"))
+	}
+	var session struct {
+		Token          string `json:"token"`
+		QRCodeURL      string `json:"qrCodeUrl"`
+		QRImageDataURL string `json:"qrImageDataUrl"`
+	}
+	if err := json.NewDecoder(startRR.Body).Decode(&session); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	if session.Token != "quark-token" || !strings.HasPrefix(session.QRCodeURL, "https://su.quark.cn/4_eMHBJ?") {
+		t.Fatalf("session = %#v", session)
+	}
+	if !strings.HasPrefix(session.QRImageDataURL, "data:image/png;base64,") {
+		t.Fatalf("qr image = %q", session.QRImageDataURL)
+	}
+
+	statusReq := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/api/drives/quark/qr/status",
+		strings.NewReader(`{"token":"quark-token"}`),
+	)
+	if statusReq.URL.RawQuery != "" {
+		t.Fatalf("admin status request unexpectedly contains query: %s", statusReq.URL.RawQuery)
+	}
+	statusRR := httptest.NewRecorder()
+	server.handleQuarkQRStatus(statusRR, statusReq)
+	if statusRR.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", statusRR.Code, statusRR.Body.String())
+	}
+	if statusRR.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status Cache-Control = %q", statusRR.Header().Get("Cache-Control"))
+	}
+	var status struct {
+		State  string `json:"state"`
+		Status int    `json:"status"`
+		Cookie string `json:"cookie"`
+	}
+	if err := json.NewDecoder(statusRR.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.State != "success" || status.Status != 2000000 || status.Cookie != "__pus=pus-value; __puus=puus-value" {
+		t.Fatalf("status response = %#v", status)
+	}
+	if pollCalls != 1 || accountCalls != 1 {
+		t.Fatalf("upstream calls: poll=%d account=%d", pollCalls, accountCalls)
+	}
+}
+
+func TestHandleQuarkQRStatusRejectsMissingToken(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/api/drives/quark/qr/status",
+		strings.NewReader(`{"token":""}`),
+	)
+	rr := httptest.NewRecorder()
+	(&AdminServer{}).handleQuarkQRStatus(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", rr.Header().Get("Cache-Control"))
+	}
+}
+
 type p115QRRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f p115QRRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

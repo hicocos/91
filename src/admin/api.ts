@@ -341,6 +341,31 @@ export function deleteCrawler(id: string) {
   });
 }
 
+export type QuarkQRSession = {
+  token: string;
+  qrCodeUrl: string;
+  qrImageDataUrl: string;
+  expiresAt: string;
+};
+
+export type QuarkQRStatus = {
+  state: "waiting" | "success" | "expired" | "error";
+  status: number;
+  statusText: string;
+  cookie?: string;
+};
+
+export function startQuarkQRLogin() {
+  return request<QuarkQRSession>("/drives/quark/qr", { method: "POST" });
+}
+
+export function getQuarkQRStatus(token: string) {
+  return request<QuarkQRStatus>("/drives/quark/qr/status", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
 export type P115QRSession = {
   uid: string;
   time: number;

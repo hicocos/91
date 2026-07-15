@@ -62,7 +62,12 @@ const p115QRCodeLoginSource = readFileSync(
   new URL("../src/admin/drive/P115QRCodeLogin.tsx", import.meta.url),
   "utf8"
 );
+const quarkQRCodeLoginSource = readFileSync(
+  new URL("../src/admin/drive/QuarkQRCodeLogin.tsx", import.meta.url),
+  "utf8"
+);
 const qrLoginSources = [
+  quarkQRCodeLoginSource,
   p115QRCodeLoginSource,
   p123QRCodeLoginSource,
   readFileSync(new URL("../src/admin/drive/WopanQRCodeLogin.tsx", import.meta.url), "utf8"),
@@ -236,6 +241,27 @@ test("p115 drive form supports qr login and manual cookie fallback", () => {
   assert.ok(match, "p115 credential field block should be present");
   assert.match(match[1], /key: "cookie"/);
   assert.match(match[1], /UID=xxx; CID=xxx; SEID=xxx; KID=xxx/);
+});
+
+test("quark drive form supports qr login and manual cookie fallback", () => {
+  assertDriveTypeOption("quark", "夸克网盘");
+  assert.match(driveFormSource, /QuarkQRCodeLogin/);
+  assert.match(driveFormSource, /form\.kind === "quark"/);
+  assert.match(quarkQRCodeLoginSource, /<label>方式一<\/label>/);
+  assert.match(quarkQRCodeLoginSource, /onCookie\(next\.cookie\)/);
+  assert.match(quarkQRCodeLoginSource, /getQuarkQRStatus\(activeSession\.token\)/);
+  assert.match(apiSource, /startQuarkQRLogin/);
+  assert.match(apiSource, /getQuarkQRStatus/);
+  assert.match(apiSource, /request<QuarkQRStatus>\("\/drives\/quark\/qr\/status", \{/);
+  assert.match(apiSource, /body: JSON\.stringify\(\{ token \}\)/);
+
+  const match =
+    /case "quark":\s*return \[([\s\S]*?)\];\s*case "p115":/.exec(
+      combinedSource
+    );
+  assert.ok(match, "quark credential field block should be present");
+  assert.match(match[1], /key: "cookie"/);
+  assert.match(match[1], /__pus=\.\.\.; __puus=\.\.\.; \.\.\./);
 });
 
 test("p123 drive form exposes qr login and phone or email password login", () => {
