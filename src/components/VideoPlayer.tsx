@@ -7,6 +7,7 @@ import {
 } from "react";
 import Artplayer, { type Option, type SettingOption } from "artplayer";
 import type Hls from "hls.js";
+import { diagnosePlaybackSource } from "@/lib/playbackError";
 import type { VideoSubtitle } from "@/types";
 
 type Props = {
@@ -361,6 +362,11 @@ function mountArtPlayer({
   const loadHlsSource = createHlsSourceLoader(onError);
   const enableOrientationControl = shouldEnableMobileOrientationControl();
   const enableWebFullscreen = shouldEnableWebFullscreen(enableOrientationControl);
+  let disposed = false;
+  let playbackErrorActive = false;
+  let diagnosticController: AbortController | null = null;
+  let diagnosticPromise: Promise<string | null> | null = null;
+  let diagnosticMessage: string | null = null;
   configureArtPlayerSettingLayout(
     shouldUseCompactPlayerSettings(mount, enableOrientationControl)
   );
@@ -434,22 +440,48 @@ function mountArtPlayer({
       playedRef.current = true;
       onFirstPlayRef.current?.();
     }
+    playbackErrorActive = false;
+    clearPlaybackDiagnostic();
     onError(null);
   }
 
   function handleLoadStart() {
+    playbackErrorActive = false;
     onError(null);
   }
 
   function handleReady() {
+    playbackErrorActive = false;
+    clearPlaybackDiagnostic();
     onError(null);
   }
 
   function handleVideoError() {
+    playbackErrorActive = true;
+    const fallbackMessage = mediaErrorMessage(video.error);
     onError({
       title: "视频源加载失败",
-      message: mediaErrorMessage(video.error),
+      message: diagnosticMessage || fallbackMessage,
     });
+    if (diagnosticPromise) return;
+
+    diagnosticController = new AbortController();
+    diagnosticPromise = diagnosePlaybackSource(src, {
+      signal: diagnosticController.signal,
+    });
+    void diagnosticPromise.then((message) => {
+      diagnosticMessage = message;
+      if (!disposed && playbackErrorActive && message) {
+        onError({ title: "视频源加载失败", message });
+      }
+    });
+  }
+
+  function clearPlaybackDiagnostic() {
+    diagnosticController?.abort();
+    diagnosticController = null;
+    diagnosticPromise = null;
+    diagnosticMessage = null;
   }
 
   function resetFastRate() {
@@ -495,6 +527,8 @@ function mountArtPlayer({
   art.on("video:ended", resetFastRate);
 
   return () => {
+    disposed = true;
+    clearPlaybackDiagnostic();
     unbindFastRate();
     unbindMobileGestures();
     unbindProgressPreview();
@@ -1705,7 +1739,7 @@ function mediaErrorMessage(error: MediaError | null) {
     case MediaError.MEDIA_ERR_DECODE:
       return "视频编码无法解码，可能需要转码或换用浏览器。";
     case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-      return "视频源暂不可用或格式不受当前浏览器支持。";
+      return "浏览器未能加载视频源，可能是网盘连接、地址失效或视频格式问题。";
     default:
       return "视频源暂时无法播放，请重试或复制地址排查。";
   }

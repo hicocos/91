@@ -2622,6 +2622,29 @@ func (c *Catalog) DeleteDrive(ctx context.Context, id string) error {
 	return err
 }
 
+// SetDriveRuntimeStatus updates only the connection state observed while the
+// server is already running. Playback and other runtime checks must not use
+// UpsertDrive here: doing so could overwrite credentials or drive settings with
+// a stale in-memory copy.
+func (c *Catalog) SetDriveRuntimeStatus(ctx context.Context, id, status, lastError string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("catalog: set drive runtime status: empty id")
+	}
+	if status != "ok" && status != "error" {
+		return fmt.Errorf("catalog: set drive runtime status: invalid status %q", status)
+	}
+	// Avoid touching updated_at when retries report a state already persisted.
+	// This keeps admin polling useful and prevents needless SQLite writes.
+	_, err := c.db.ExecContext(ctx, `
+UPDATE drives
+   SET status = ?, last_error = ?, updated_at = ?
+ WHERE id = ?
+   AND (COALESCE(status, '') != ? OR COALESCE(last_error, '') != ?)`,
+		status, lastError, time.Now().UnixMilli(), id, status, lastError)
+	return err
+}
+
 // SetDriveTeaserEnabled 切换某盘的预览视频生成开关。
 //
 // 与 UpsertDrive 的区别：只动 teaser_enabled + updated_at 一列，不要求调用方

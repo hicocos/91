@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,229 @@ import (
 
 	"github.com/video-site/backend/internal/drives"
 )
+
+func TestServeStreamLinkFailureReturnsStructuredErrorAndReportsStatus(t *testing.T) {
+	reg := NewRegistry()
+	drv := &proxyResultDrive{
+		kind: "p115",
+		results: []proxyDriveResult{{
+			err: errors.New(`115 get file: {"error":"登录超时，请重新登录。"}: user not login`),
+		}},
+	}
+	reg.Set("115", drv)
+	p := New(reg)
+	var updates []proxyStatusUpdate
+	p.SetStreamStatusReporter(func(driveID, status, lastError string) {
+		updates = append(updates, proxyStatusUpdate{driveID, status, lastError})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/115/file-1", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "115", "file-1")
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	var payload streamErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v; body=%q", err, rr.Body.String())
+	}
+	if payload.Code != "drive_auth_failed" {
+		t.Fatalf("code = %q, want drive_auth_failed", payload.Code)
+	}
+	if payload.Message != "115 网盘登录或授权已失效，请联系管理员重新登录。" {
+		t.Fatalf("message = %q", payload.Message)
+	}
+	if len(updates) != 1 || updates[0].driveID != "115" || updates[0].status != "error" || updates[0].lastError == "" {
+		t.Fatalf("status updates = %#v", updates)
+	}
+}
+
+func TestServeStreamReportsRecoveryAndCoalescesRepeatedSuccess(t *testing.T) {
+	reg := NewRegistry()
+	drv := &proxyResultDrive{
+		kind: "guangyapan",
+		results: []proxyDriveResult{
+			{err: errors.New("invalid_grant: invalidate refresh token")},
+			{url: "https://cdn.example/video.mp4"},
+		},
+	}
+	reg.Set("guangyapan", drv)
+	p := New(reg)
+	var updates []proxyStatusUpdate
+	p.SetStreamStatusReporter(func(driveID, status, lastError string) {
+		updates = append(updates, proxyStatusUpdate{driveID, status, lastError})
+	})
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/p/stream/guangyapan/file-1", nil)
+		rr := httptest.NewRecorder()
+		p.ServeStream(rr, req, "guangyapan", "file-1")
+		if i == 0 && rr.Code != http.StatusBadGateway {
+			t.Fatalf("failed request status = %d", rr.Code)
+		}
+		if i > 0 && rr.Code != http.StatusFound {
+			t.Fatalf("successful request %d status = %d", i, rr.Code)
+		}
+	}
+
+	if len(updates) != 2 {
+		t.Fatalf("status updates = %#v, want error then one recovery", updates)
+	}
+	if updates[0].status != "error" || updates[1].status != "ok" || updates[1].lastError != "" {
+		t.Fatalf("status updates = %#v", updates)
+	}
+}
+
+func TestServeStreamUpstreamAuthFailureReturnsStructuredError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "expired", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	reg := NewRegistry()
+	reg.Set("quark", &proxyFakeSimpleDrive{kind: "quark", url: upstream.URL + "/video.mp4"})
+	p := New(reg)
+	var update proxyStatusUpdate
+	p.SetStreamStatusReporter(func(driveID, status, lastError string) {
+		update = proxyStatusUpdate{driveID, status, lastError}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/quark/file-1", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "quark", "file-1")
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+	var payload streamErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != "drive_auth_failed" || update.status != "error" {
+		t.Fatalf("payload=%#v update=%#v", payload, update)
+	}
+}
+
+func TestClassifyStreamErrorRecognizesConfiguredDriveAuthFailures(t *testing.T) {
+	for _, text := range []string{
+		"登录超时，请重新登录: user not login",
+		`{"error":"invalid_grant","error_description":"invalidate refresh token"}`,
+		"pikpak error_code=9 error=captcha_invalid description=Verification code is invalid",
+	} {
+		if code, category := classifyStreamError(errors.New(text)); code != "drive_auth_failed" || category != "auth" {
+			t.Fatalf("classify %q = (%q, %q)", text, code, category)
+		}
+	}
+}
+
+func TestServeStreamMissingFileDoesNotMarkWholeDriveUnhealthy(t *testing.T) {
+	reg := NewRegistry()
+	reg.Set("local", &proxyResultDrive{
+		kind:    "localstorage",
+		results: []proxyDriveResult{{err: os.ErrNotExist}},
+	})
+	p := New(reg)
+	var update proxyStatusUpdate
+	p.SetStreamStatusReporter(func(driveID, status, lastError string) {
+		update = proxyStatusUpdate{driveID, status, lastError}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/local/missing.mp4", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "local", "missing.mp4")
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+	var payload streamErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != "drive_source_not_found" {
+		t.Fatalf("code = %q, want drive_source_not_found", payload.Code)
+	}
+	if update.status != "ok" || update.lastError != "" {
+		t.Fatalf("status update = %#v, missing file must not mark drive error", update)
+	}
+}
+
+func TestServeStreamConfiguredDriveInitFailureIsNotReportedAsMissing(t *testing.T) {
+	p := New(NewRegistry())
+	p.SetDriveInitError("115", "p115", errors.New("该账号已在其他端主动退出: session exited"))
+	var update proxyStatusUpdate
+	p.SetStreamStatusReporter(func(driveID, status, lastError string) {
+		update = proxyStatusUpdate{driveID, status, lastError}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/115/file-1", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "115", "file-1")
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+	var payload streamErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != "drive_auth_failed" {
+		t.Fatalf("code = %q, want drive_auth_failed", payload.Code)
+	}
+	if update.status != "error" || update.driveID != "115" {
+		t.Fatalf("status update = %#v", update)
+	}
+}
+
+type proxyStatusUpdate struct {
+	driveID   string
+	status    string
+	lastError string
+}
+
+type proxyDriveResult struct {
+	url string
+	err error
+}
+
+type proxyResultDrive struct {
+	kind    string
+	results []proxyDriveResult
+	calls   int
+}
+
+func (d *proxyResultDrive) Kind() string               { return d.kind }
+func (d *proxyResultDrive) ID() string                 { return d.kind }
+func (d *proxyResultDrive) Init(context.Context) error { return nil }
+func (d *proxyResultDrive) List(context.Context, string) ([]drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyResultDrive) Stat(context.Context, string) (*drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyResultDrive) StreamURL(context.Context, string) (*drives.StreamLink, error) {
+	index := d.calls
+	d.calls++
+	if index >= len(d.results) {
+		index = len(d.results) - 1
+	}
+	result := d.results[index]
+	if result.err != nil {
+		return nil, result.err
+	}
+	return &drives.StreamLink{
+		URL: result.url, Headers: http.Header{}, Expires: time.Now().Add(time.Minute),
+	}, nil
+}
+func (d *proxyResultDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyResultDrive) EnsureDir(context.Context, string) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyResultDrive) RootID() string { return "0" }
 
 func TestServeStreamRedirectsP115WithRequestUserAgent(t *testing.T) {
 	reg := NewRegistry()

@@ -78,6 +78,17 @@ func (a *App) attachExistingDrives(ctx context.Context) {
 	log.Printf("[drive] background attach complete")
 }
 
+func (a *App) recordPlaybackDriveStatus(driveID, status, lastError string) {
+	if a == nil || a.cat == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.cat.SetDriveRuntimeStatus(ctx, driveID, status, lastError); err != nil {
+		log.Printf("[drive %s] persist playback status %s: %v", driveID, status, err)
+	}
+}
+
 func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 	if d == nil {
 		return errors.New("nil drive")
@@ -236,6 +247,10 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 	}
 
 	if err := drv.Init(ctx); err != nil {
+		if a.proxy != nil {
+			a.proxy.InvalidateDrive(d.ID)
+			a.proxy.SetDriveInitError(d.ID, d.Kind, err)
+		}
 		d.Status = "error"
 		d.LastError = err.Error()
 		_ = a.cat.UpsertDrive(ctx, d)
@@ -245,6 +260,9 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 	d.Status = "ok"
 	d.LastError = ""
 	_ = a.cat.UpsertDrive(ctx, d)
+	if a.proxy != nil {
+		a.proxy.InvalidateDrive(d.ID)
+	}
 
 	a.registry.Set(d.ID, drv)
 
@@ -1003,6 +1021,9 @@ func (a *App) detachDrive(id string) {
 	a.clearQueuedDriveTask(id)
 	a.clearFingerprintQueueing(id)
 	a.registry.Remove(id)
+	if a.proxy != nil {
+		a.proxy.InvalidateDrive(id)
+	}
 	a.mu.Lock()
 	if cancel, ok := a.cancels[id]; ok {
 		cancel()

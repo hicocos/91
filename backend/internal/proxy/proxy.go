@@ -2,10 +2,15 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,21 +67,86 @@ type Proxy struct {
 	cacheMu sync.Mutex
 	cache   map[string]cachedLink
 	http    *http.Client
+
+	statusMu       sync.Mutex
+	statusReporter StreamStatusReporter
+	reportedStatus map[string]string
+	initErrors     map[string]driveInitError
 }
+
+// StreamStatusReporter receives playback-observed drive health transitions.
+// lastError is intentionally the original provider error so the admin page can
+// retain the information needed to repair an expired login or authorization.
+type StreamStatusReporter func(driveID, status, lastError string)
 
 type cachedLink struct {
 	link    *drives.StreamLink
 	fetched time.Time
 }
 
+type driveInitError struct {
+	kind string
+	err  error
+}
+
 func New(r *Registry) *Proxy {
 	return &Proxy{
-		Registry: r,
-		cache:    make(map[string]cachedLink),
+		Registry:       r,
+		cache:          make(map[string]cachedLink),
+		reportedStatus: make(map[string]string),
+		initErrors:     make(map[string]driveInitError),
 		http: &http.Client{
 			Timeout: 0, // 流式不设超时
 		},
 	}
+}
+
+// SetDriveInitError keeps a configured-but-unavailable drive visible to the
+// playback layer. Without this, an Init failure leaves no Registry entry and
+// playback is incorrectly reported as a missing drive/file (404).
+func (p *Proxy) SetDriveInitError(driveID, driveKind string, err error) {
+	if err == nil {
+		return
+	}
+	p.statusMu.Lock()
+	p.initErrors[driveID] = driveInitError{kind: driveKind, err: err}
+	p.statusMu.Unlock()
+}
+
+// SetStreamStatusReporter connects playback results to the persistent drive
+// status maintained by the server. Repeated failures of the same category are
+// coalesced so normal player retries do not write the database on every request.
+func (p *Proxy) SetStreamStatusReporter(reporter StreamStatusReporter) {
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+	p.statusReporter = reporter
+	p.reportedStatus = make(map[string]string)
+}
+
+// InvalidateDrive removes links and observed health left by an older driver
+// instance. It is called whenever credentials are saved/re-mounted so the next
+// playback cannot reuse a stale URL or suppress a repeated authentication error.
+func (p *Proxy) InvalidateDrive(driveID string) {
+	prefix := driveID + "/"
+	p.cacheMu.Lock()
+	for key := range p.cache {
+		if strings.HasPrefix(key, prefix) {
+			delete(p.cache, key)
+		}
+	}
+	p.cacheMu.Unlock()
+
+	p.statusMu.Lock()
+	delete(p.reportedStatus, driveID)
+	delete(p.initErrors, driveID)
+	p.statusMu.Unlock()
+}
+
+func (p *Proxy) driveInitError(driveID string) (driveInitError, bool) {
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+	result, ok := p.initErrors[driveID]
+	return result, ok
 }
 
 func (p *Proxy) getLink(ctx context.Context, d drives.Drive, driveID, fileID string, header http.Header) (*drives.StreamLink, error) {
@@ -121,20 +191,71 @@ func linkCacheKey(d drives.Drive, driveID, fileID string, header http.Header) st
 func (p *Proxy) ServeStream(w http.ResponseWriter, r *http.Request, driveID, fileID string) {
 	d, ok := p.Registry.Get(driveID)
 	if !ok {
+		if initFailure, unavailable := p.driveInitError(driveID); unavailable {
+			p.reportStreamResult(driveID, initFailure.err)
+			writeStreamError(w, initFailure.kind, initFailure.err)
+			return
+		}
 		http.Error(w, errDriveNotFound.Error(), errDriveNotFound.Code)
 		return
 	}
 
 	link, err := p.getLink(r.Context(), d, driveID, fileID, r.Header)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		if errors.Is(err, context.Canceled) {
+			// A browser-aborted request is not a provider health result.
+		} else if streamErrorAffectsDrive(err) {
+			p.reportStreamResult(driveID, err)
+		} else {
+			p.reportStreamResult(driveID, nil)
+		}
+		writeStreamError(w, d.Kind(), err)
 		return
 	}
 	if shouldRedirect(d) {
+		p.reportStreamResult(driveID, nil)
 		redirect(w, r, link)
 		return
 	}
-	p.serve(w, r, link)
+	if err := p.serve(w, r, link); err != nil {
+		if errors.Is(err, context.Canceled) {
+			// Browser navigation and canceled range requests say nothing about
+			// provider health, so retain the previous observed state.
+		} else if streamErrorAffectsDrive(err) {
+			p.reportStreamResult(driveID, err)
+		} else {
+			// A missing/deleted individual file does not mean the drive login is
+			// unhealthy. Successful link resolution still proves connectivity.
+			p.reportStreamResult(driveID, nil)
+		}
+		writeStreamError(w, d.Kind(), err)
+		return
+	}
+	p.reportStreamResult(driveID, nil)
+}
+
+func (p *Proxy) reportStreamResult(driveID string, err error) {
+	state := "ok"
+	status := "ok"
+	lastError := ""
+	if err != nil {
+		code, _ := classifyStreamError(err)
+		state = "error:" + code
+		status = "error"
+		lastError = err.Error()
+	}
+
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+	if previous, ok := p.reportedStatus[driveID]; ok && previous == state {
+		return
+	}
+	p.reportedStatus[driveID] = state
+	if p.statusReporter != nil {
+		// Keep this serialized with the state transition. Otherwise concurrent
+		// failed/recovered requests could persist in the opposite order.
+		p.statusReporter(driveID, status, lastError)
+	}
 }
 
 // shouldRedirect 返回 true 时，/p/stream 不再反代视频字节，
@@ -171,22 +292,20 @@ func redirect(w http.ResponseWriter, r *http.Request, link *drives.StreamLink) {
 	http.Redirect(w, r, link.URL, http.StatusFound)
 }
 
-func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.StreamLink) {
+func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.StreamLink) error {
 	// 构造上游请求
 	u, err := url.Parse(link.URL)
 	if err != nil {
-		http.Error(w, "bad upstream url", http.StatusBadGateway)
-		return
+		return fmt.Errorf("bad upstream url: %w", err)
 	}
 	if localPath, ok := localFilePath(u, link.URL); ok {
 		w.Header().Set("Cache-Control", "private, max-age=300")
 		http.ServeFile(w, r, localPath)
-		return
+		return nil
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, u.String(), nil)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("build upstream request: %w", err)
 	}
 	// 复制上游请求头
 	for k, vs := range link.Headers {
@@ -201,10 +320,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 
 	resp, err := p.http.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("request upstream: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		return &upstreamHTTPError{StatusCode: resp.StatusCode}
+	}
 
 	// 透传响应头
 	for _, k := range []string{
@@ -218,6 +339,126 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+	return nil
+}
+
+type upstreamHTTPError struct {
+	StatusCode int
+}
+
+func (e *upstreamHTTPError) Error() string {
+	return fmt.Sprintf("upstream returned HTTP %d %s", e.StatusCode, http.StatusText(e.StatusCode))
+}
+
+func streamErrorAffectsDrive(err error) bool {
+	if errors.Is(err, os.ErrNotExist) || drives.ErrorMentionsHTTPStatus(err, http.StatusNotFound, http.StatusGone) {
+		return false
+	}
+	var upstream *upstreamHTTPError
+	if !errors.As(err, &upstream) {
+		return true
+	}
+	switch upstream.StatusCode {
+	case http.StatusNotFound, http.StatusGone, http.StatusRequestedRangeNotSatisfiable:
+		return false
+	default:
+		return true
+	}
+}
+
+type streamErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeStreamError(w http.ResponseWriter, driveKind string, err error) {
+	code, category := classifyStreamError(err)
+	label := driveLabel(driveKind)
+	message := label + "获取播放地址失败，请稍后重试或联系管理员。"
+	switch category {
+	case "auth":
+		message = label + "登录或授权已失效，请联系管理员重新登录。"
+	case "rate_limit":
+		message = label + "当前正在限流，请稍后重试。"
+	case "not_found":
+		message = label + "中的视频文件不存在或已失效，请联系管理员重新扫描。"
+	case "unavailable":
+		message = label + "上游服务暂时不可用，请稍后重试。"
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(w).Encode(streamErrorResponse{Code: code, Message: message})
+}
+
+func classifyStreamError(err error) (code, category string) {
+	var upstream *upstreamHTTPError
+	if errors.As(err, &upstream) {
+		switch upstream.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusProxyAuthRequired:
+			return "drive_auth_failed", "auth"
+		case http.StatusNotFound, http.StatusGone:
+			return "drive_source_not_found", "not_found"
+		case http.StatusTooManyRequests:
+			return "drive_rate_limited", "rate_limit"
+		default:
+			if upstream.StatusCode >= http.StatusInternalServerError {
+				return "drive_upstream_unavailable", "unavailable"
+			}
+			return "drive_stream_failed", "generic"
+		}
+	}
+	if _, ok := drives.RateLimitRetryAfter(err); ok {
+		return "drive_rate_limited", "rate_limit"
+	}
+	if errors.Is(err, os.ErrNotExist) || drives.ErrorMentionsHTTPStatus(err, http.StatusNotFound, http.StatusGone) {
+		return "drive_source_not_found", "not_found"
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"登录超时", "请重新登录", "登录已失效", "未登录", "主动退出",
+		"user not login", "not logged in", "invalid_grant", "invalid grant",
+		"refresh token", "refresh_token", "token expired", "expired token",
+		"invalid token", "token is invalid", "unauthorized", "unauthenticated",
+		"captcha_invalid", "verification code is invalid", "cookie invalid",
+		"invalid cookie", "cookie expired", "session exited",
+	} {
+		if strings.Contains(text, marker) {
+			return "drive_auth_failed", "auth"
+		}
+	}
+	if drives.ErrorMentionsHTTPStatus(err, http.StatusUnauthorized, http.StatusForbidden, http.StatusProxyAuthRequired) {
+		return "drive_auth_failed", "auth"
+	}
+	if drives.ErrorMentionsHTTPStatus(err, http.StatusTooManyRequests) {
+		return "drive_rate_limited", "rate_limit"
+	}
+	return "drive_stream_failed", "generic"
+}
+
+func driveLabel(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "p115":
+		return "115 网盘"
+	case "p123":
+		return "123 网盘"
+	case "guangyapan":
+		return "光鸭网盘"
+	case "pikpak":
+		return "PikPak"
+	case "wopan":
+		return "沃盘"
+	case "onedrive":
+		return "OneDrive"
+	case "googledrive":
+		return "Google Drive"
+	case "quark":
+		return "夸克网盘"
+	case "localstorage", "local-upload":
+		return "本地存储"
+	default:
+		return "网盘"
+	}
 }
 
 // ServeLocal 服务本地预览视频文件

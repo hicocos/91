@@ -86,6 +86,7 @@ func main() {
 		scriptCrawlers:     make(map[string]*scriptcrawler.Crawler),
 	}
 	app.proxy = proxy.New(app.registry)
+	app.proxy.SetStreamStatusReporter(app.recordPlaybackDriveStatus)
 	app.crawlerUploader = crawlerupload.New(crawlerupload.Config{
 		Catalog:          cat,
 		Registry:         app.registry,
