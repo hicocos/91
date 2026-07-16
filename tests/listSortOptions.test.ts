@@ -42,11 +42,13 @@ test("list page sort toolbar only exposes active sort options", () => {
 });
 
 test("listing page uses compact spacing after the tag cloud", () => {
-  assert.match(listingPageSource, /function ListingContent\(\{ keyword, tag, pageSize \}: ListingContentProps\)/);
-  assert.match(listingPageSource, /key=\{`\$\{keyword\}\\n\$\{tag\}`\}/);
-  assert.match(listingPageSource, /const \[sort, setSort\] = useState<SortKey>\("hot"\)/);
-  assert.match(listingPageSource, /const \[view, setView\] = useState<ViewMode>\("grid"\)/);
-  assert.match(listingPageSource, /const \[page, setPage\] = useState\(1\)/);
+  assert.match(listingPageSource, /const \[params, setParams\] = useSearchParams\(\)/);
+  assert.match(listingPageSource, /const sort = readListingSort\(params\)/);
+  assert.match(listingPageSource, /setParams\(withListingSort\(params, nextSort\), \{ replace: true \}\)/);
+  assert.match(listingPageSource, /key=\{`\$\{keyword\}\\n\$\{tag\}\\n\$\{pageSize\}`\}/);
+  assert.doesNotMatch(listingPageSource, /const \[sort, setSort\] = useState<SortKey>/);
+  assert.match(listingPageSource, /const \[view, setView\] = useState<ViewMode>\(initialSnapshot\?\.view \?\? "grid"\)/);
+  assert.match(listingPageSource, /const \[page, setPage\] = useState\(initialSnapshot\?\.page \?\? 1\)/);
   assert.doesNotMatch(listingPageSource, /sessionStorage/);
   assert.doesNotMatch(listingPageSource, /LISTING_STATE_PREFIX|readListingState|writeListingState/);
   assert.match(listingPageSource, /className="container page-section listing-discovery-section"/);
@@ -75,9 +77,19 @@ test("public video lists use fourteen mobile and twenty desktop items per page",
   assert.match(responsiveSource, /export const MOBILE_VIDEO_PAGE_SIZE = 14;/);
   assert.match(listingPageSource, /const DESKTOP_PAGE_SIZE = 20;/);
   assert.match(listingPageSource, /const pageSize = isMobile \? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;/);
-  assert.match(listingPageSource, /setPage\(1\);\s*\}, \[pageSize\]\)/);
+  assert.match(listingPageSource, /key=\{`\$\{keyword\}\\n\$\{tag\}\\n\$\{pageSize\}`\}/);
   assert.match(listingPageSource, /fetchListing\(page, pageSize, \{ q: keyword, tag, sort \}\)/);
   assert.match(listingPageSource, /<Pagination[\s\S]*?page=\{page\}[\s\S]*?pageSize=\{pageSize\}/);
+});
+
+test("listing page restores its last successful content after video detail", () => {
+  assert.match(listingPageSource, /let cachedListingSnapshot: ListingSnapshot \| null = null/);
+  assert.match(listingPageSource, /cachedListingSnapshot\?\.key === snapshotKey/);
+  assert.match(listingPageSource, /const \[items, setItems\] = useState<VideoItem\[\]>\(initialSnapshot\?\.items \?\? \[\]\)/);
+  assert.match(listingPageSource, /const \[initialLoading, setInitialLoading\] = useState\(initialSnapshot === null\)/);
+  assert.match(listingPageSource, /if \(loadedRequestKeyRef\.current === requestKey\) return/);
+  assert.match(listingPageSource, /cachedListingSnapshot = \{\s*key: snapshotKey,\s*page,\s*view: viewRef\.current,\s*items: nextItems,\s*total: nextTotal/);
+  assert.doesNotMatch(listingPageSource, /localStorage|sessionStorage/);
 });
 
 test("sort toolbar has no outer frame around its controls", () => {
