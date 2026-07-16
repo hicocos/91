@@ -27,7 +27,6 @@ export function VideoMetaHeader({ video }: Props) {
         <ul className="vd-meta" aria-label="视频信息">
           {source && (
             <li className="vd-meta__chip" data-tone={sourceKind || "neutral"}>
-              <span className="vd-meta__dot" aria-hidden="true" />
               {source}
             </li>
           )}
