@@ -11,6 +11,8 @@ import {
   Kind,
   credentialFields,
   driveKindIconPath,
+  rootDirectoryLabel,
+  rootIdPlaceholder,
   usesRootDirectoryID,
 } from "./constants";
 
@@ -29,6 +31,7 @@ const DRIVE_OPTIONS: DriveOption[] = [
   { kind: "googledrive", label: "Google Drive", abbr: "GD" },
   { kind: "quark", label: "夸克网盘", abbr: "Qk" },
   { kind: "wopan", label: "联通网盘", abbr: "Wo" },
+  { kind: "webdav", label: "WebDAV", abbr: "WD" },
   { kind: "localstorage", label: "本地存储", abbr: "Lo" },
 ];
 
@@ -144,18 +147,6 @@ export function DriveForm({
             onChange={(e) => set("name", e.target.value)}
           />
         </div>
-
-        {usesRootDirectoryID(form.kind) && (
-          <div className="admin-form__row">
-            <label htmlFor={rootId}>自定义网盘根目录(可选)</label>
-            <input
-              id={rootId}
-              placeholder="根目录ID请参考OpenList文档"
-              value={form.rootId}
-              onChange={(e) => set("rootId", e.target.value)}
-            />
-          </div>
-        )}
       </div>
 
       {fields.length > 0 && (
@@ -272,6 +263,20 @@ export function DriveForm({
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {usesRootDirectoryID(form.kind) && (
+        <div className="admin-form__section">
+          <div className="admin-form__row">
+            <label htmlFor={rootId}>{rootDirectoryLabel(form.kind)}</label>
+            <input
+              id={rootId}
+              placeholder={rootIdPlaceholder(form.kind)}
+              value={form.rootId}
+              onChange={(e) => set("rootId", e.target.value)}
+            />
+          </div>
         </div>
       )}
     </div>

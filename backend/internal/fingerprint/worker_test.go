@@ -86,6 +86,57 @@ func TestComputeRemoteUsesRangeSamples(t *testing.T) {
 	}
 }
 
+func TestComputeRemoteFollowsWebDAV302WithoutImplicitReferer(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("0123456789")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Referer"); got != "" {
+			http.Error(w, "signed download rejects Referer", http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization leaked to redirect target: %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "" {
+			t.Errorf("Cookie leaked to redirect target: %q", got)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=0-9" {
+			t.Errorf("Range = %q, want bytes=0-9", got)
+		}
+		w.Header().Set("Content-Range", "bytes 0-9/10")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(cdn.Close)
+
+	openList := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Basic secret" {
+			t.Errorf("OpenList Authorization = %q, want Basic secret", got)
+		}
+		http.Redirect(w, r, cdn.URL+"/signed/video.mp4", http.StatusFound)
+	}))
+	t.Cleanup(openList.Close)
+
+	drv := &fakeDrive{
+		paths: map[string]string{"remote": openList.URL + "/dav/video.mp4"},
+		headers: http.Header{
+			"Authorization": {"Basic secret"},
+			"Cookie":        {"dav_session=secret"},
+		},
+	}
+	sum, err := Compute(ctx, drv, &catalog.Video{
+		ID:     "remote",
+		FileID: "remote",
+		Size:   int64(len(data)),
+	}, Config{FullHashMaxSize: int64(len(data))}, nil)
+	if err != nil {
+		t.Fatalf("compute redirected remote: %v", err)
+	}
+	if sum == "" {
+		t.Fatal("fingerprint should not be empty")
+	}
+}
+
 func TestComputeRemote429ReturnsRateLimit(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +207,8 @@ func TestGoogleDriveRemoteRangeForbiddenLooksRateLimitedByURL(t *testing.T) {
 }
 
 type fakeDrive struct {
-	paths map[string]string
+	paths   map[string]string
+	headers http.Header
 }
 
 func (d *fakeDrive) Kind() string { return "fake" }
@@ -171,7 +223,11 @@ func (d *fakeDrive) Stat(context.Context, string) (*drives.Entry, error) {
 	return nil, drives.ErrNotSupported
 }
 func (d *fakeDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {
-	return &drives.StreamLink{URL: d.paths[fileID], Expires: time.Now().Add(time.Minute)}, nil
+	return &drives.StreamLink{
+		URL:     d.paths[fileID],
+		Headers: d.headers.Clone(),
+		Expires: time.Now().Add(time.Minute),
+	}, nil
 }
 func (d *fakeDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {
 	return "", drives.ErrNotSupported

@@ -22,6 +22,7 @@ import (
 	"github.com/video-site/backend/internal/drives/pikpak"
 	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
+	"github.com/video-site/backend/internal/drives/webdav"
 	"github.com/video-site/backend/internal/drives/wopan"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
@@ -230,6 +231,14 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 				d.Credentials["refresh_token"] = refresh
 				_ = a.cat.UpsertDrive(ctx, d)
 			},
+		})
+	case webdav.Kind:
+		drv = webdav.New(webdav.Config{
+			ID:       d.ID,
+			BaseURL:  d.Credentials["base_url"],
+			Username: d.Credentials["username"],
+			Password: d.Credentials["password"],
+			RootID:   d.RootID,
 		})
 	case localstorage.Kind:
 		drv = localstorage.New(localstorage.Config{

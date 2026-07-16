@@ -1,14 +1,15 @@
 import googledriveIcon from "./icons/googledrive.png";
 import guangyapanIcon from "./icons/guangyapan.png";
-import localstorageIcon from "./icons/localstorage.svg";
+import localstorageIcon from "./icons/localstorage.png";
 import onedriveIcon from "./icons/onedrive.png";
 import p115Icon from "./icons/p115.png";
 import p123Icon from "./icons/p123.png";
 import pikpakIcon from "./icons/pikpak.png";
 import quarkIcon from "./icons/quark.png";
+import webdavIcon from "./icons/webdav.png";
 import wopanIcon from "./icons/wopan.png";
 
-export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "localstorage";
+export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
 
 export const kindAbbr: Record<string, string> = {
   quark: "Qk",
@@ -19,6 +20,7 @@ export const kindAbbr: Record<string, string> = {
   guangyapan: "GY",
   onedrive: "OD",
   googledrive: "GD",
+  webdav: "WD",
   localstorage: "Lo",
 };
 
@@ -31,6 +33,7 @@ export const kindIconPath: Record<string, string> = {
   guangyapan: guangyapanIcon,
   onedrive: onedriveIcon,
   googledrive: googledriveIcon,
+  webdav: webdavIcon,
   localstorage: localstorageIcon,
 };
 
@@ -57,6 +60,7 @@ export const kindLabel: Record<string, string> = {
   guangyapan: "光鸭网盘",
   onedrive: "OneDrive",
   googledrive: "Google Drive",
+  webdav: "WebDAV",
   localstorage: "本地存储",
 };
 
@@ -153,6 +157,7 @@ export function defaultRootId(kind: Kind): string {
   if (kind === "guangyapan") return "";
   if (kind === "onedrive") return "root";
   if (kind === "googledrive") return "root";
+  if (kind === "webdav") return "/";
   if (kind === "localstorage") return "/";
   return "0";
 }
@@ -162,8 +167,12 @@ export function usesRootDirectoryID(kind: Kind): boolean {
 }
 
 export function rootIdPlaceholder(kind: Kind): string {
-  const rootId = defaultRootId(kind);
-  return rootId ? `默认：${rootId}` : "留空表示根目录";
+  if (kind === "webdav") return "可填写目录路径，留空表示根目录";
+  return "可填写目录ID，留空表示根目录";
+}
+
+export function rootDirectoryLabel(kind: Kind): string {
+  return kind === "webdav" ? "WebDAV根目录(可选)" : "自定义网盘根目录(可选)";
 }
 
 export type CredentialField = {
@@ -286,6 +295,27 @@ export function credentialFields(kind: Kind): CredentialField[] {
           label: "refresh_token",
           placeholder: "Google OAuth refresh_token",
           multiline: true,
+          required: true,
+        },
+      ];
+    case "webdav":
+      return [
+        {
+          key: "base_url",
+          label: "WebDAV 地址",
+          placeholder: "https://openlist.example.com/dav",
+          required: true,
+        },
+        {
+          key: "username",
+          label: "用户名",
+          placeholder: "WebDAV 用户名",
+          required: true,
+        },
+        {
+          key: "password",
+          label: "密码",
+          placeholder: "WebDAV 密码",
           required: true,
         },
       ];

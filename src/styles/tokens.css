@@ -147,6 +147,7 @@
   --drive-wopan: #ff8a3c;
   --drive-guangyapan: #30c3a8;
   --drive-onedrive: #4cabea;
+  --drive-webdav: #2aa7c8;
   --drive-localstorage: #35b88f;
 
   /* ----- 阴影 ----- */
@@ -240,6 +241,7 @@
   --drive-wopan: #e57a36;
   --drive-guangyapan: #229f8b;
   --drive-onedrive: #2f95cf;
+  --drive-webdav: #208aa8;
   --drive-localstorage: #239978;
 
   /* ----- 阴影（粉色柔投影 + 一层中性） ----- */
@@ -343,6 +345,7 @@
   --drive-wopan: #dc6d28;
   --drive-guangyapan: #158b7a;
   --drive-onedrive: #1f7fc0;
+  --drive-webdav: #187f9d;
   --drive-localstorage: #198866;
 
   /* ----- 阴影（蓝色柔投影） ----- */

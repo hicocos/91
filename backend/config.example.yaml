@@ -49,7 +49,7 @@ preview:
   width: 480
 
 # 盘列表。上线后请通过管理后台添加，本文件可留空。
-# kind 支持 quark / p115 / p123 / pikpak / wopan / guangyapan / onedrive / googledrive / localstorage。
+# kind 支持 quark / p115 / p123 / pikpak / wopan / guangyapan / onedrive / googledrive / webdav / localstorage。
 # OneDrive 示例：
 # - id: "my-onedrive"
 #   kind: "onedrive"
@@ -77,6 +77,16 @@ preview:
 #     refresh_token: "..."
 #     # 可选：按路径解析扫描根目录，优先于 root_id
 #     # root_path: "影视/电影"
+# WebDAV 示例（OpenList 通常为 https://example.com/dav）：
+# - id: "my-webdav"
+#   kind: "webdav"
+#   name: "我的 WebDAV"
+#   # WebDAV 端点下的绝对路径；留空时为 /
+#   root_id: "/影视"
+#   params:
+#     base_url: "https://example.com/dav"
+#     username: "..."
+#     password: "..."
 # 本地存储示例：
 # - id: "local-media"
 #   kind: "localstorage"

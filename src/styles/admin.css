@@ -4563,6 +4563,7 @@
 .admin-drive-type-card[data-kind="quark"]:hover   { border-color: var(--drive-quark);     box-shadow: 0 4px 18px rgba(91,141,239,.2); }
 .admin-drive-type-card[data-kind="wopan"]:hover   { border-color: var(--drive-wopan);     box-shadow: 0 4px 18px rgba(255,138,60,.2); }
 .admin-drive-type-card[data-kind="guangyapan"]:hover { border-color: var(--drive-guangyapan); box-shadow: 0 4px 18px rgba(48,195,168,.2); }
+.admin-drive-type-card[data-kind="webdav"]:hover { border-color: var(--drive-webdav); box-shadow: 0 4px 18px rgba(42,167,200,.2); }
 
 .admin-drive-type-card__icon {
   display: grid;
@@ -4588,6 +4589,7 @@
 .admin-drive-type-card__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
 .admin-drive-type-card__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
 .admin-drive-type-card__icon[data-kind="guangyapan"]  { background: rgba(48,195,168,.14);  color: var(--drive-guangyapan); }
+.admin-drive-type-card__icon[data-kind="webdav"]      { background: rgba(42,167,200,.14);  color: var(--drive-webdav); }
 
 .admin-drive-type-card__label {
   font-size: var(--font-sm);
@@ -4662,6 +4664,7 @@
 .admin-drive-selected-bar__icon[data-kind="quark"]       { background: rgba(91,141,239,.14);  color: var(--drive-quark); }
 .admin-drive-selected-bar__icon[data-kind="wopan"]       { background: rgba(255,138,60,.14);  color: var(--drive-wopan); }
 .admin-drive-selected-bar__icon[data-kind="guangyapan"]  { background: rgba(48,195,168,.14);  color: var(--drive-guangyapan); }
+.admin-drive-selected-bar__icon[data-kind="webdav"]      { background: rgba(42,167,200,.14);  color: var(--drive-webdav); }
 
 .admin-drive-selected-bar__icon.has-image[data-kind] {
   background: transparent;
@@ -5200,6 +5203,7 @@
 .admin-drive-card__brand-icon[data-kind="guangyapan"] { background: var(--drive-guangyapan); }
 .admin-drive-card__brand-icon[data-kind="onedrive"] { background: var(--drive-onedrive); }
 .admin-drive-card__brand-icon[data-kind="googledrive"] { background: #4285f4; }
+.admin-drive-card__brand-icon[data-kind="webdav"] { background: var(--drive-webdav); }
 .admin-drive-card__brand-icon[data-kind="localstorage"] { background: var(--drive-localstorage); }
 
 .admin-drive-card__brand-icon.has-image[data-kind] {

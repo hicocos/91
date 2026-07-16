@@ -62,6 +62,7 @@ func TestUpsertDriveDefaultsRootIDByKind(t *testing.T) {
 		{id: "guangyapan", kind: "guangyapan", want: ""},
 		{id: "onedrive", kind: "onedrive", want: "root"},
 		{id: "googledrive", kind: "googledrive", want: "root"},
+		{id: "webdav", kind: "webdav", want: "/"},
 		{id: "localstorage", kind: "localstorage", want: "/"},
 		{id: "scriptcrawler", kind: "scriptcrawler", want: "/"},
 	}

@@ -24,6 +24,7 @@ import {
   usesRootDirectoryID,
   defaultRootId,
   credentialFields,
+  rootDirectoryLabel,
 } from "./drive/constants";
 import {
   StorageSummary,
@@ -588,7 +589,7 @@ export function DrivesPage() {
                 </div>
                 {usesRootDirectoryID(d.kind) && (
                   <div className="admin-detail-row">
-                    <span className="admin-detail-label">自定义网盘根目录(可选)</span>
+                    <span className="admin-detail-label">{rootDirectoryLabel(d.kind)}</span>
                     <span className="admin-detail-value admin-mono-cell">{d.rootId}</span>
                   </div>
                 )}

@@ -939,6 +939,68 @@ func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
 	}
 }
 
+func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:     "webdav-main",
+		Kind:   "webdav",
+		Name:   "WebDAV",
+		RootID: "/media",
+		Credentials: map[string]string{
+			"base_url": "https://openlist.example.com/dav",
+			"username": "existing-user",
+			"password": "existing-password",
+		},
+		Status: "ok",
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
+		"id": "webdav-main",
+		"kind": "webdav",
+		"name": "WebDAV",
+		"rootId": "/media",
+		"credentials": {
+			"base_url": "",
+			"username": "updated-user",
+			"password": ""
+		}
+	}`))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got, err := cat.GetDrive(ctx, "webdav-main")
+	if err != nil {
+		t.Fatalf("get drive: %v", err)
+	}
+	if got.Credentials["base_url"] != "https://openlist.example.com/dav" {
+		t.Fatalf("base_url = %q, want preserved", got.Credentials["base_url"])
+	}
+	if got.Credentials["username"] != "updated-user" {
+		t.Fatalf("username = %q, want updated-user", got.Credentials["username"])
+	}
+	if got.Credentials["password"] != "existing-password" {
+		t.Fatalf("password = %q, want preserved", got.Credentials["password"])
+	}
+	if !isCrawlerUploadTargetKind(got.Kind) {
+		t.Fatalf("kind %q should be a crawler upload target", got.Kind)
+	}
+}
+
 func TestHandleUpsertUnknownDriveKindIsRejected(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

@@ -478,6 +478,129 @@ func TestServeStreamRedirectsGuangYaPan(t *testing.T) {
 	}
 }
 
+func TestServeStreamProxiesWebDAVAuthorizationAndRange(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Basic dmlkZW86c2VjcmV0" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=2-5" {
+			t.Errorf("Range = %q", got)
+		}
+		w.Header().Set("Content-Range", "bytes 2-5/10")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.WriteString(w, "2345")
+	}))
+	t.Cleanup(upstream.Close)
+
+	reg := NewRegistry()
+	drv := &proxyFakeSimpleDrive{
+		kind:    "webdav",
+		url:     upstream.URL + "/dav/video.mp4",
+		headers: http.Header{"Authorization": {"Basic dmlkZW86c2VjcmV0"}},
+	}
+	reg.Set("webdav", drv)
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/webdav/video.mp4", nil)
+	req.Header.Set("Range", "bytes=2-5")
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "webdav", "/video.mp4")
+
+	if rr.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusPartialContent)
+	}
+	if got := rr.Body.String(); got != "2345" {
+		t.Fatalf("body = %q, want range bytes", got)
+	}
+	if got := rr.Header().Get("Location"); got != "" {
+		t.Fatalf("Location = %q, WebDAV must stay behind the backend proxy", got)
+	}
+}
+
+func TestServeStreamRelaysWebDAV302ToBrowser(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("backend followed the WebDAV redirect instead of relaying it")
+		http.Error(w, "unexpected backend request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(cdn.Close)
+
+	openList := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Basic dmlkZW86c2VjcmV0" {
+			t.Errorf("OpenList Authorization = %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "dav_session=secret" {
+			t.Errorf("OpenList Cookie = %q", got)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=2-5" {
+			t.Errorf("OpenList Range = %q, want bytes=2-5", got)
+		}
+		http.Redirect(w, r, cdn.URL+"/signed/video.mp4", http.StatusFound)
+	}))
+	t.Cleanup(openList.Close)
+
+	reg := NewRegistry()
+	reg.Set("webdav", &proxyFakeSimpleDrive{
+		kind:                 "webdav",
+		url:                  openList.URL + "/dav/video.mp4",
+		passThroughRedirects: true,
+		headers: http.Header{
+			"Authorization": {"Basic dmlkZW86c2VjcmV0"},
+			"Cookie":        {"dav_session=secret"},
+			"User-Agent":    {"video-site-webdav"},
+		},
+	})
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/webdav/video.mp4", nil)
+	req.Header.Set("Range", "bytes=2-5")
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "webdav", "/video.mp4")
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d body=%q, want %d", rr.Code, rr.Body.String(), http.StatusFound)
+	}
+	if got := rr.Header().Get("Location"); got != cdn.URL+"/signed/video.mp4" {
+		t.Fatalf("Location = %q, want public CDN URL", got)
+	}
+	if got := rr.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+	}
+	if got := rr.Header().Get("Authorization"); got != "" {
+		t.Fatalf("browser response leaked Authorization: %q", got)
+	}
+	if got := rr.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("browser response leaked upstream cookie: %q", got)
+	}
+}
+
+func TestServeStreamRejectsUnsafeWebDAVRedirect(t *testing.T) {
+	openList := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "file:///etc/passwd")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(openList.Close)
+
+	reg := NewRegistry()
+	reg.Set("webdav", &proxyFakeSimpleDrive{
+		kind: "webdav",
+		url:  openList.URL + "/dav/video.mp4",
+		headers: http.Header{
+			"Authorization": {"Basic secret"},
+		},
+		passThroughRedirects: true,
+	})
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/webdav/video.mp4", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "webdav", "/video.mp4")
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+}
+
 func TestServeStreamServesLocalFilePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "video.mp4")
 	if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
@@ -583,9 +706,11 @@ func (d *proxyFakePikPakDrive) EnsureDir(context.Context, string) (string, error
 func (d *proxyFakePikPakDrive) RootID() string { return "0" }
 
 type proxyFakeSimpleDrive struct {
-	kind  string
-	url   string
-	calls int
+	kind                 string
+	url                  string
+	headers              http.Header
+	passThroughRedirects bool
+	calls                int
 }
 
 func (d *proxyFakeSimpleDrive) Kind() string { return d.kind }
@@ -602,9 +727,10 @@ func (d *proxyFakeSimpleDrive) Stat(context.Context, string) (*drives.Entry, err
 func (d *proxyFakeSimpleDrive) StreamURL(context.Context, string) (*drives.StreamLink, error) {
 	d.calls++
 	return &drives.StreamLink{
-		URL:     d.url,
-		Headers: http.Header{},
-		Expires: time.Now().Add(10 * time.Minute),
+		URL:                  d.url,
+		Headers:              d.headers.Clone(),
+		Expires:              time.Now().Add(10 * time.Minute),
+		PassThroughRedirects: d.passThroughRedirects,
 	}, nil
 }
 func (d *proxyFakeSimpleDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {

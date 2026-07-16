@@ -18,6 +18,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/streamhttp"
 )
 
 const (
@@ -56,7 +57,7 @@ type TaskStatus struct {
 func NewWorker(cat *catalog.Catalog, drv drives.Drive, cfg Config) *Worker {
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 0}
+		hc = streamhttp.NewClient(0)
 	}
 	if cfg.SampleSizeBytes <= 0 {
 		cfg.SampleSizeBytes = defaultSampleSizeBytes
@@ -228,7 +229,7 @@ func Compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config
 		cfg.FullHashMaxSize = defaultFullHashMaxSize
 	}
 	if hc == nil {
-		hc = &http.Client{Timeout: 0}
+		hc = streamhttp.NewClient(0)
 	}
 	link, err := drv.StreamURL(ctx, v.FileID)
 	if err != nil {

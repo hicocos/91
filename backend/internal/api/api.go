@@ -1107,6 +1107,8 @@ func driveKindLabel(kind string) string {
 		return "OneDrive"
 	case "googledrive":
 		return "Google Drive"
+	case "webdav":
+		return "WebDAV"
 	case localstorage.Kind:
 		return "本地存储"
 	default:

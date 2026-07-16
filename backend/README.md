@@ -2,7 +2,7 @@
 
 视频聚合站的 Go 后端。提供三件事：
 
-1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通网盘 / 光鸭网盘 / OneDrive / Google Drive / 本地存储）
+1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通网盘 / 光鸭网盘 / OneDrive / Google Drive / WebDAV / 本地存储）
 2. 视频元数据目录（SQLite）+ 扫描 + 预览视频预生成
 3. REST API（前台）+ 管理后台 + 直链代理
 4. 标签池、视频隐藏、按网盘统计和详情页来源网盘类型展示能力
@@ -23,6 +23,7 @@ internal/
     guangyapan/             光鸭网盘（参考 AList GuangYaPan）
     onedrive/               OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
     googledrive/            Google Drive（自建 OAuth 续期 + Google Drive API；播放走后端代理）
+    webdav/                 标准 WebDAV（扫描、代理播放、上传、移动和删除）
     localstorage/           本地目录扫描（服务器已有视频目录）
   scanner/                  扫目录 → 落库
   preview/                  ffmpeg 抽封面和生成多段预览视频
@@ -132,6 +133,7 @@ location / {
 | guangyapan | 推荐后台扫码登录自动写入 `access_token`、`refresh_token`；也可手工填写 token |
 | onedrive | `refresh_token` |
 | googledrive | `refresh_token`、`client_id`、`client_secret` |
+| webdav | `base_url`、`username`、`password`（例如 OpenList 的 `https://example.com/dav`） |
 | localstorage | `path`（服务器上的已有视频目录，如 `/mnt/videos`） |
 
 ### PikPak 速度说明
@@ -143,6 +145,8 @@ location / {
 OneDrive 按 OpenList 默认应用方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token，不需要配置 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。后台新建 OneDrive 时只需要填 OpenList 代刷得到的 `refresh_token`；服务端会默认挂载根目录并自动回写新 token。
 
 Google Drive 仅支持自建 OAuth 客户端认证。后台新建时需填写同一个 Google OAuth 客户端授权得到的 `refresh_token`、`client_id`、`client_secret`，服务端会直接请求 Google OAuth token 接口续期，不依赖 OpenList 在线 API。Google Drive 下载地址必须携带 `Authorization` 头，浏览器不能直接 302 使用，所以本站会由后端代理 `/p/stream` 播放，不加入零带宽 302 白名单。
+
+WebDAV 使用标准 HTTP/WebDAV 方法：`PROPFIND` 扫描，`GET` / `HEAD`（含 `Range`）播放，`PUT` 上传，`MKCOL` 建目录，`MOVE` 重命名，`DELETE` 删除原文件。`rootId` 是 WebDAV 端点下的绝对路径，留空时为 `/`。播放先经 `/p/stream` 完成 WebDAV 认证：上游返回 `200/206` 时由后端代理数据，返回 `3xx` 时则将不含 WebDAV 凭据的直链交给浏览器，因此 OpenList 的 WebDAV 302 策略会保持直连。服务端本身不处理加解密；如果连接 OpenList 的 Crypt 存储，加解密由 OpenList 透明完成。扫描和播放至少需要读取权限，爬虫上传、重命名及“删除原文件”还需要 WebDAV 账号具备对应写入/管理权限。
 
 ## 文件名约定
 

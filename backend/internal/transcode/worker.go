@@ -15,6 +15,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/streamhttp"
 )
 
 // DefaultTargetDirName 是转码产物在网盘上的存放目录（相对根目录）。
@@ -76,7 +77,7 @@ func NewWorker(cfg Config, cat *catalog.Catalog, drv drives.Drive) *Worker {
 		cfg:   cfg,
 		cat:   cat,
 		drv:   drv,
-		hc:    &http.Client{Timeout: 0},
+		hc:    streamhttp.NewClient(0),
 		state: "idle",
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/streamhttp"
 )
 
 type streamURLWithHeader interface {
@@ -67,6 +68,7 @@ type Proxy struct {
 	cacheMu sync.Mutex
 	cache   map[string]cachedLink
 	http    *http.Client
+	relay   *http.Client
 
 	statusMu       sync.Mutex
 	statusReporter StreamStatusReporter
@@ -95,9 +97,8 @@ func New(r *Registry) *Proxy {
 		cache:          make(map[string]cachedLink),
 		reportedStatus: make(map[string]string),
 		initErrors:     make(map[string]driveInitError),
-		http: &http.Client{
-			Timeout: 0, // 流式不设超时
-		},
+		http:           streamhttp.NewClient(0), // 流式不设超时
+		relay:          streamhttp.NewNoRedirectClient(0),
 	}
 }
 
@@ -318,11 +319,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 		req.Header.Set("Range", rng)
 	}
 
-	resp, err := p.http.Do(req)
+	client := p.http
+	if link.PassThroughRedirects {
+		client = p.relay
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request upstream: %w", err)
 	}
 	defer resp.Body.Close()
+	if link.PassThroughRedirects && isRedirectStatus(resp.StatusCode) {
+		return relayUpstreamRedirect(w, resp)
+	}
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		return &upstreamHTTPError{StatusCode: resp.StatusCode}
 	}
@@ -339,6 +347,31 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+	return nil
+}
+
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
+func relayUpstreamRedirect(w http.ResponseWriter, resp *http.Response) error {
+	target, err := resp.Location()
+	if err != nil {
+		return fmt.Errorf("invalid upstream redirect: %w", err)
+	}
+	if (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" || target.User != nil {
+		return fmt.Errorf("unsafe upstream redirect target")
+	}
+	w.Header().Set("Location", target.String())
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate")
+	w.WriteHeader(resp.StatusCode)
 	return nil
 }
 
@@ -452,6 +485,8 @@ func driveLabel(kind string) string {
 		return "OneDrive"
 	case "googledrive":
 		return "Google Drive"
+	case "webdav":
+		return "WebDAV"
 	case "quark":
 		return "夸克网盘"
 	case "localstorage", "local-upload":

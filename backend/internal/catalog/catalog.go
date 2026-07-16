@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -2554,6 +2555,11 @@ func normalizeDriveRootID(kind, rootID string) string {
 			return "root"
 		}
 		return rootID
+	case "webdav":
+		if rootID == "" {
+			return "/"
+		}
+		return path.Clean("/" + rootID)
 	case "localstorage", "scriptcrawler":
 		return "/"
 	default:

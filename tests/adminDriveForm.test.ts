@@ -84,9 +84,10 @@ const driveIconKinds = [
   "onedrive",
   "googledrive",
   "quark",
+  "webdav",
   "wopan",
 ];
-const generatedDriveIcons = [{ kind: "localstorage", ext: "svg" }];
+const generatedDriveIcons = [{ kind: "localstorage", ext: "png" }];
 
 function driveTypeOptions() {
   const match = /const DRIVE_OPTIONS:\s*DriveOption\[]\s*=\s*\[([\s\S]*?)\];/.exec(
@@ -121,7 +122,7 @@ test("crawler upload target uses explicit local-save option instead of auto targ
   assert.match(combinedSource, /本地保存，不上传/);
   assert.match(
     crawlerPageSource,
-    /UPLOAD_TARGET_KINDS\s*=\s*new Set\(\["p115", "pikpak", "p123", "googledrive", "onedrive", "wopan", "guangyapan"\]\)/
+    /UPLOAD_TARGET_KINDS\s*=\s*new Set\(\["p115", "pikpak", "p123", "googledrive", "onedrive", "wopan", "guangyapan", "webdav"\]\)/
   );
   assert.match(crawlerPageSource, /drives\.filter\(\(d\) => UPLOAD_TARGET_KINDS\.has\(d\.kind\)\)/);
   assert.doesNotMatch(combinedSource, /自动：唯一/);
@@ -141,8 +142,11 @@ test("crawler upload target select uses an aligned custom arrow", () => {
 });
 
 test("drive form labels the optional root directory and hides it for localstorage", () => {
-  assert.match(combinedSource, /<label[^>]*>自定义网盘根目录\(可选\)<\/label>/);
-  assert.match(combinedSource, /placeholder="根目录ID请参考OpenList文档"/);
+  assert.match(driveFormSource, /<label[^>]*>\{rootDirectoryLabel\(form\.kind\)\}<\/label>/);
+  assert.match(driveFormSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
+  assert.match(constantsSource, /kind === "webdav" \? "WebDAV根目录\(可选\)" : "自定义网盘根目录\(可选\)"/);
+  assert.match(constantsSource, /if \(kind === "webdav"\) return "可填写目录路径，留空表示根目录"/);
+  assert.match(constantsSource, /return "可填写目录ID，留空表示根目录"/);
   assert.doesNotMatch(combinedSource, />根目录 ID</);
   assert.match(
     combinedSource,
@@ -150,6 +154,11 @@ test("drive form labels the optional root directory and hides it for localstorag
   );
   assert.match(combinedSource, /\{usesRootDirectoryID\(form\.kind\) && \(/);
   assert.match(combinedSource, /\{usesRootDirectoryID\(d\.kind\) && \(/);
+  assert.ok(
+    driveFormSource.indexOf("{usesRootDirectoryID(form.kind) && (") >
+      driveFormSource.indexOf("{fields.length > 0 && ("),
+    "root directory should be the final form section after credential fields"
+  );
   assert.doesNotMatch(combinedSource, /扫描起点目录 ID/);
   assert.doesNotMatch(combinedSource, /set\("scanRootId"/);
 });
@@ -174,7 +183,7 @@ test("googledrive drive form only supports a custom OAuth client", () => {
   assertDriveTypeOption("googledrive", "Google Drive");
 
   const match =
-    /case "googledrive":\s*return \[([\s\S]*?)\];\s*case "localstorage":/.exec(
+    /case "googledrive":\s*return \[([\s\S]*?)\];\s*case "webdav":/.exec(
       combinedSource
     );
   assert.ok(match, "googledrive credential field block should be present");
@@ -194,6 +203,23 @@ test("googledrive drive form only supports a custom OAuth client", () => {
   assert.doesNotMatch(drivesPageSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
   assert.doesNotMatch(apiSource, /googleDriveUseOnlineAPI|googleDriveOpenListApiUrl/);
   assert.doesNotMatch(fields, /key: "access_token"/);
+});
+
+test("webdav drive form asks for a standard endpoint and basic auth credentials", () => {
+  assertDriveTypeOption("webdav", "WebDAV");
+
+  const match =
+    /case "webdav":\s*return \[([\s\S]*?)\];\s*case "localstorage":/.exec(
+      combinedSource
+    );
+  assert.ok(match, "webdav credential field block should be present");
+  const fields = match[1];
+
+  assert.match(fields, /key: "base_url"/);
+  assert.match(fields, /placeholder: "https:\/\/openlist\.example\.com\/dav"/);
+  assert.match(fields, /key: "username"/);
+  assert.match(fields, /key: "password"/);
+  assert.doesNotMatch(fields, /encrypt|crypt|302/i);
 });
 
 test("pikpak drive form only exposes account login fields", () => {
@@ -343,6 +369,7 @@ test("drive type selector keeps primary source order", () => {
     { value: "googledrive", label: "Google Drive" },
     { value: "quark", label: "夸克网盘" },
     { value: "wopan", label: "联通网盘" },
+    { value: "webdav", label: "WebDAV" },
     { value: "localstorage", label: "本地存储" },
   ]);
 });
@@ -375,7 +402,7 @@ test("drive create form keeps selected type step visually minimal", () => {
 test("drive form required fields use save-time prompts instead of label stars", () => {
   assert.doesNotMatch(driveFormSource, /名称 \*/);
   assert.doesNotMatch(driveFormSource, /f\.required && " \*"/);
-  assert.doesNotMatch(driveFormSource, /rootIdPlaceholder|给这个盘起个名字/);
+  assert.doesNotMatch(driveFormSource, /给这个盘起个名字/);
   assert.doesNotMatch(driveFormSource, /nameError|onNameBlur|is-invalid|aria-invalid|aria-describedby|请填写网盘名称/);
   assert.doesNotMatch(drivesPageSource, /nameTouched|setNameTouched|nameError|onNameBlur|请填名称和类型/);
   assert.doesNotMatch(drivesPageSource, /disabled=\{saving \|\| nameMissing\}/);
@@ -687,13 +714,10 @@ test("drive icons use real assets with abbreviation fallback", () => {
     );
   }
   assert.match(constantsSource, /googledrive:\s*"GD"/);
+  assert.match(constantsSource, /webdav:\s*"WD"/);
   assert.match(constantsSource, /function driveKindAbbr\(kind: string\)/);
   assert.match(constantsSource, /function driveKindIconPath\(kind: string\)/);
   assert.match(constantsSource, /\.slice\(0, 2\)\.toUpperCase\(\)/);
-  assert.match(
-    readFileSync(new URL("../src/admin/drive/icons/localstorage.svg", import.meta.url), "utf8"),
-    /stop-color="#F8FAFC"[\s\S]*stop-color="#C7D0DA"/
-  );
   assert.doesNotMatch(constantsSource, /\/admin-drive-icons\//);
   assert.match(driveFormSource, /driveKindIconPath\(opt\.kind\)/);
   assert.match(driveFormSource, /className="admin-drive-type-card__icon-img"/);
