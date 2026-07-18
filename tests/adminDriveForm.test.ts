@@ -896,6 +896,18 @@ test("initial add-drive type picker omits cancel and save footer actions", () =>
   assert.match(driveFormSource, /onTypeSelected\?\.\(\)/);
 });
 
+test("drive credential editor loads stored values on demand", () => {
+  assert.match(
+    apiSource,
+    /getDriveCredentials\(id: string\)[\s\S]*?\/drives\/\$\{encodeURIComponent\(id\)\}\/credentials/
+  );
+  assert.match(
+    drivesPageSource,
+    /async function openEdit\(d: api\.AdminDrive\)[\s\S]*?await api\.getDriveCredentials\(d\.id\)[\s\S]*?creds,/
+  );
+  assert.match(drivesPageSource, /editingCredentialsId === d\.id \? "加载中\.\.\." : "编辑凭证"/);
+});
+
 test("drive detail actions use ordinary text buttons", () => {
   const detailViewSource = drivesPageSource.slice(
     drivesPageSource.indexOf("if (selectedDriveId && selectedDrive)"),
@@ -919,7 +931,7 @@ test("drive detail actions use ordinary text buttons", () => {
     /className="admin-btn admin-detail-actions__danger"\s+onClick=\{\(\) => setDeleteTarget\(d\)\}/
   );
   assert.match(drivesPageSource, /stoppingDriveId === d\.id \? "停止中\.\.\." : "停止任务"/);
-  assert.match(drivesPageSource, />\s*编辑凭证\s*<\/button>/);
+  assert.match(drivesPageSource, /editingCredentialsId === d\.id \? "加载中\.\.\." : "编辑凭证"/);
   assert.match(drivesPageSource, />\s*删除网盘\s*<\/button>/);
   assert.doesNotMatch(drivesPageSource, /编辑配置凭证/);
   assert.doesNotMatch(

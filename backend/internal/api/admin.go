@@ -202,6 +202,7 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/drives/wopan/qr/{uuid}", a.handleWopanQRStatus)
 			r.Post("/drives/guangyapan/qr", a.handleGuangYaPanQRStart)
 			r.Get("/drives/guangyapan/qr/status", a.handleGuangYaPanQRStatus)
+			r.Get("/drives/{id}/credentials", a.handleGetDriveCredentials)
 			r.Delete("/drives/{id}", a.handleDeleteDrive)
 			r.Post("/drives/{id}/rescan", a.handleRescan)
 			r.Post("/drives/{id}/tasks/stop", a.handleStopDriveTasks)

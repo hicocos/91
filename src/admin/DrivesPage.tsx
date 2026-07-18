@@ -67,6 +67,7 @@ export function DrivesPage() {
   const [initialForm, setInitialForm] = useState<FormState>(emptyForm);
   const [createDriveTypeSelected, setCreateDriveTypeSelected] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingCredentialsId, setEditingCredentialsId] = useState("");
   const [deletingId, setDeletingId] = useState("");
   const [regenFailedId, setRegenFailedId] = useState("");
   const [regenFailedThumbId, setRegenFailedThumbId] = useState("");
@@ -182,20 +183,30 @@ export function DrivesPage() {
     setModalOpen(true);
   }
 
-  function openEdit(d: api.AdminDrive) {
-    const nextForm: FormState = {
-      id: d.id,
-      kind: d.kind,
-      name: d.name,
-      rootId: d.rootId,
-      creds:
-        d.kind === "localstorage"
-          ? { strm_allow_outside_root: (d.strmAllowOutsideRoot ?? false) ? "true" : "false" }
-          : {},
-    };
-    setForm(nextForm);
-    setInitialForm(nextForm);
-    setModalOpen(true);
+  async function openEdit(d: api.AdminDrive) {
+    if (editingCredentialsId) return;
+    setEditingCredentialsId(d.id);
+    try {
+      const result = await api.getDriveCredentials(d.id);
+      const creds = { ...(result.credentials ?? {}) };
+      if (d.kind === "localstorage" && !("strm_allow_outside_root" in creds)) {
+        creds.strm_allow_outside_root = (d.strmAllowOutsideRoot ?? false) ? "true" : "false";
+      }
+      const nextForm: FormState = {
+        id: d.id,
+        kind: d.kind,
+        name: d.name,
+        rootId: d.rootId,
+        creds,
+      };
+      setForm(nextForm);
+      setInitialForm(nextForm);
+      setModalOpen(true);
+    } catch (e) {
+      show(e instanceof Error ? e.message : "加载网盘凭证失败", "error");
+    } finally {
+      setEditingCredentialsId("");
+    }
   }
 
   function requestCloseDriveModal() {
@@ -625,8 +636,13 @@ export function DrivesPage() {
                     {stoppingDriveId === d.id ? "停止中..." : "停止任务"}
                   </button>
                 </div>
-                <button type="button" className="admin-btn" onClick={() => openEdit(d)}>
-                  编辑凭证
+                <button
+                  type="button"
+                  className="admin-btn"
+                  onClick={() => openEdit(d)}
+                  disabled={!!editingCredentialsId}
+                >
+                  {editingCredentialsId === d.id ? "加载中..." : "编辑凭证"}
                 </button>
                 <button type="button" className="admin-btn admin-detail-actions__danger" onClick={() => setDeleteTarget(d)}>
                   删除网盘

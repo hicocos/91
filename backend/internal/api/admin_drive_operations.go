@@ -196,6 +196,32 @@ func normalizeCrawlerProxyURL(raw, label string) (string, error) {
 	}
 }
 
+// handleGetDriveCredentials returns the stored values only when an authenticated
+// administrator opens the edit form. Keeping this separate from handleListDrives
+// avoids sending secrets with the page's periodic drive-list polling.
+func (a *AdminServer) handleGetDriveCredentials(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid drive id"))
+		return
+	}
+	drive, err := a.Catalog.GetDrive(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	credentials := make(map[string]string, len(drive.Credentials))
+	for key, value := range drive.Credentials {
+		credentials[key] = value
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"credentials": credentials})
+}
+
 func (a *AdminServer) handleDeleteDrive(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body deleteDriveReq

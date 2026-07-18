@@ -132,6 +132,12 @@ export function listDrives() {
   return request<AdminDrive[]>("/drives");
 }
 
+export function getDriveCredentials(id: string) {
+  return request<{ credentials: Record<string, string> }>(
+    `/drives/${encodeURIComponent(id)}/credentials`
+  );
+}
+
 export type DriveStorageUsage = {
   thumbnailBytes: number;
   teaserBytes: number;

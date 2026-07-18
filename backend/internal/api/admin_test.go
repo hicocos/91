@@ -1001,6 +1001,63 @@ func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
 	}
 }
 
+func TestHandleGetDriveCredentialsReturnsStoredValues(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	want := map[string]string{
+		"base_url": "https://openlist.example.com/dav",
+		"username": "stored-user",
+		"password": "stored-password",
+	}
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:          "webdav-main",
+		Kind:        "webdav",
+		Name:        "WebDAV",
+		RootID:      "/media",
+		Credentials: want,
+		Status:      "ok",
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/drives/webdav-main/credentials", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "webdav-main")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleGetDriveCredentials(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var got struct {
+		Credentials map[string]string `json:"credentials"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode credentials: %v", err)
+	}
+	if len(got.Credentials) != len(want) {
+		t.Fatalf("credentials = %#v, want %#v", got.Credentials, want)
+	}
+	for key, value := range want {
+		if got.Credentials[key] != value {
+			t.Fatalf("credential %q = %q, want %q", key, got.Credentials[key], value)
+		}
+	}
+}
+
 func TestHandleUpsertUnknownDriveKindIsRejected(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
