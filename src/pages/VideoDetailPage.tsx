@@ -111,7 +111,7 @@ export default function VideoDetailPage() {
     } catch {
       setDeleteError(
         deleteSource
-          ? "删除失败。源文件未能删除时，管理库记录会保留。"
+          ? "删除失败，源文件未能删除，请检查WebDAV是否有删除权限"
           : "删除失败，请稍后重试。"
       );
       setDeleteSaving(false);
