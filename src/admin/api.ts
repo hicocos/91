@@ -1,5 +1,7 @@
+import { emitUnauthorized } from "./authEvents";
+
 // 管理后台 API 客户端
-// 所有请求都带 cookie，401 会抛错让路由守卫跳登录
+// 所有请求都带 cookie，401 会广播会话失效并抛错
 const BASE = "/admin/api";
 
 export class UnauthorizedError extends Error {
@@ -22,6 +24,7 @@ async function request<T>(
     headers,
   });
   if (res.status === 401) {
+    emitUnauthorized();
     throw new UnauthorizedError();
   }
   if (!res.ok) {

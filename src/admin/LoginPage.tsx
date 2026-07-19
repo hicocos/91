@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext";
 import { useToast } from "./ToastContext";
 import * as api from "./api";
 import { PasswordInput } from "./PasswordInput";
+import { safeReturnPath } from "./safeReturnPath";
 
 export function LoginPage() {
   const { status, login, refresh } = useAuth();
@@ -17,6 +18,7 @@ export function LoginPage() {
   const location = useLocation();
   const { show } = useToast();
   const passwordMismatch = setupRequired === true && p2.length > 0 && p !== p2;
+  const requestedReturnPath = (location.state as { from?: unknown } | null)?.from;
 
   useEffect(() => {
     let active = true;
@@ -43,10 +45,22 @@ export function LoginPage() {
     );
   }
 
-  // 已登录：回到来源页，或默认去首页
+  if (status === "unavailable") {
+    return (
+      <div className="admin-loading-screen" role="alert">
+        <div className="admin-connection-error">
+          <p>暂时无法连接服务器，请检查网络后重试。</p>
+          <button className="admin-btn is-primary" type="button" onClick={refresh}>
+            重试
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 已登录：回到经校验的来源页，或默认去首页
   if (status === "authed") {
-    const from = (location.state as { from?: string } | null)?.from ?? "/";
-    return <Navigate to={from} replace />;
+    return <Navigate to={safeReturnPath(requestedReturnPath, "/")} replace />;
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -69,8 +83,7 @@ export function LoginPage() {
         const role = await login(u, p);
         show("登录成功", "success");
         if (role === "admin") {
-          const from = (location.state as { from?: string } | null)?.from ?? "/admin";
-          navigate(from, { replace: true });
+          navigate(safeReturnPath(requestedReturnPath, "/admin"), { replace: true });
         } else {
           navigate("/", { replace: true });
         }

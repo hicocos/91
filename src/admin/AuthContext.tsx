@@ -8,8 +8,9 @@ import {
   useState,
 } from "react";
 import * as api from "./api";
+import { subscribeUnauthorized } from "./authEvents";
 
-type AuthStatus = "loading" | "authed" | "guest";
+type AuthStatus = "loading" | "authed" | "guest" | "unavailable";
 
 type AuthCtx = {
   status: AuthStatus;
@@ -27,12 +28,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<string>("");
 
   const refresh = useCallback(async () => {
+    setStatus("loading");
     try {
       const r = await api.me();
       setStatus(r.authenticated ? "authed" : "guest");
-      setRole(r.role ?? "");
-    } catch {
-      setStatus("guest");
+      setRole(r.authenticated ? r.role ?? "" : "");
+    } catch (error) {
+      if (error instanceof api.UnauthorizedError) {
+        setStatus("guest");
+      } else {
+        setStatus("unavailable");
+      }
       setRole("");
     }
   }, []);
@@ -40,6 +46,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    return subscribeUnauthorized(() => {
+      setStatus("guest");
+      setRole("");
+    });
+  }, []);
 
   const login = useCallback(async (u: string, p: string) => {
     const result = await api.login(u, p);
