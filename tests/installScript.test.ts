@@ -78,6 +78,22 @@ test("release workflow runs quality gates before publishing", () => {
   assert.match(releaseWorkflow, /go vet \.\/\.\.\./);
 });
 
+test("systemd deployment uses a dedicated user and sandbox", () => {
+  assert.match(installSource, /useradd[\s\S]*video-site-91/);
+  assert.match(installSource, /User=video-site-91/);
+  assert.match(installSource, /Group=video-site-91/);
+  assert.match(installSource, /NoNewPrivileges=true/);
+  assert.match(installSource, /ProtectSystem=strict/);
+  assert.match(installSource, /PrivateTmp=true/);
+  assert.match(installSource, /ReadWritePaths=\$\{INSTALL_PATH\}\/data/);
+});
+
+test("release workflow publishes artifact attestations", () => {
+  assert.match(releaseWorkflow, /attest-build-provenance@/);
+  assert.match(releaseWorkflow, /id-token:\s*write/);
+  assert.match(releaseWorkflow, /attestations:\s*write/);
+});
+
 test("release packaging emits SHA256SUMS", () => {
   assert.match(releaseBuildSource, /sha256sum[^\n]*>[^\n]*SHA256SUMS/);
 });

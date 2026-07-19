@@ -264,7 +264,20 @@ prepare_config() {
 
 }
 
+ensure_service_user() {
+  if ! getent group video-site-91 >/dev/null 2>&1; then
+    groupadd --system video-site-91
+  fi
+  if ! id -u video-site-91 >/dev/null 2>&1; then
+    useradd --system --gid video-site-91 --home-dir "$INSTALL_PATH" --shell /usr/sbin/nologin video-site-91
+  fi
+  mkdir -p "$INSTALL_PATH/data"
+  chown -R video-site-91:video-site-91 "$INSTALL_PATH/data"
+  chmod 700 "$INSTALL_PATH/data"
+}
+
 write_service() {
+  ensure_service_user
   cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=Video Site 91
@@ -273,6 +286,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=video-site-91
+Group=video-site-91
 WorkingDirectory=${INSTALL_PATH}
 ExecStart=${INSTALL_PATH}/server
 Restart=on-failure
@@ -282,8 +297,18 @@ Environment=VIDEO_CONFIG=${INSTALL_PATH}/config.yaml
 Environment=VIDEO_FRONTEND_DIR=${INSTALL_PATH}/dist
 Environment=VIDEO_VERSION_FILE=${VERSION_FILE}
 Environment=VIDEO_GITHUB_REPO=${GITHUB_REPO}
-Environment=HOME=/root
+Environment=HOME=${INSTALL_PATH}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=${INSTALL_PATH}/data
 LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
