@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import * as api from "../api";
 import { useToast } from "../ToastContext";
+import {
+  nextDirTreeLoadState,
+  type DirTreeLoadState,
+} from "./dirTreeLoadState";
 
 type SkipDirsPanelProps = {
   drive: api.AdminDrive;
@@ -100,38 +104,47 @@ function DirTreeNode({
   onToggle,
 }: DirTreeNodeProps) {
   const [open, setOpen] = useState(!!initiallyOpen);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const [loadState, setLoadState] = useState<DirTreeLoadState>("idle");
   const [children, setChildren] = useState<api.DriveDirEntry[]>([]);
   const [error, setError] = useState("");
 
   const isRoot = depth === 0;
   const isSelected = id !== "" && selected.has(id);
   const dimmed = ancestorSkipped;
-
-  const loadChildren = useCallback(async () => {
-    if (loaded || loading) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await api.listDriveDirChildren(driveId, id || undefined);
-      setChildren(data ?? []);
-      setLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [driveId, id, loaded, loading]);
+  const loading = loadState === "loading";
+  const loaded = loadState === "loaded";
 
   useEffect(() => {
-    if (open && !loaded) {
-      void loadChildren();
-    }
-  }, [open, loaded, loadChildren]);
+    if (!open || loadState !== "idle") return;
+
+    let active = true;
+    setLoadState((state) => nextDirTreeLoadState(state, "start"));
+    setError("");
+
+    void api
+      .listDriveDirChildren(driveId, id || undefined)
+      .then((data) => {
+        if (!active) return;
+        setChildren(data ?? []);
+        setLoadState((state) => nextDirTreeLoadState(state, "resolve"));
+      })
+      .catch((e: unknown) => {
+        if (!active) return;
+        setError(e instanceof Error ? e.message : "加载失败");
+        setLoadState((state) => nextDirTreeLoadState(state, "reject"));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [driveId, id, loadState, open]);
 
   function handleToggleOpen() {
     setOpen((v) => !v);
+  }
+
+  function handleRetry() {
+    setLoadState((state) => nextDirTreeLoadState(state, "retry"));
   }
 
   return (
@@ -198,7 +211,10 @@ function DirTreeNode({
           )}
           {error && (
             <div style={{ fontSize: "12px", padding: "4px 28px", color: "var(--danger, #d33)" }}>
-              {error}
+              <span>{error}</span>{" "}
+              <button type="button" className="admin-btn" onClick={handleRetry}>
+                重试
+              </button>
             </div>
           )}
           {loaded && !error && children.length === 0 && (

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { nextDirTreeLoadState } from "../src/admin/drive/dirTreeLoadState";
 
 const drivesPageSource = readFileSync(
   new URL("../src/admin/DrivesPage.tsx", import.meta.url),
@@ -88,6 +89,14 @@ const driveIconKinds = [
   "wopan",
 ];
 const generatedDriveIcons = [{ kind: "localstorage", ext: "png" }];
+
+test("directory tree load state stops after failure until explicit retry", () => {
+  assert.equal(nextDirTreeLoadState("idle", "start"), "loading");
+  assert.equal(nextDirTreeLoadState("loading", "resolve"), "loaded");
+  assert.equal(nextDirTreeLoadState("loading", "reject"), "error");
+  assert.equal(nextDirTreeLoadState("error", "effect"), "error");
+  assert.equal(nextDirTreeLoadState("error", "retry"), "idle");
+});
 
 function driveTypeOptions() {
   const match = /const DRIVE_OPTIONS:\s*DriveOption\[]\s*=\s*\[([\s\S]*?)\];/.exec(
