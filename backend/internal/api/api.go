@@ -596,8 +596,40 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.MaxUploadBytes > 0 && r.ContentLength > s.MaxUploadBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, errors.New("upload exceeds maximum size"))
+		return
+	}
 	if s.MaxUploadBytes > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, s.MaxUploadBytes)
+	}
+	uploadDir := s.localUploadDir()
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	availableBytes := s.AvailableUploadBytes
+	if availableBytes == nil {
+		availableBytes = func(path string) (int64, error) {
+			stats, err := localDiskStats(path)
+			return stats.AvailableBytes, err
+		}
+	}
+	available, err := availableBytes(uploadDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("check upload storage: %w", err))
+		return
+	}
+	declaredSize := r.ContentLength
+	if declaredSize < 0 {
+		declaredSize = s.MaxUploadBytes
+	}
+	if declaredSize < 0 {
+		declaredSize = 0
+	}
+	if available < s.UploadReserveBytes || available-s.UploadReserveBytes < declaredSize {
+		writeErr(w, http.StatusInsufficientStorage, errors.New("insufficient storage for upload"))
+		return
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		if r.MultipartForm != nil {
@@ -621,28 +653,6 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-
-	uploadDir := s.localUploadDir()
-	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	availableBytes := s.AvailableUploadBytes
-	if availableBytes == nil {
-		availableBytes = func(path string) (int64, error) {
-			stats, err := localDiskStats(path)
-			return stats.AvailableBytes, err
-		}
-	}
-	available, err := availableBytes(uploadDir)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("check upload storage: %w", err))
-		return
-	}
-	if available < s.UploadReserveBytes || available-s.UploadReserveBytes < header.Size {
-		writeErr(w, http.StatusInsufficientStorage, errors.New("insufficient storage for upload"))
-		return
-	}
 
 	originalName := filepath.Base(strings.TrimSpace(header.Filename))
 	ext := strings.ToLower(filepath.Ext(originalName))

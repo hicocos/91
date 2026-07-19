@@ -984,12 +984,17 @@ func TestHandleUploadVideoRejectsBodyOverHardLimitWithoutArtifacts(t *testing.T)
 	server := &Server{Catalog: cat, LocalDir: t.TempDir(), UploadDir: uploadDir}
 	req := multipartUploadRequest(t, nil, "clip.mp4", "video-bytes")
 	server.MaxUploadBytes = req.ContentLength - 1
+	bodyCounter := &countingReader{reader: req.Body}
+	req.Body = io.NopCloser(bodyCounter)
 	rr := httptest.NewRecorder()
 
 	server.handleUploadVideo(rr, req)
 
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413; body = %s", rr.Code, rr.Body.String())
+	}
+	if bodyCounter.bytesRead != 0 {
+		t.Fatalf("request body bytes read = %d, want 0 when Content-Length exceeds hard limit", bodyCounter.bytesRead)
 	}
 	entries, err := os.ReadDir(uploadDir)
 	if err != nil {
@@ -1027,12 +1032,17 @@ func TestHandleUploadVideoRejectsInsufficientDiskSpaceWithoutArtifacts(t *testin
 		},
 	}
 	req := multipartUploadRequest(t, nil, "clip.mp4", "video-bytes")
+	bodyCounter := &countingReader{reader: req.Body}
+	req.Body = io.NopCloser(bodyCounter)
 	rr := httptest.NewRecorder()
 
 	server.handleUploadVideo(rr, req)
 
 	if rr.Code != http.StatusInsufficientStorage {
 		t.Fatalf("status = %d, want 507; body = %s", rr.Code, rr.Body.String())
+	}
+	if bodyCounter.bytesRead != 0 {
+		t.Fatalf("request body bytes read = %d, want 0 when declared upload cannot fit", bodyCounter.bytesRead)
 	}
 	if probedPath != uploadDir {
 		t.Fatalf("space probe path = %q, want %q", probedPath, uploadDir)
@@ -1938,6 +1948,17 @@ func requestWithRouteParam(method, target, key, value string, body *strings.Read
 	rctx.URLParams.Add(key, value)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	return req
+}
+
+type countingReader struct {
+	reader    io.Reader
+	bytesRead int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
 }
 
 func multipartUploadRequest(t *testing.T, fields map[string]string, fileName, fileContent string) *http.Request {
