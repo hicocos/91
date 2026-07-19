@@ -16,6 +16,34 @@ func TestRequiresAdminSetup(t *testing.T) {
 	}
 }
 
+func TestClearAdminCredentialsRemovesPasswordButPreservesServiceConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+server:
+  listen: "127.0.0.1:9192"
+  admin:
+    username: "owner"
+    password: "new-secret"
+storage:
+  db_path: "./data/video-site.db"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := ClearAdminCredentials(path); err != nil {
+		t.Fatalf("clear admin credentials: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Server.Admin.Username != "" || cfg.Server.Admin.Password != "" {
+		t.Fatalf("admin credentials remained: %#v", cfg.Server.Admin)
+	}
+	if cfg.Server.Listen != "127.0.0.1:9192" || cfg.Storage.DBPath != "./data/video-site.db" {
+		t.Fatalf("unrelated config changed: %#v", cfg)
+	}
+}
+
 func TestWriteAdminCredentialsUpdatesConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(`

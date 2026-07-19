@@ -23,7 +23,8 @@ import (
 var schemaSQL string
 
 type Catalog struct {
-	db *sql.DB
+	db                *sql.DB
+	credentialsCipher *credentialsCipher
 
 	// matcher 缓存：按 settings 里的规则版本号失效。标签创建/修改/删除都会
 	// bump 版本；Matcher() 每次调用只多花一条单行 SELECT。
@@ -42,6 +43,10 @@ type CrawlerAssetCounts struct {
 }
 
 func Open(path string) (*Catalog, error) {
+	credentialsCipher, err := loadCredentialsCipher(path)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -52,7 +57,7 @@ func Open(path string) (*Catalog, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	c := &Catalog{db: db}
+	c := &Catalog{db: db, credentialsCipher: credentialsCipher}
 	if err := c.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate catalog: %w", err)
@@ -2509,7 +2514,10 @@ type Drive struct {
 
 func (c *Catalog) UpsertDrive(ctx context.Context, d *Drive) error {
 	normalizeDriveRootFields(d)
-	cred, _ := json.Marshal(d.Credentials)
+	cred, err := c.credentialsCipher.encrypt(d.ID, d.Credentials)
+	if err != nil {
+		return fmt.Errorf("catalog: encrypt drive %q credentials: %w", d.ID, err)
+	}
 	skipDirs := d.SkipDirIDs
 	if skipDirs == nil {
 		skipDirs = []string{}
@@ -2520,7 +2528,7 @@ func (c *Catalog) UpsertDrive(ctx context.Context, d *Drive) error {
 		d.CreatedAt = time.UnixMilli(now)
 	}
 	d.UpdatedAt = time.UnixMilli(now)
-	_, err := c.db.ExecContext(ctx, `
+	_, err = c.db.ExecContext(ctx, `
 INSERT INTO drives (id, kind, name, root_id, scan_root_id, credentials, status, last_error, teaser_enabled, skip_dir_ids, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -2534,7 +2542,7 @@ ON CONFLICT(id) DO UPDATE SET
   teaser_enabled = excluded.teaser_enabled,
   skip_dir_ids   = excluded.skip_dir_ids,
   updated_at     = excluded.updated_at
-`, d.ID, d.Kind, d.Name, d.RootID, d.ScanRootID, string(cred), d.Status, d.LastError, boolToInt(d.TeaserEnabled), string(skipDirsJSON),
+`, d.ID, d.Kind, d.Name, d.RootID, d.ScanRootID, cred, d.Status, d.LastError, boolToInt(d.TeaserEnabled), string(skipDirsJSON),
 		d.CreatedAt.UnixMilli(), d.UpdatedAt.UnixMilli())
 	return err
 }
@@ -2599,7 +2607,16 @@ func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 		if err := rows.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &teaserEnabled, &skipDirsStr, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
+		credentials, legacy, err := c.credentialsCipher.decrypt(d.ID, credsStr)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: read drive %q credentials: %w", d.ID, err)
+		}
+		d.Credentials = credentials
+		if legacy {
+			if err := c.reencryptDriveCredentials(ctx, d.ID, credsStr, credentials); err != nil {
+				return nil, err
+			}
+		}
 		_ = json.Unmarshal([]byte(skipDirsStr), &d.SkipDirIDs)
 		normalizeDriveRootFields(d)
 		d.TeaserEnabled = teaserEnabled != 0
@@ -2608,6 +2625,25 @@ func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+func (c *Catalog) reencryptDriveCredentials(ctx context.Context, driveID, plaintext string, credentials map[string]string) error {
+	encrypted, err := c.credentialsCipher.encrypt(driveID, credentials)
+	if err != nil {
+		return fmt.Errorf("catalog: encrypt legacy drive %q credentials: %w", driveID, err)
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE drives SET credentials = ? WHERE id = ? AND credentials = ?`,
+		encrypted, driveID, plaintext)
+	if err != nil {
+		return fmt.Errorf("catalog: persist encrypted drive %q credentials: %w", driveID, err)
+	}
+	if rows, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("catalog: verify encrypted drive %q credentials: %w", driveID, err)
+	} else if rows != 1 {
+		return fmt.Errorf("catalog: drive %q credentials changed during plaintext migration", driveID)
+	}
+	return nil
 }
 
 func (c *Catalog) GetDrive(ctx context.Context, id string) (*Drive, error) {
@@ -2619,7 +2655,16 @@ func (c *Catalog) GetDrive(ctx context.Context, id string) (*Drive, error) {
 	if err := row.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &teaserEnabled, &skipDirsStr, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
+	credentials, legacy, err := c.credentialsCipher.decrypt(d.ID, credsStr)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: read drive %q credentials: %w", d.ID, err)
+	}
+	if legacy {
+		if err := c.reencryptDriveCredentials(ctx, d.ID, credsStr, credentials); err != nil {
+			return nil, err
+		}
+	}
+	d.Credentials = credentials
 	_ = json.Unmarshal([]byte(skipDirsStr), &d.SkipDirIDs)
 	normalizeDriveRootFields(d)
 	d.TeaserEnabled = teaserEnabled != 0

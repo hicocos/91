@@ -116,9 +116,19 @@ func main() {
 		Catalog:  cat,
 	}
 	setupRequired := config.RequiresAdminSetup(cfg)
-	if !setupRequired {
+	if userCount, countErr := cat.CountUsers(ctx); countErr != nil {
+		log.Printf("[auth] count users: %v", countErr)
+	} else if userCount > 0 {
+		setupRequired = false
+	}
+	if !setupRequired && cfg.Server.Admin.Username != "" && cfg.Server.Admin.Password != "" {
 		if err := ensureConfigAdminUser(ctx, cat, cfg); err != nil {
 			log.Printf("[auth] migrate config admin: %v", err)
+		} else if err := config.ClearAdminCredentials(cfgPath); err != nil {
+			log.Printf("[auth] clear migrated config credentials: %v", err)
+		} else {
+			cfg.Server.Admin.Username = ""
+			cfg.Server.Admin.Password = ""
 		}
 	}
 	var setupMu sync.Mutex
@@ -169,9 +179,6 @@ func main() {
 			if !setupRequired {
 				return nil
 			}
-			if err := config.WriteAdminCredentials(cfgPath, username, password); err != nil {
-				return err
-			}
 			hashed, err := auth.HashPassword(password)
 			if err != nil {
 				return err
@@ -179,9 +186,12 @@ func main() {
 			if _, err := cat.CreateUser(ctx, username, hashed, "admin"); err != nil {
 				return err
 			}
-			cfg.Server.Admin.Username = username
-			cfg.Server.Admin.Password = password
-			authr.SetCredentials(username, password)
+			if err := config.ClearAdminCredentials(cfgPath); err != nil {
+				return err
+			}
+			cfg.Server.Admin.Username = ""
+			cfg.Server.Admin.Password = ""
+			authr.SetCredentials("", "")
 			setupRequired = false
 			return nil
 		},

@@ -60,6 +60,49 @@ func RequiresAdminSetup(c *Config) bool {
 	return username == DefaultAdminUsername && password == DefaultAdminPassword
 }
 
+func ClearAdminCredentials(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	doc := ensureDocumentMapping(&root)
+	server := ensureMappingValue(doc, "server")
+	admin := ensureMappingValue(server, "admin")
+	setScalarValue(admin, "username", "")
+	setScalarValue(admin, "password", "")
+	return writeConfigNode(path, &root)
+}
+
+func writeConfigNode(path string, root *yaml.Node) error {
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		_ = enc.Close()
+		return fmt.Errorf("encode config: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	mode := os.FileMode(0o600)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out.Bytes(), mode); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("replace config: %w", err)
+	}
+	return nil
+}
+
 func WriteAdminCredentials(path, username, password string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
