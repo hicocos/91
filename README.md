@@ -149,8 +149,27 @@ docker compose pull          # 拉取最新正式版 stable 镜像
 docker compose up -d         # 更新并重启
 ```
 
-> 所有配置、数据库、封面、预览及上传文件均保存在 `./data/` 目录下。
-> 从旧版本升级 Docker 部署时，执行 `docker compose pull && docker compose up -d` 即可；`./data/` 不会被镜像更新覆盖。
+> 所有配置、数据库、凭据加密密钥、封面、预览及上传文件均保存在 `./data/` 目录下。
+> 更新前应备份整个 `./data/`。SQLite 运行在 WAL 模式，在线备份时请使用 SQLite Online Backup API，而不是只复制 `video-site.db`；停机后可直接归档整个目录。
+
+**从项目目录更新本地构建版：**
+
+```bash
+git fetch origin
+git status --short
+git pull --ff-only origin main
+docker compose up -d --build
+```
+
+可选验证：
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:9191/healthz
+```
+
+> 如果使用 GHCR 正式镜像而不是仓库内的本地 `build:` 配置，更新命令才是 `docker compose pull && docker compose up -d`。
+> Compose 数据卷目标必须是 `/opt/video-site-91/data`。不要改成 `/www/91/data` 等其它容器路径，否则镜像声明的 `VOLUME` 会生成匿名卷，宿主机 `./data` 将不会保存真实数据库。
 
 
 ## 数据存放位置
@@ -159,16 +178,18 @@ docker compose up -d         # 更新并重启
 
 | 路径 | 内容 |
 |------|------|
-| `/opt/video-site-91/config.yaml` | 配置文件、管理员账号、网盘凭证 |
-| `/opt/video-site-91/data/video-site.db` | SQLite 数据库 |
+| `/opt/video-site-91/config.yaml` | 服务配置（管理员认证迁移到数据库后不保留明文密码） |
+| `/opt/video-site-91/data/video-site.db` | SQLite 数据库（网盘凭据以加密信封存储） |
+| `/opt/video-site-91/data/credentials.key` | 网盘凭据 AES-256-GCM 主密钥，权限必须为 `0600`，备份时须与数据库一起保存 |
 | `/opt/video-site-91/data/previews/` | 封面图和预览片段 |
 
 ### Docker Compose 部署
 
 | 路径 | 内容 |
 |------|------|
-| `./data/config.yaml` | 配置文件、管理员账号、网盘凭证 |
-| `./data/video-site.db` | SQLite 数据库 |
+| `./data/config.yaml` | 服务配置（权限 `0600`） |
+| `./data/video-site.db` | SQLite 数据库（网盘凭据以加密信封存储） |
+| `./data/credentials.key` | 网盘凭据加密主密钥；必须与数据库一起备份，遗失后凭据无法恢复 |
 | `./data/previews/` | 封面图和预览片段 |
 | `./data/uploads/` | 本地上传的视频文件 |
 
