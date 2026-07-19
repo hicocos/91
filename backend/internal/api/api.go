@@ -53,11 +53,15 @@ var allowedUploadTags = map[string]struct{}{
 const maxSubtitleBytes = 20 << 20
 
 type Server struct {
-	Catalog         *catalog.Catalog
-	Proxy           *proxy.Proxy
-	LocalDir        string
-	UploadDir       string
-	OnVideoUploaded func(*catalog.Video)
+	Catalog              *catalog.Catalog
+	Proxy                *proxy.Proxy
+	LocalDir             string
+	UploadDir            string
+	MaxUploadBytes       int64
+	UploadReserveBytes   int64
+	UploadGate           chan struct{}
+	AvailableUploadBytes func(path string) (int64, error)
+	OnVideoUploaded      func(*catalog.Video)
 	// OnHideVideo 处理前台「不再展示」。隐藏机制已废弃，改走拉黑逻辑：
 	// 删除库中记录 + 本地封面/预览，保留网盘源文件，并写黑名单墓碑
 	// （扫盘不再入库）。未注入时回退为旧的 hidden 标记。
@@ -583,7 +587,27 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, errors.New("local storage is not configured"))
 		return
 	}
+	if s.UploadGate != nil {
+		select {
+		case s.UploadGate <- struct{}{}:
+			defer func() { <-s.UploadGate }()
+		default:
+			writeErr(w, http.StatusTooManyRequests, errors.New("another upload is already in progress"))
+			return
+		}
+	}
+	if s.MaxUploadBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, s.MaxUploadBytes)
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, errors.New("upload exceeds maximum size"))
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -597,6 +621,28 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	uploadDir := s.localUploadDir()
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	availableBytes := s.AvailableUploadBytes
+	if availableBytes == nil {
+		availableBytes = func(path string) (int64, error) {
+			stats, err := localDiskStats(path)
+			return stats.AvailableBytes, err
+		}
+	}
+	available, err := availableBytes(uploadDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("check upload storage: %w", err))
+		return
+	}
+	if available < s.UploadReserveBytes || available-s.UploadReserveBytes < header.Size {
+		writeErr(w, http.StatusInsufficientStorage, errors.New("insufficient storage for upload"))
+		return
+	}
 
 	originalName := filepath.Base(strings.TrimSpace(header.Filename))
 	ext := strings.ToLower(filepath.Ext(originalName))

@@ -2,6 +2,10 @@
 server:
   # 本地开发默认配合 vite.config.ts 的代理端口。
   listen: "127.0.0.1:9192"
+  # 单个上传 HTTP 请求的硬上限（10 GiB，包含 multipart 开销）
+  max_upload_bytes: 10737418240
+  # 接受上传后必须继续保留的磁盘可用空间（1 GiB）
+  upload_reserve_bytes: 1073741824
   # 管理后台用户。保留默认值时，首次访问登录页会要求设置新用户名和密码，
   # 并写回 backend/config.yaml。
   # CORS 白名单：允许跨源访问的前端 Origin 列表。默认空 = 不允许任何跨源请求。

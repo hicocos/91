@@ -132,10 +132,13 @@ func main() {
 	}
 
 	apiServer := &api.Server{
-		Catalog:   cat,
-		Proxy:     app.proxy,
-		LocalDir:  cfg.Storage.LocalPreviewDir,
-		UploadDir: app.localUploadDir(),
+		Catalog:            cat,
+		Proxy:              app.proxy,
+		LocalDir:           cfg.Storage.LocalPreviewDir,
+		UploadDir:          app.localUploadDir(),
+		MaxUploadBytes:     cfg.Server.MaxUploadBytes,
+		UploadReserveBytes: cfg.Server.UploadReserveBytes,
+		UploadGate:         make(chan struct{}, 1),
 		OnVideoUploaded: func(v *catalog.Video) {
 			app.enqueueUploadedVideo(ctx, v)
 		},

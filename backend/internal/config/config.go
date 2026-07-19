@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	DefaultAdminUsername = "admin"
-	DefaultAdminPassword = "admin123"
+	DefaultAdminUsername      = "admin"
+	DefaultAdminPassword      = "admin123"
+	DefaultMaxUploadBytes     = int64(10 << 30)
+	DefaultUploadReserveBytes = int64(1 << 30)
 )
 
 var (
@@ -30,8 +32,10 @@ type Config struct {
 }
 
 type Server struct {
-	Listen string `yaml:"listen"`
-	Admin  Admin  `yaml:"admin"`
+	Listen             string `yaml:"listen"`
+	MaxUploadBytes     int64  `yaml:"max_upload_bytes"`
+	UploadReserveBytes int64  `yaml:"upload_reserve_bytes"`
+	Admin              Admin  `yaml:"admin"`
 	// AllowedOrigins 是允许跨源访问的前端 Origin 白名单（如 "https://video.example.com"）。
 	// 默认空 → 不开启 CORS 跨源；同源部署（前后端在同一个域名 + 端口下）不需要配置此项。
 	// 浏览器对不在列表里的 Origin 不会拿到 Access-Control-Allow-Origin 头，自然就读不到响应。
@@ -236,6 +240,12 @@ func Load(path string) (*Config, error) {
 func (c *Config) applyDefaults() {
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":8080"
+	}
+	if c.Server.MaxUploadBytes <= 0 {
+		c.Server.MaxUploadBytes = DefaultMaxUploadBytes
+	}
+	if c.Server.UploadReserveBytes <= 0 {
+		c.Server.UploadReserveBytes = DefaultUploadReserveBytes
 	}
 	if c.Storage.DBPath == "" {
 		c.Storage.DBPath = "./data/video-site.db"

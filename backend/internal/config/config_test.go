@@ -103,6 +103,24 @@ scanner:
 	}
 }
 
+func TestLoadDefaultUploadLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Server.MaxUploadBytes != 10<<30 {
+		t.Fatalf("max upload bytes = %d, want %d", cfg.Server.MaxUploadBytes, int64(10<<30))
+	}
+	if cfg.Server.UploadReserveBytes != 1<<30 {
+		t.Fatalf("upload reserve bytes = %d, want %d", cfg.Server.UploadReserveBytes, int64(1<<30))
+	}
+}
+
 func TestLoadDefaultNightlyCronHour(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {

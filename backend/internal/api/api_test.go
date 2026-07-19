@@ -973,6 +973,127 @@ func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {
 	}
 }
 
+func TestHandleUploadVideoRejectsBodyOverHardLimitWithoutArtifacts(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	uploadDir := t.TempDir()
+	server := &Server{Catalog: cat, LocalDir: t.TempDir(), UploadDir: uploadDir}
+	req := multipartUploadRequest(t, nil, "clip.mp4", "video-bytes")
+	server.MaxUploadBytes = req.ContentLength - 1
+	rr := httptest.NewRecorder()
+
+	server.handleUploadVideo(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body = %s", rr.Code, rr.Body.String())
+	}
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		t.Fatalf("read upload dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("upload artifacts = %#v, want none", entries)
+	}
+	items, total, err := cat.ListVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list videos: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("catalog = total:%d items:%#v, want empty", total, items)
+	}
+}
+
+func TestHandleUploadVideoRejectsInsufficientDiskSpaceWithoutArtifacts(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	uploadDir := t.TempDir()
+	var probedPath string
+	server := &Server{
+		Catalog:            cat,
+		LocalDir:           t.TempDir(),
+		UploadDir:          uploadDir,
+		UploadReserveBytes: 8,
+		AvailableUploadBytes: func(path string) (int64, error) {
+			probedPath = path
+			return int64(len("video-bytes")) + 7, nil
+		},
+	}
+	req := multipartUploadRequest(t, nil, "clip.mp4", "video-bytes")
+	rr := httptest.NewRecorder()
+
+	server.handleUploadVideo(rr, req)
+
+	if rr.Code != http.StatusInsufficientStorage {
+		t.Fatalf("status = %d, want 507; body = %s", rr.Code, rr.Body.String())
+	}
+	if probedPath != uploadDir {
+		t.Fatalf("space probe path = %q, want %q", probedPath, uploadDir)
+	}
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		t.Fatalf("read upload dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("upload artifacts = %#v, want none", entries)
+	}
+	items, total, err := cat.ListVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list videos: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("catalog = total:%d items:%#v, want empty", total, items)
+	}
+}
+
+func TestHandleUploadVideoRejectsConcurrentUpload(t *testing.T) {
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	server := &Server{
+		Catalog:    cat,
+		LocalDir:   t.TempDir(),
+		UploadGate: make(chan struct{}, 1),
+		AvailableUploadBytes: func(string) (int64, error) {
+			close(probeStarted)
+			<-releaseProbe
+			return 1 << 30, nil
+		},
+	}
+	firstReq := multipartUploadRequest(t, nil, "first.mp4", "first-video")
+	secondReq := multipartUploadRequest(t, nil, "second.mp4", "second-video")
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		server.handleUploadVideo(rr, firstReq)
+		firstDone <- rr
+	}()
+	<-probeStarted
+
+	secondRR := httptest.NewRecorder()
+	server.handleUploadVideo(secondRR, secondReq)
+	if secondRR.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429; body = %s", secondRR.Code, secondRR.Body.String())
+	}
+
+	close(releaseProbe)
+	firstRR := <-firstDone
+	if firstRR.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201; body = %s", firstRR.Code, firstRR.Body.String())
+	}
+}
+
 func TestHandleUploadVideoDefaultsBlankTitleToOriginalFileName(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
