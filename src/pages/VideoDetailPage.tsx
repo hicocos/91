@@ -11,6 +11,7 @@ import {
   fetchTags,
   fetchVideoDetail,
   fetchVideoSubtitles,
+  HTTPStatusError,
   recordView,
   updateVideoTags,
 } from "@/data/videos";
@@ -48,6 +49,8 @@ export default function VideoDetailPage() {
   const [tags, setTags] = useState<TagItem[]>([]);
   const [subtitles, setSubtitles] = useState<VideoSubtitle[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<"" | "not-found" | "failed">("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [tagSaving, setTagSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteSource, setDeleteSource] = useState(false);
@@ -59,22 +62,34 @@ export default function VideoDetailPage() {
     let active = true;
     window.scrollTo({ top: 0, behavior: "auto" });
     setLoading(true);
+    setLoadError("");
     setSubtitles([]);
-    Promise.all([fetchVideoDetail(id), fetchTags(), fetchVideoSubtitles(id)]).then(
-      ([d, tagList, subtitleList]) => {
+    Promise.all([fetchVideoDetail(id), fetchTags(), fetchVideoSubtitles(id)])
+      .then(([d, tagList, subtitleList]) => {
         if (!active) return;
         const stableDetail = withStableRelatedVideos(d);
         setDetail(stableDetail);
         setTags(tagList);
-        setSubtitles(d ? subtitleList : []);
+        setSubtitles(subtitleList);
         setLoading(false);
-        document.title = stableDetail ? stableDetail.title : "视频不存在";
-      }
-    );
+        document.title = stableDetail?.title ?? "视频";
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setDetail(null);
+        setLoading(false);
+        if (error instanceof HTTPStatusError && error.status === 404) {
+          setLoadError("not-found");
+          document.title = "视频不存在";
+          return;
+        }
+        setLoadError("failed");
+        document.title = "视频加载失败";
+      });
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, reloadKey]);
 
   async function handleTagsChange(nextTags: string[]) {
     if (!detail) return;
@@ -194,11 +209,19 @@ export default function VideoDetailPage() {
   }
 
   if (!detail) {
+    const notFound = loadError === "not-found";
     return (
       <AppShell mobileAutoHideNav>
         <div className="vd-page">
           <div className="container vd-page__inner">
-            <div className="vd-empty">视频不存在或已被移除</div>
+            <div className="vd-empty">
+              {notFound ? "视频不存在或已被移除" : "视频加载失败，请检查网络后重试"}
+              {!notFound && (
+                <button type="button" className="admin-btn" onClick={() => setReloadKey((key) => key + 1)}>
+                  重试
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </AppShell>

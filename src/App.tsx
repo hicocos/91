@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, type ReactNode } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SkyStarfield } from "@/components/SkyStarfield";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { AdminLayout } from "@/admin/AdminLayout";
 import { RequireAuth } from "@/admin/RequireAuth";
 import { RequireAdmin } from "@/admin/RequireAdmin";
@@ -37,7 +38,13 @@ const UsersPage = lazy(() =>
 );
 
 function PageSuspense({ children }: { children: ReactNode }) {
-  return <Suspense fallback={null}>{children}</Suspense>;
+  return (
+    <AppErrorBoundary>
+      <Suspense fallback={<div className="admin-loading-screen" aria-live="polite">页面加载中...</div>}>
+        {children}
+      </Suspense>
+    </AppErrorBoundary>
+  );
 }
 
 function VideoReturnPathRecorder() {

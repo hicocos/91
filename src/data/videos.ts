@@ -37,16 +37,14 @@ export async function fetchListing(
   return result;
 }
 
-export function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
-  return apiGet<VideoDetail>(`/api/video/${encodeURIComponent(id)}`).catch(
-    () => null
-  );
+export function fetchVideoDetail(id: string): Promise<VideoDetail> {
+  return apiGet<VideoDetail>(`/api/video/${encodeURIComponent(id)}`);
 }
 
 export function fetchVideoSubtitles(id: string): Promise<VideoSubtitle[]> {
   return apiGet<VideoSubtitle[]>(
     `/api/video/${encodeURIComponent(id)}/subtitles`
-  ).catch(() => []);
+  );
 }
 
 export function updateVideoTags(
@@ -211,7 +209,7 @@ const API_GET_MAX_ATTEMPTS = 2;
 const API_GET_RETRY_DELAY_MS = 200;
 const API_GET_TIMEOUT_MS = 10_000;
 
-class HTTPStatusError extends Error {
+export class HTTPStatusError extends Error {
   constructor(readonly status: number) {
     super(`HTTP ${status}`);
     this.name = "HTTPStatusError";
