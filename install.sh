@@ -13,7 +13,7 @@ CONFIGURE_UFW="${CONFIGURE_UFW:-1}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 SELF_UPDATE="${SELF_UPDATE:-1}"
 FORCE_UPDATE="${FORCE_UPDATE:-0}"
-INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-main}"
+INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-${VERSION/latest/main}}"
 INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-${GH_PROXY}https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALL_SCRIPT_REF}/install.sh}"
 VIDEO_SITE_SKIP_SELF_UPDATE="${VIDEO_SITE_SKIP_SELF_UPDATE:-0}"
 SERVICE_READY_TIMEOUT="${SERVICE_READY_TIMEOUT:-90}"
@@ -125,7 +125,7 @@ asset_name() {
 
 verify_runtime_deps() {
   local cmd
-  for cmd in curl tar ffmpeg ffprobe python3; do
+  for cmd in curl tar sha256sum ffmpeg ffprobe python3; do
     command -v "$cmd" >/dev/null 2>&1 || die "missing command: $cmd"
   done
 
@@ -189,6 +189,35 @@ download_file() {
     sleep $((retry * 2))
   done
   return 1
+}
+
+backup_sqlite_database() {
+  local backup="$1"
+  local db_path="$INSTALL_PATH/data/video-site.db"
+  [[ -f "$db_path" ]] || return 0
+  DB_PATH="$db_path" BACKUP_PATH="$backup/video-site.db" python3 - <<'PY'
+import os
+import sqlite3
+
+source = sqlite3.connect(os.environ["DB_PATH"])
+target = sqlite3.connect(os.environ["BACKUP_PATH"])
+with target:
+    source.backup(target)
+result = target.execute("PRAGMA integrity_check").fetchone()[0]
+target.close()
+source.close()
+if result != "ok":
+    raise SystemExit("SQLite backup integrity check failed: " + result)
+PY
+}
+
+restore_sqlite_database() {
+  local backup="$1"
+  local db_path="$INSTALL_PATH/data/video-site.db"
+  [[ -f "$backup/video-site.db" ]] || return 0
+  mkdir -p "$(dirname "$db_path")"
+  rm -f "$db_path" "$db_path-wal" "$db_path-shm"
+  cp -a "$backup/video-site.db" "$db_path"
 }
 
 backup_install_files() {
@@ -600,13 +629,32 @@ restart_service_ready() {
 }
 
 fetch_and_unpack() {
-  local tmp archive url root
+  local tmp archive checksums url root asset
   tmp="$(mktemp -d)"
-  archive="$tmp/$(asset_name)"
-  url="$(download_base_url)/$(asset_name)"
+  asset="$(asset_name)"
+  archive="$tmp/$asset"
+  checksums="$tmp/SHA256SUMS"
+  url="$(download_base_url)/$asset"
   log "downloading $url"
   if ! download_file "$url" "$archive"; then
     warn "download failed: $url"
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  log "downloading checksum manifest"
+  if ! download_file "$(download_base_url)/SHA256SUMS" "$checksums"; then
+    warn "checksum manifest download failed"
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  if ! (
+    cd "$tmp"
+    grep -E "^[[:xdigit:]]{64}[[:space:]]+\\*?${asset}$" SHA256SUMS > SHA256SUMS.selected
+    sha256sum -c SHA256SUMS.selected
+  ); then
+    warn "checksum verification failed for $asset"
     rm -rf "$tmp"
     return 1
   fi
@@ -750,11 +798,13 @@ update_app() {
   local backup
   backup="$(mktemp -d)"
   backup_install_files "$backup"
+  backup_sqlite_database "$backup"
 
   systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
   if ! (fetch_and_unpack && prepare_config && write_service && install_cli); then
     warn "update failed; restoring previous files"
     restore_install_files "$backup"
+    restore_sqlite_database "$backup"
     systemctl start "${SERVICE_NAME}.service" 2>/dev/null || true
     rm -rf "$backup"
     exit 1
@@ -763,6 +813,7 @@ update_app() {
   if ! restart_service_ready; then
     warn "new version failed its readiness check; restoring previous files"
     restore_install_files "$backup"
+    restore_sqlite_database "$backup"
     restart_service_ready 2>/dev/null || true
     rm -rf "$backup"
     exit 1

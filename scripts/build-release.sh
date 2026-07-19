@@ -14,9 +14,10 @@ usage() {
   cat <<EOF
 Usage: scripts/build-release.sh
 
-Builds precompiled release packages:
+Builds precompiled release packages and their checksum manifest:
   release/video-site-91-linux-amd64.tar.gz
   release/video-site-91-linux-arm64.tar.gz
+  release/SHA256SUMS
 
 Environment overrides:
   OUT_DIR=$OUT_DIR
@@ -93,10 +94,17 @@ main() {
 
   need_cmd go
   need_cmd tar
+  need_cmd sha256sum
   mkdir -p "$OUT_DIR/.work"
+  rm -f "$OUT_DIR/SHA256SUMS"
   build_frontend
   build_package linux amd64
   build_package linux arm64
+  (
+    cd "$OUT_DIR"
+    sha256sum "${APP_NAME}-linux-amd64.tar.gz" "${APP_NAME}-linux-arm64.tar.gz" > SHA256SUMS
+  )
+  log "wrote $OUT_DIR/SHA256SUMS"
   rm -rf "$OUT_DIR/.work"
   log "done"
 }

@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-socks \
     tar \
     tzdata \
+    && groupadd --gid 9191 video-site-91 \
+    && useradd --system --uid 9191 --gid video-site-91 --home-dir /opt/video-site-91 --shell /usr/sbin/nologin video-site-91 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -c "import requests, bs4, lxml, socks"
@@ -58,10 +60,13 @@ ENV VIDEO_CONFIG=/opt/video-site-91/data/config.yaml \
     VIDEO_LISTEN_PORT=9191 \
     VIDEO_VERSION_FILE=/opt/video-site-91/data/.version
 
-RUN chmod +x ./server /usr/local/bin/docker-entrypoint.sh
+RUN mkdir -p /opt/video-site-91/data \
+    && chmod +x ./server /usr/local/bin/docker-entrypoint.sh \
+    && chown -R 9191:9191 /opt/video-site-91
 
 VOLUME ["/opt/video-site-91/data"]
 EXPOSE 9191
 
+USER 9191:9191
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["./server"]
