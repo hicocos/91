@@ -24,7 +24,7 @@ import (
 	"github.com/video-site/backend/internal/proxy"
 )
 
-func TestVideoSourceUsesDirectStreamForAvi(t *testing.T) {
+func TestVideoSourceUsesCatalogVideoIDForAvi(t *testing.T) {
 	v := &catalog.Video{
 		ID:      "video-1",
 		DriveID: "drive-1",
@@ -34,12 +34,12 @@ func TestVideoSourceUsesDirectStreamForAvi(t *testing.T) {
 
 	got := videoSource(v)
 
-	if got != "/p/stream/drive-1/file-1" {
-		t.Fatalf("video source = %q, want direct stream route", got)
+	if got != "/p/stream/video-1" {
+		t.Fatalf("video source = %q, want catalog-authorized stream route", got)
 	}
 }
 
-func TestVideoSourceUsesDirectStreamForMkv(t *testing.T) {
+func TestVideoSourceUsesCatalogVideoIDForMkv(t *testing.T) {
 	v := &catalog.Video{
 		ID:      "video-1",
 		DriveID: "drive-1",
@@ -49,12 +49,12 @@ func TestVideoSourceUsesDirectStreamForMkv(t *testing.T) {
 
 	got := videoSource(v)
 
-	if got != "/p/stream/drive-1/file-1" {
-		t.Fatalf("video source = %q, want direct stream route", got)
+	if got != "/p/stream/video-1" {
+		t.Fatalf("video source = %q, want catalog-authorized stream route", got)
 	}
 }
 
-func TestVideoSourceKeepsDirectStreamForMp4(t *testing.T) {
+func TestVideoSourceKeepsCatalogVideoIDForMp4(t *testing.T) {
 	v := &catalog.Video{
 		ID:      "video-1",
 		DriveID: "drive-1",
@@ -64,8 +64,8 @@ func TestVideoSourceKeepsDirectStreamForMp4(t *testing.T) {
 
 	got := videoSource(v)
 
-	if got != "/p/stream/drive-1/file-1" {
-		t.Fatalf("video source = %q, want direct stream route", got)
+	if got != "/p/stream/video-1" {
+		t.Fatalf("video source = %q, want catalog-authorized stream route", got)
 	}
 }
 
@@ -89,8 +89,8 @@ func TestVideoURLsEscapePathSegments(t *testing.T) {
 	if dto.Thumbnail != "/p/thumb/wopan-drive-fid%2Fwith%20space?v=1778863000123" {
 		t.Fatalf("thumbnail = %q, want escaped video id", dto.Thumbnail)
 	}
-	if got := videoSource(v); got != "/p/stream/drive-1/fid%2Fwith%20space" {
-		t.Fatalf("video source = %q, want escaped file id", got)
+	if got := videoSource(v); got != "/p/stream/wopan-drive-fid%2Fwith%20space" {
+		t.Fatalf("video source = %q, want escaped catalog video id", got)
 	}
 }
 
@@ -106,7 +106,20 @@ func TestThumbnailURLRewritesStoredLocalURLForUnsafeVideoID(t *testing.T) {
 	}
 }
 
-func TestHandleStreamDecodesEscapedWildcardFileID(t *testing.T) {
+func TestHandleStreamResolvesCatalogVideoID(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	now := time.Now()
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "drive-1", Kind: "fake", Name: "Fake", RootID: "root"}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "video-1", DriveID: "drive-1", FileID: "fid/with space", Title: "Video", PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
 	local := filepath.Join(t.TempDir(), "video.mp4")
 	if err := os.WriteFile(local, []byte("ok"), 0o644); err != nil {
 		t.Fatalf("write local video: %v", err)
@@ -114,20 +127,84 @@ func TestHandleStreamDecodesEscapedWildcardFileID(t *testing.T) {
 	drv := &apiStreamFakeDrive{localPath: local}
 	reg := proxy.NewRegistry()
 	reg.Set("drive-1", drv)
-	srv := &Server{Proxy: proxy.New(reg)}
+	srv := &Server{Catalog: cat, Proxy: proxy.New(reg)}
 
 	router := chi.NewRouter()
-	router.Get("/p/stream/{driveID}/*", srv.handleStream)
-	req := httptest.NewRequest(http.MethodGet, "/p/stream/drive-1/fid%2Fwith%20space", nil)
+	router.Get("/p/stream/{videoID}", srv.handleStream)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/video-1", nil)
 	rr := httptest.NewRecorder()
-
 	router.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 	if drv.fileID != "fid/with space" {
-		t.Fatalf("fileID = %q, want decoded original", drv.fileID)
+		t.Fatalf("fileID = %q, want catalog file id", drv.fileID)
+	}
+}
+
+func TestHandleStreamRejectsMissingAndHiddenVideos(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	now := time.Now()
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "drive-1", Kind: "fake", Name: "Fake", RootID: "root"}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "hidden-video", DriveID: "drive-1", FileID: "secret", Title: "Hidden", Hidden: true, PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed hidden video: %v", err)
+	}
+	drv := &apiStreamFakeDrive{}
+	reg := proxy.NewRegistry()
+	reg.Set("drive-1", drv)
+	srv := &Server{Catalog: cat, Proxy: proxy.New(reg)}
+	router := chi.NewRouter()
+	router.Get("/p/stream/{videoID}", srv.handleStream)
+
+	for _, id := range []string{"missing-video", "hidden-video"} {
+		req := httptest.NewRequest(http.MethodGet, "/p/stream/"+id, nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", id, rr.Code)
+		}
+	}
+	if drv.fileID != "" {
+		t.Fatalf("drive invoked for unauthorized video with fileID %q", drv.fileID)
+	}
+}
+
+func TestRawDriveFileStreamRouteIsNotRegistered(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	token := "viewer-token"
+	if err := cat.CreateSession(ctx, token, time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	drv := &apiStreamFakeDrive{}
+	reg := proxy.NewRegistry()
+	reg.Set("drive-1", drv)
+	srv := &Server{Catalog: cat, Proxy: proxy.New(reg)}
+	router := chi.NewRouter()
+	srv.RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
+
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/drive-1/fid%2Fwith%20space", nil)
+	req.AddCookie(&http.Cookie{Name: "vs_admin", Value: token})
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for raw drive/file route", rr.Code)
+	}
+	if drv.fileID != "" {
+		t.Fatalf("drive invoked for raw route with fileID %q", drv.fileID)
 	}
 }
 

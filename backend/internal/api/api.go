@@ -170,8 +170,9 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/tags", s.handleTags)
 		r.Get("/api/shorts/next", s.handleShortsNext)
 
-		// 代理路由同样需要鉴权，防止绕过
-		r.Get("/p/stream/{driveID}/*", s.handleStream)
+		// 播放入口只接受 catalog video ID；底层 drive/file ID 由服务端解析，
+		// 防止登录用户构造地址读取未入库或已隐藏的存储对象。
+		r.Get("/p/stream/{videoID}", s.handleStream)
 		r.Get("/p/subtitle/{id}/{index}", s.handleSubtitleFile)
 		r.Get("/p/upload/{videoID}", s.handleUploadedVideo)
 		r.Get("/p/preview/{videoID}", s.handlePreview)
@@ -707,9 +708,21 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	driveID := routeParam(r, "driveID")
-	fileID := routeWildcardParam(r, "*")
-	s.Proxy.ServeStream(w, r, driveID, fileID)
+	videoID := routeParam(r, "videoID")
+	v, err := s.Catalog.GetVideo(r.Context(), videoID)
+	if err != nil || v == nil || v.Hidden || v.DriveID == localUploadDriveID {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	fileID := v.FileID
+	if v.TranscodeStatus == "ready" && strings.TrimSpace(v.TranscodedFileID) != "" {
+		fileID = v.TranscodedFileID
+	}
+	s.Proxy.ServeStream(w, r, v.DriveID, fileID)
 }
 
 func (s *Server) handleVideoSubtitles(w http.ResponseWriter, r *http.Request) {
@@ -1020,7 +1033,7 @@ func thumbnailURL(v *catalog.Video) string {
 // 产物和原始文件在同一个 drive 上，走同一条 /p/stream 代理/302 链路。
 func transcodedSource(v *catalog.Video) (string, bool) {
 	if v.TranscodeStatus == "ready" && v.TranscodedFileID != "" && v.DriveID != localUploadDriveID {
-		return fmt.Sprintf("/p/stream/%s/%s", pathSegment(v.DriveID), pathSegment(v.TranscodedFileID)), true
+		return "/p/stream/" + pathSegment(v.ID), true
 	}
 	return "", false
 }
@@ -1032,7 +1045,7 @@ func (s *Server) videoSource(v *catalog.Video) string {
 	if src, ok := transcodedSource(v); ok {
 		return src
 	}
-	return fmt.Sprintf("/p/stream/%s/%s", pathSegment(v.DriveID), pathSegment(v.FileID))
+	return "/p/stream/" + pathSegment(v.ID)
 }
 
 // videoSource 兼容旧调用点，没有 server context 时按之前逻辑回退到 /p/stream。
@@ -1044,7 +1057,7 @@ func videoSource(v *catalog.Video) string {
 	if src, ok := transcodedSource(v); ok {
 		return src
 	}
-	return fmt.Sprintf("/p/stream/%s/%s", pathSegment(v.DriveID), pathSegment(v.FileID))
+	return "/p/stream/" + pathSegment(v.ID)
 }
 
 func pathSegment(value string) string {
