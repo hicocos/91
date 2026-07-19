@@ -8,8 +8,10 @@ const indexHtml = readFileSync(
 );
 
 test("app shell prevents referrer leakage for 302 video playback", () => {
-  assert.match(
-    indexHtml,
-    /<meta\s+name="referrer"\s+content="no-referrer"\s*\/?>/
-  );
+  assert.match(indexHtml, /<meta\s+name="referrer"\s+content="no-referrer"\s*\/?>/);
+});
+
+test("theme bootstrap is external so production CSP can forbid inline scripts", () => {
+  assert.match(indexHtml, /<script\s+src="\/theme-bootstrap\.js"><\/script>/);
+  assert.doesNotMatch(indexHtml, /<script>\s*\(function/);
 });

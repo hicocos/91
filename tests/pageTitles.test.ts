@@ -22,7 +22,9 @@ test("public page document titles omit the site suffix", () => {
   assert.match(pages.home, /document\.title = activeSearchQuery[\s\S]*\? `搜索 "\$\{activeSearchQuery\}"`[\s\S]*: activeTag[\s\S]*\? `标签 \$\{activeTag\}`[\s\S]*: "首页"/);
   assert.match(pages.listing, /\? `搜索 "\$\{keyword\}"`/);
   assert.match(pages.listing, /\? `标签 \$\{tag\}`/);
-  assert.match(pages.detail, /document\.title = stableDetail \? stableDetail\.title : "视频不存在"/);
+  assert.match(pages.detail, /document\.title = stableDetail\?\.title \?\? "视频"/);
+  assert.match(pages.detail, /document\.title = "视频不存在"/);
+  assert.match(pages.detail, /document\.title = "视频加载失败"/);
   assert.match(pages.upload, /document\.title = "上传视频"/);
   assert.match(pages.shorts, /document\.title = "短视频"/);
 });
