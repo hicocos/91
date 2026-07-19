@@ -29,6 +29,15 @@ test("Docker publishing waits for its quality gate", () => {
   assert.match(workflow, /^\s*needs:\s*quality\s*$/m);
 });
 
+test("GitHub Actions are pinned to full commit SHAs", () => {
+  for (const path of [".github/workflows/ci.yml", ".github/workflows/docker-build.yml", ".github/workflows/release.yml"]) {
+    const workflow = read(path);
+    const refs = Array.from(workflow.matchAll(/uses:\s*[^\s#]+@([^\s#]+)/g), (match) => match[1]);
+    assert.ok(refs.length > 0, `${path} has no actions`);
+    for (const ref of refs) assert.match(ref, /^[0-9a-f]{40}$/, `${path} uses movable ref ${ref}`);
+  }
+});
+
 test("Docker CI builds, scans vulnerabilities, and creates an SBOM", () => {
   const workflow = read(".github/workflows/docker-build.yml");
   assert.match(workflow, /docker\/build-push-action@/);
