@@ -2,8 +2,10 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +46,8 @@ func Open(path string) (*Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -53,6 +57,7 @@ func Open(path string) (*Catalog, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate catalog: %w", err)
 	}
+	_, _ = c.DeleteExpiredSessions(context.Background(), time.Now())
 	return c, nil
 }
 
@@ -2712,6 +2717,11 @@ type SessionInfo struct {
 	UserID    int64
 }
 
+func sessionTokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 func (c *Catalog) CreateSession(ctx context.Context, token string, ttl time.Duration, userID int64) error {
 	now := time.Now()
 	return c.CreateSessionUntil(ctx, token, now.Add(ttl), userID)
@@ -2721,7 +2731,7 @@ func (c *Catalog) CreateSessionUntil(ctx context.Context, token string, expiresA
 	now := time.Now()
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO admin_sessions (token, created_at, expires_at, user_id) VALUES (?, ?, ?, ?)`,
-		token, now.UnixMilli(), expiresAt.UnixMilli(), userID)
+		sessionTokenKey(token), now.UnixMilli(), expiresAt.UnixMilli(), userID)
 	return err
 }
 
@@ -2730,7 +2740,7 @@ func (c *Catalog) GetSession(ctx context.Context, token string) (SessionInfo, bo
 	var userID int64
 	err := c.db.QueryRowContext(ctx,
 		`SELECT expires_at, COALESCE(user_id, 0) FROM admin_sessions WHERE token = ?`,
-		token).Scan(&expires, &userID)
+		sessionTokenKey(token)).Scan(&expires, &userID)
 	if err == sql.ErrNoRows {
 		return SessionInfo{}, false, nil
 	}
@@ -2754,7 +2764,7 @@ func (c *Catalog) ValidateSession(ctx context.Context, token string) (bool, int6
 func (c *Catalog) UpdateSessionExpires(ctx context.Context, token string, expiresAt time.Time) error {
 	res, err := c.db.ExecContext(ctx,
 		`UPDATE admin_sessions SET expires_at = ? WHERE token = ?`,
-		expiresAt.UnixMilli(), token)
+		expiresAt.UnixMilli(), sessionTokenKey(token))
 	if err != nil {
 		return err
 	}
@@ -2765,8 +2775,20 @@ func (c *Catalog) UpdateSessionExpires(ctx context.Context, token string, expire
 }
 
 func (c *Catalog) DeleteSession(ctx context.Context, token string) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token = ?`, token)
+	_, err := c.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token = ?`, sessionTokenKey(token))
 	return err
+}
+
+func (c *Catalog) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
+	res, err := c.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at <= ?`, now.UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (c *Catalog) Ping(ctx context.Context) error {
+	return c.db.PingContext(ctx)
 }
 
 func (c *Catalog) DeleteSessionsForUser(ctx context.Context, userID int64) error {

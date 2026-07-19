@@ -89,7 +89,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request, user, pass
 	if err := a.Catalog.CreateSessionUntil(r.Context(), token, expiresAt, 0); err != nil {
 		return false, err
 	}
-	setSessionCookie(w, token, expiresAt)
+	setSessionCookie(w, r, token, expiresAt)
 	return true, nil
 }
 
@@ -177,7 +177,7 @@ func (a *Authenticator) validateSession(w http.ResponseWriter, r *http.Request, 
 		if err := a.Catalog.UpdateSessionExpires(r.Context(), token, expiresAt); err != nil {
 			return false, 0, err
 		}
-		setSessionCookie(w, token, expiresAt)
+		setSessionCookie(w, r, token, expiresAt)
 	}
 	return true, session.UserID, nil
 }
@@ -334,7 +334,7 @@ func (a *Authenticator) UserLogin(w http.ResponseWriter, r *http.Request, user, 
 			if err := a.Catalog.CreateSessionUntil(r.Context(), token, expiresAt, 0); err != nil {
 				return "", err
 			}
-			setSessionCookie(w, token, expiresAt)
+			setSessionCookie(w, r, token, expiresAt)
 			return "admin", nil
 		}
 		if ip != "" {
@@ -371,7 +371,7 @@ func (a *Authenticator) UserLogin(w http.ResponseWriter, r *http.Request, user, 
 		return "", err
 	}
 
-	setSessionCookie(w, token, expiresAt)
+	setSessionCookie(w, r, token, expiresAt)
 	return u.Role, nil
 }
 
@@ -403,12 +403,14 @@ func (a *Authenticator) AdminRequired(next http.Handler) http.Handler {
 	})
 }
 
-func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
+	secure := r != nil && (r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiresAt,
 	})

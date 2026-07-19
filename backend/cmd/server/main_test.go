@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -30,6 +31,19 @@ import (
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/proxy"
 )
+
+func TestHTTPServerHasDefensiveTimeouts(t *testing.T) {
+	srv := newHTTPServer("127.0.0.1:9191", http.NotFoundHandler())
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout must be set")
+	}
+	if srv.IdleTimeout <= 0 {
+		t.Fatal("IdleTimeout must be set")
+	}
+	if srv.MaxHeaderBytes <= 0 {
+		t.Fatal("MaxHeaderBytes must be set")
+	}
+}
 
 func TestHashPasswordCommandProducesBcryptHash(t *testing.T) {
 	var out bytes.Buffer

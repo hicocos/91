@@ -189,6 +189,17 @@ func TestRequiredRenewsSessionWhenLessThanHalfRemaining(t *testing.T) {
 	}
 }
 
+func TestSessionCookieIsSecureForForwardedHTTPS(t *testing.T) {
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://backend/admin/api/login", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	setSessionCookie(res, req, "token", time.Now().Add(time.Hour))
+	cookie := responseCookie(t, res, sessionCookie)
+	if !cookie.Secure {
+		t.Fatal("HTTPS session cookie is not Secure")
+	}
+}
+
 func TestRequiredDoesNotRenewSessionWhenMoreThanHalfRemaining(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

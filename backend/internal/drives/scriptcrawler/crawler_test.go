@@ -317,7 +317,18 @@ func TestCrawlerRunOnceUsesDefaultCrawlerNamespace(t *testing.T) {
 func TestCrawlerRunOncePassesAbsoluteJobPathsWhenWorkDirDiffers(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
-	t.Chdir(tmp)
+	oldWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWorkingDir); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
 	cat, err := catalog.Open(filepath.Join(tmp, "catalog.db"))
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)

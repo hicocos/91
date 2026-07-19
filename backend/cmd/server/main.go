@@ -307,6 +307,16 @@ func main() {
 
 	apiServer.RegisterRoutes(r, authr)
 	adminServer.Register(r)
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := cat.Ping(ctx); err != nil {
+			http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
 	mountFrontend(r)
 
 	// 凌晨流水线：每天 cron_hour 触发一次，串行跑
@@ -331,10 +341,7 @@ func main() {
 	})
 	go app.nightlyRunner.Run(ctx)
 
-	srv := &http.Server{
-		Addr:    cfg.Server.Listen,
-		Handler: r,
-	}
+	srv := newHTTPServer(cfg.Server.Listen, r)
 	listener, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
@@ -356,6 +363,16 @@ func main() {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
 	_ = srv.Shutdown(shutCtx)
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func runHashPasswordCommand(r io.Reader, w io.Writer) error {
