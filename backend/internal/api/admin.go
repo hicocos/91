@@ -4,17 +4,30 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives/quark"
+	"github.com/video-site/backend/internal/storageproviders"
 )
 
 type AdminServer struct {
-	Catalog *catalog.Catalog
-	Auth    *auth.Authenticator
+	Catalog             *catalog.Catalog
+	Auth                *auth.Authenticator
+	StorageProviders    *storageproviders.Registry
+	ProbeStorageAccount func(ctx context.Context, drive *catalog.Drive) error
+	OAuthFlows          *storageproviders.OAuthFlows
+	OAuthHTTPClient     *http.Client
+	// PublicOrigin is the fixed externally registered OAuth origin, e.g.
+	// https://91s.lolicc.cc. Never derive callback origins from request headers.
+	PublicOrigin string
+	// Now is injectable for short-lived destructive confirmation tests.
+	Now                       func() time.Time
+	destructiveConfirmationMu sync.Mutex
+	destructiveConfirmations  map[string]destructiveConfirmation
 	// VersionFilePath points to the installer-written .version file.
 	VersionFilePath string
 	// ImageVersion is the Docker image version injected at build/runtime.
@@ -107,14 +120,18 @@ type DriveDirEntry struct {
 }
 
 type GenerationStatus struct {
-	State         string `json:"state"`
-	CurrentTitle  string `json:"currentTitle,omitempty"`
-	QueueLength   int    `json:"queueLength"`
-	CooldownUntil string `json:"cooldownUntil,omitempty"`
-	ScannedCount  int    `json:"scannedCount"`
-	AddedCount    int    `json:"addedCount"`
-	DoneCount     int    `json:"doneCount"`
-	TotalCount    int    `json:"totalCount"`
+	State             string `json:"state"`
+	CurrentTitle      string `json:"currentTitle,omitempty"`
+	QueueLength       int    `json:"queueLength"`
+	CooldownUntil     string `json:"cooldownUntil,omitempty"`
+	ScannedCount      int    `json:"scannedCount"`
+	AddedCount        int    `json:"addedCount"`
+	VideoScannedCount int    `json:"videoScannedCount"`
+	AudioScannedCount int    `json:"audioScannedCount"`
+	VideoAddedCount   int    `json:"videoAddedCount"`
+	AudioAddedCount   int    `json:"audioAddedCount"`
+	DoneCount         int    `json:"doneCount"`
+	TotalCount        int    `json:"totalCount"`
 }
 
 type DriveGenerationStatuses struct {
@@ -162,6 +179,7 @@ type BlacklistSourceDeleteStatus struct {
 type BlacklistSourceDeleteRequest struct {
 	DeleteAllSources bool     `json:"deleteAllSources,omitempty"`
 	IDs              []string `json:"ids,omitempty"`
+	Nonce            string   `json:"nonce,omitempty"`
 }
 
 const maxCrawlerScriptBytes = 2 * 1024 * 1024
@@ -172,7 +190,8 @@ type DeleteVideoResult struct {
 }
 
 type deleteVideoReq struct {
-	DeleteSource bool `json:"deleteSource"`
+	DeleteSource bool   `json:"deleteSource"`
+	Nonce        string `json:"nonce,omitempty"`
 }
 
 func (a *AdminServer) Register(r chi.Router) {
@@ -190,6 +209,14 @@ func (a *AdminServer) Register(r chi.Router) {
 
 			// 网盘
 			r.Get("/drives", a.handleListDrives)
+			r.Get("/storage/providers", a.handleStorageProviders)
+			r.Get("/storage/oauth/callback.js", a.handleStorageOAuthCallbackScript)
+			r.Post("/storage/oauth/{provider}/start", a.handleStorageOAuthStart)
+			r.Get("/storage/oauth/{provider}/callback", a.handleStorageOAuthCallback)
+			r.Post("/storage/accounts/probe", a.handleProbeStorageAccount)
+			r.Post("/storage/accounts", a.handleSaveStorageAccount)
+			r.Get("/storage/accounts/{id}", a.handleGetStorageAccount)
+			r.Put("/storage/accounts/{id}", a.handleSaveStorageAccount)
 			r.Get("/drives/storage", a.handleDriveStorage)
 			r.Post("/drives", a.handleUpsertDrive)
 			r.Post("/drives/quark/qr", a.handleQuarkQRStart)
@@ -231,12 +258,16 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/videos", a.handleAdminListVideos)
 			r.Get("/videos/stats", a.handleVideoStats)
 			r.Put("/videos/{id}", a.handleUpdateVideo)
+			r.Post("/videos/{id}/source-delete/prepare", a.handlePrepareDeleteVideoSource)
 			r.Delete("/videos/{id}", a.handleDeleteVideo)
 			r.Post("/videos/regen-preview", a.handleRegenAllPreviews)
 			r.Post("/videos/{id}/regen-preview", a.handleRegenPreview)
+			r.Get("/audios", a.handleAdminListAudios)
+			r.Get("/audios/stats", a.handleAudioStats)
 			// 黑名单（被拉黑/手动删除、扫盘不再入库的视频）
 			r.Get("/blacklist", a.handleListBlacklist)
 			r.Get("/blacklist/source-delete/status", a.handleBlacklistSourceDeleteStatus)
+			r.Post("/blacklist/source-delete/prepare", a.handlePrepareBlacklistSourceDelete)
 			r.Post("/blacklist/source-delete", a.handleStartBlacklistSourceDelete)
 			r.Delete("/blacklist/{id}", a.handleRemoveBlacklist)
 

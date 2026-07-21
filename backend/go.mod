@@ -5,7 +5,6 @@ go 1.23.0
 toolchain go1.23.4
 
 require (
-	github.com/OpenListTeam/wopan-sdk-go v0.2.0
 	github.com/SheltonZhu/115driver v1.3.2
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/go-chi/chi/v5 v5.1.0

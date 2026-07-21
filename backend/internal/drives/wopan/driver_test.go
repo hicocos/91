@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/video-site/backend/internal/drives"
+	sdk "github.com/video-site/backend/internal/drives/wopan/internal/client"
 )
 
 func TestFileToEntryUsesDirectoryIDAndFileFID(t *testing.T) {

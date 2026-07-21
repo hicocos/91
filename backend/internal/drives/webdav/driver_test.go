@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -19,6 +20,12 @@ import (
 
 	"github.com/video-site/backend/internal/drives"
 )
+
+func TestMain(m *testing.M) {
+	_ = os.Setenv("ALLOW_PRIVATE_STORAGE_ENDPOINTS", "true")
+	_ = os.Setenv("ALLOW_INSECURE_STORAGE_ENDPOINTS", "true")
+	os.Exit(m.Run())
+}
 
 func TestDriverListsStatsAndStreamsWithRange(t *testing.T) {
 	dav := newTestDAV(t)

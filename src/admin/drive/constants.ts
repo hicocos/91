@@ -9,7 +9,7 @@ import quarkIcon from "./icons/quark.png";
 import webdavIcon from "./icons/webdav.png";
 import wopanIcon from "./icons/wopan.png";
 
-export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "s3" | "localstorage";
 
 export const kindAbbr: Record<string, string> = {
   quark: "Qk",
@@ -21,6 +21,7 @@ export const kindAbbr: Record<string, string> = {
   onedrive: "OD",
   googledrive: "GD",
   webdav: "WD",
+  s3: "S3",
   localstorage: "Lo",
 };
 
@@ -61,6 +62,7 @@ export const kindLabel: Record<string, string> = {
   onedrive: "OneDrive",
   googledrive: "Google Drive",
   webdav: "WebDAV",
+  s3: "S3 兼容存储",
   localstorage: "本地存储",
 };
 
@@ -70,6 +72,7 @@ export type FormState = {
   name: string;
   rootId: string;
   creds: Record<string, string>;
+  configured?: Record<string, boolean>;
 };
 
 export const emptyForm: FormState = {
@@ -158,6 +161,7 @@ export function defaultRootId(kind: Kind): string {
   if (kind === "onedrive") return "root";
   if (kind === "googledrive") return "root";
   if (kind === "webdav") return "/";
+  if (kind === "s3") return "";
   if (kind === "localstorage") return "/";
   return "0";
 }
@@ -167,12 +171,16 @@ export function usesRootDirectoryID(kind: Kind): boolean {
 }
 
 export function rootIdPlaceholder(kind: Kind): string {
-  if (kind === "webdav") return "可填写目录路径，留空表示根目录";
-  return "可填写目录ID，留空表示根目录";
+	if (kind === "s3") return "例如 videos/，必须填写以避免扫描整个 Bucket";
+	if (kind === "webdav") return "可填写目录路径，留空表示根目录";
+	if (kind === "googledrive") return "团队盘 ID 填上方字段，这里留空；只扫子文件夹时填写文件夹 ID";
+	return "可填写目录ID，留空表示根目录";
 }
 
 export function rootDirectoryLabel(kind: Kind): string {
-  return kind === "webdav" ? "WebDAV根目录(可选)" : "自定义网盘根目录(可选)";
+	if (kind === "s3") return "扫描目录前缀";
+	if (kind === "googledrive") return "扫描起点文件夹 ID（可选）";
+	return kind === "webdav" ? "WebDAV根目录(可选)" : "自定义网盘根目录(可选)";
 }
 
 export type CredentialField = {
@@ -227,13 +235,44 @@ export function credentialFields(kind: Kind): CredentialField[] {
           key: "username",
           label: "用户名 / 邮箱",
           placeholder: "user@example.com",
-          required: true,
         },
         {
           key: "password",
           label: "密码",
           placeholder: "PikPak 密码",
-          required: true,
+        },
+        {
+          key: "platform",
+          label: "平台",
+          placeholder: "",
+          type: "select",
+          defaultValue: "web",
+          options: [{ value: "web", label: "Web（Refresh Token 必须来自官方网页端）" }, { value: "android", label: "Android（Refresh Token 必须来自官方 Android 客户端）" }, { value: "pc", label: "PC" }],
+        },
+        {
+          key: "refresh_token",
+          label: "Refresh Token（推荐）",
+          placeholder: "从 PikPak 官方网页端或对应平台客户端获取",
+          multiline: true,
+        },
+        {
+          key: "captcha_token",
+          label: "Captcha Token（遇到验证码时填写）",
+          placeholder: "打开错误中的验证码页面，完成验证后从请求中取得 captcha_token",
+          multiline: true,
+        },
+        {
+          key: "device_id",
+          label: "Device ID（可选）",
+          placeholder: "与 Refresh Token 一起取得时请保持配套；留空则自动生成",
+        },
+        {
+          key: "disable_media_link",
+          label: "禁用媒体链接",
+          placeholder: "",
+          type: "select",
+          defaultValue: "true",
+          options: [{ value: "true", label: "开启（推荐，使用原始下载地址）" }, { value: "false", label: "关闭（允许使用播放/转码地址）" }],
         },
       ];
     case "wopan":
@@ -271,7 +310,7 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "OpenList OneDrive refresh_token",
+          placeholder: "Microsoft OAuth refresh_token",
           multiline: true,
           required: true,
         },
@@ -303,21 +342,29 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "base_url",
           label: "WebDAV 地址",
-          placeholder: "https://openlist.example.com/dav",
+          placeholder: "https://dav.example.com/media",
           required: true,
         },
         {
           key: "username",
           label: "用户名",
           placeholder: "WebDAV 用户名",
-          required: true,
         },
         {
           key: "password",
           label: "密码",
           placeholder: "WebDAV 密码",
-          required: true,
         },
+      ];
+    case "s3":
+      return [
+        { key: "endpoint", label: "Endpoint（AWS 可留空）", placeholder: "https://s3.example.com" },
+        { key: "region", label: "Region", placeholder: "us-east-1", required: true, defaultValue: "us-east-1" },
+        { key: "bucket", label: "Bucket", placeholder: "media", required: true },
+        { key: "access_key_id", label: "Access Key ID", placeholder: "", required: true },
+        { key: "secret_access_key", label: "Secret Access Key", placeholder: "", required: true },
+        { key: "session_token", label: "Session Token（可选）", placeholder: "" },
+        { key: "force_path_style", label: "强制 Path Style", placeholder: "", type: "select", defaultValue: "false", options: [{ value: "false", label: "关闭" }, { value: "true", label: "开启（MinIO 常用）" }] },
       ];
     case "localstorage":
       return [

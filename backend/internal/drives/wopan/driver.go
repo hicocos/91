@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/go-resty/resty/v2"
 	"github.com/video-site/backend/internal/drives"
+	sdk "github.com/video-site/backend/internal/drives/wopan/internal/client"
 )
 
 // Driver 封装联通网盘

@@ -31,6 +31,7 @@ import (
 	"github.com/video-site/backend/internal/nightly"
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/proxy"
+	"github.com/video-site/backend/internal/storageproviders"
 )
 
 const (
@@ -48,6 +49,21 @@ const (
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
 		if err := runHashPasswordCommand(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "scan-drive" {
+		cfgPath := "./config.yaml"
+		if v := os.Getenv("VIDEO_CONFIG"); v != "" {
+			cfgPath = v
+		}
+		driveID := ""
+		if len(os.Args) > 2 {
+			driveID = os.Args[2]
+		}
+		if err := runScanDriveCommand(context.Background(), cfgPath, driveID); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -163,8 +179,20 @@ func main() {
 	}
 
 	adminServer := &api.AdminServer{
-		Catalog:         cat,
-		Auth:            authr,
+		Catalog:          cat,
+		Auth:             authr,
+		StorageProviders: storageproviders.DefaultRegistry(),
+		PublicOrigin:     strings.TrimSpace(os.Getenv("VIDEO_PUBLIC_ORIGIN")),
+		OAuthFlows: func() *storageproviders.OAuthFlows {
+			flows, err := storageproviders.NewPersistentOAuthFlows(cat.OAuthFlowKey(), nil, cat)
+			if err != nil {
+				log.Fatalf("initialize persistent OAuth flows: %v", err)
+			}
+			return flows
+		}(),
+		ProbeStorageAccount: func(probeCtx context.Context, candidate *catalog.Drive) error {
+			return app.probeDrive(probeCtx, candidate)
+		},
 		VersionFilePath: versionFilePath,
 		ImageVersion:    strings.TrimSpace(os.Getenv("VIDEO_IMAGE_VERSION")),
 		GitHubRepo:      githubRepo,
@@ -403,6 +431,20 @@ func runHashPasswordCommand(r io.Reader, w io.Writer) error {
 	}
 	_, err = fmt.Fprintln(w, hashed)
 	return err
+}
+
+func migrateConfigAdminUser(ctx context.Context, cat *catalog.Catalog, cfgPath string, cfg *config.Config) error {
+	if err := ensureConfigAdminUser(ctx, cat, cfg); err != nil {
+		return err
+	}
+	if err := config.ClearAdminCredentials(cfgPath); err != nil {
+		return err
+	}
+	if cfg != nil {
+		cfg.Server.Admin.Username = ""
+		cfg.Server.Admin.Password = ""
+	}
+	return nil
 }
 
 func ensureConfigAdminUser(ctx context.Context, cat *catalog.Catalog, cfg *config.Config) error {

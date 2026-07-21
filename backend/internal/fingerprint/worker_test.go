@@ -16,6 +16,23 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
+func TestComputeRestrictedRemoteRejectsLoopback(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer srv.Close()
+	drv := &fakeDrive{paths: map[string]string{"remote": srv.URL + "/video.mp4"}, publicNetworkOnly: true}
+	_, err := Compute(context.Background(), drv, &catalog.Video{ID: "remote", FileID: "remote", Size: 7}, Config{SampleSizeBytes: 7, FullHashMaxSize: 8}, nil)
+	if err == nil {
+		t.Fatal("restricted fingerprint reached loopback")
+	}
+	if called {
+		t.Fatal("restricted fingerprint sent request to loopback")
+	}
+}
+
 func TestComputeLocalFilesWithSameContentMatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -207,8 +224,9 @@ func TestGoogleDriveRemoteRangeForbiddenLooksRateLimitedByURL(t *testing.T) {
 }
 
 type fakeDrive struct {
-	paths   map[string]string
-	headers http.Header
+	paths             map[string]string
+	headers           http.Header
+	publicNetworkOnly bool
 }
 
 func (d *fakeDrive) Kind() string { return "fake" }
@@ -224,9 +242,10 @@ func (d *fakeDrive) Stat(context.Context, string) (*drives.Entry, error) {
 }
 func (d *fakeDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {
 	return &drives.StreamLink{
-		URL:     d.paths[fileID],
-		Headers: d.headers.Clone(),
-		Expires: time.Now().Add(time.Minute),
+		URL:               d.paths[fileID],
+		Headers:           d.headers.Clone(),
+		Expires:           time.Now().Add(time.Minute),
+		PublicNetworkOnly: d.publicNetworkOnly,
 	}, nil
 }
 func (d *fakeDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {

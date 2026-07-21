@@ -53,18 +53,19 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ARG VERSION=dev
 
-ENV VIDEO_CONFIG=/opt/video-site-91/data/config.yaml \
+ENV VIDEO_DATA_DIR=/data \
+    VIDEO_CONFIG=/data/config.yaml \
     VIDEO_FRONTEND_DIR=/opt/video-site-91/dist \
     VIDEO_GITHUB_REPO=nianzhibai/91 \
     VIDEO_IMAGE_VERSION=${VERSION} \
     VIDEO_LISTEN_PORT=9191 \
-    VIDEO_VERSION_FILE=/opt/video-site-91/data/.version
+    VIDEO_VERSION_FILE=/data/.version
 
-RUN mkdir -p /opt/video-site-91/data \
+RUN mkdir -p /data \
     && chmod +x ./server /usr/local/bin/docker-entrypoint.sh \
-    && chown -R 9191:9191 /opt/video-site-91
+    && chown -R 9191:9191 /opt/video-site-91 /data
 
-VOLUME ["/opt/video-site-91/data"]
+VOLUME ["/data"]
 EXPOSE 9191
 
 USER 9191:9191

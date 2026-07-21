@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -25,10 +27,11 @@ func (a *AdminServer) handleAdminListVideos(w http.ResponseWriter, r *http.Reque
 		size = 100
 	}
 	items, total, err := a.Catalog.ListVideos(r.Context(), catalog.ListParams{
-		Keyword:  q.Get("keyword"),
-		DriveID:  q.Get("driveId"),
-		Page:     page,
-		PageSize: size,
+		Keyword:   q.Get("keyword"),
+		DriveID:   q.Get("driveId"),
+		MediaType: catalog.MediaTypeVideo,
+		Page:      page,
+		PageSize:  size,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -121,6 +124,55 @@ func (a *AdminServer) handleListBlacklist(w http.ResponseWriter, r *http.Request
 	})
 }
 
+const blacklistSourceDeleteAction = "delete-blacklist-sources"
+
+func (a *AdminServer) handlePrepareBlacklistSourceDelete(w http.ResponseWriter, r *http.Request) {
+	var body BlacklistSourceDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := normalizeBlacklistSourceDeleteRequest(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if a.Catalog == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("catalog is required"))
+		return
+	}
+	var (
+		items []*catalog.DeletedVideo
+		err   error
+	)
+	if body.DeleteAllSources {
+		items, err = a.Catalog.ListDeletedVideosPendingSourceDeletion(r.Context())
+	} else {
+		items, err = a.Catalog.ListDeletedVideosPendingSourceDeletionByIDs(r.Context(), body.IDs)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			ids = append(ids, item.ID)
+		}
+	}
+	sort.Strings(ids)
+	scope := blacklistSourceDeleteScope(body.DeleteAllSources, ids)
+	nonce, expiresAt, err := a.prepareDestructiveConfirmationWithSnapshot(r, blacklistSourceDeleteAction, scope, ids)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"nonce":     nonce,
+		"expiresAt": expiresAt.UTC().Format(time.RFC3339Nano),
+		"ids":       ids,
+	})
+}
+
 func (a *AdminServer) handleStartBlacklistSourceDelete(w http.ResponseWriter, r *http.Request) {
 	var body BlacklistSourceDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -131,6 +183,19 @@ func (a *AdminServer) handleStartBlacklistSourceDelete(w http.ResponseWriter, r 
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	requestedIDs := append([]string(nil), body.IDs...)
+	sort.Strings(requestedIDs)
+	scope := blacklistSourceDeleteScope(body.DeleteAllSources, requestedIDs)
+	confirmation, ok := a.consumeDestructiveConfirmation(r, body.Nonce, blacklistSourceDeleteAction, scope)
+	if !ok {
+		writeErr(w, http.StatusPreconditionFailed, errors.New("source deletion confirmation is invalid or expired"))
+		return
+	}
+	if body.DeleteAllSources {
+		body.DeleteAllSources = false
+		body.IDs = append([]string(nil), confirmation.Snapshot...)
+	}
+	body.Nonce = ""
 	accepted := false
 	if a.OnStartBlacklistSourceDelete != nil {
 		accepted = a.OnStartBlacklistSourceDelete(body)
@@ -144,6 +209,13 @@ func (a *AdminServer) handleStartBlacklistSourceDelete(w http.ResponseWriter, r 
 		resp["message"] = "黑名单源文件删除任务已在运行"
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func blacklistSourceDeleteScope(deleteAll bool, ids []string) string {
+	if deleteAll {
+		return "all"
+	}
+	return "ids:" + strings.Join(ids, ",")
 }
 
 func normalizeBlacklistSourceDeleteRequest(req *BlacklistSourceDeleteRequest) error {

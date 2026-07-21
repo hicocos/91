@@ -26,7 +26,6 @@ const (
 	maxSmallUploadSize         = 250 * 1024 * 1024
 	defaultUploadSessionChunk  = 10 * 1024 * 1024
 	uploadSessionRetryAttempts = 3
-	defaultRenewAPIURL         = "https://api.oplist.org/onedrive/renewapi"
 	onedriveListCooldown       = 5 * time.Minute
 	onedriveListInterval       = 1 * time.Second
 )
@@ -42,10 +41,14 @@ type Driver struct {
 	region        string
 	accessToken   string
 	refreshToken  string
+	clientID      string
+	clientSecret  string
+	tenantID      string
 	isSharePoint  bool
 	siteID        string
+	driveID       string
 	apiBaseURL    string
-	renewAPIURL   string
+	oauthURL      string
 	client        *resty.Client
 	onTokenUpdate func(access, refresh string)
 
@@ -61,12 +64,16 @@ type Config struct {
 	Region        string
 	AccessToken   string
 	RefreshToken  string
+	ClientID      string
+	ClientSecret  string
+	TenantID      string
 	IsSharePoint  bool
 	SiteID        string
+	DriveID       string
 	OnTokenUpdate func(access, refresh string)
 
-	RenewAPIURL string
-	APIBaseURL  string
+	OAuthURL   string
+	APIBaseURL string
 }
 
 func New(c Config) *Driver {
@@ -86,9 +93,13 @@ func New(c Config) *Driver {
 	if apiBaseURL == "" {
 		apiBaseURL = h.api
 	}
-	renewAPIURL := strings.TrimSpace(c.RenewAPIURL)
-	if renewAPIURL == "" {
-		renewAPIURL = defaultRenewAPIURL
+	tenantID := strings.TrimSpace(c.TenantID)
+	if tenantID == "" {
+		tenantID = "common"
+	}
+	oauthURL := strings.TrimSpace(c.OAuthURL)
+	if oauthURL == "" {
+		oauthURL = strings.TrimRight(h.oauth, "/") + "/" + url.PathEscape(tenantID) + "/oauth2/v2.0/token"
 	}
 	return &Driver{
 		id:            c.ID,
@@ -96,10 +107,14 @@ func New(c Config) *Driver {
 		region:        region,
 		accessToken:   strings.TrimSpace(c.AccessToken),
 		refreshToken:  strings.TrimSpace(c.RefreshToken),
+		clientID:      strings.TrimSpace(c.ClientID),
+		clientSecret:  c.ClientSecret,
+		tenantID:      tenantID,
 		isSharePoint:  c.IsSharePoint,
 		siteID:        strings.TrimSpace(c.SiteID),
+		driveID:       strings.TrimSpace(c.DriveID),
 		apiBaseURL:    apiBaseURL,
-		renewAPIURL:   renewAPIURL,
+		oauthURL:      oauthURL,
 		onTokenUpdate: c.OnTokenUpdate,
 		client: resty.New().
 			SetTimeout(30*time.Second).
@@ -554,40 +569,39 @@ func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configu
 }
 
 func (d *Driver) refresh(ctx context.Context) error {
+	if d.clientID == "" {
+		return errors.New("onedrive refresh token: client_id is required")
+	}
+	form := url.Values{
+		"client_id":     {d.clientID},
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {d.refreshToken},
+		"scope":         {"offline_access Files.ReadWrite.All Sites.ReadWrite.All"},
+	}
+	if d.clientSecret != "" {
+		form.Set("client_secret", d.clientSecret)
+	}
 	var out tokenResp
-	res, err := d.client.R().
-		SetContext(ctx).
-		SetQueryParams(map[string]string{
-			"refresh_ui": d.refreshToken,
-			"server_use": "true",
-			"driver_txt": "onedrive_pr",
-		}).
-		SetResult(&out).
-		SetError(&out).
-		Get(d.renewAPIURL)
+	res, err := d.client.R().SetContext(ctx).
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		SetBody(form.Encode()).SetResult(&out).SetError(&out).Post(d.oauthURL)
 	if err != nil {
 		return fmt.Errorf("onedrive refresh token: %w", err)
 	}
-	if res.StatusCode() == http.StatusTooManyRequests {
-		return onedriveRateLimitError(res, "token refresh throttled")
-	}
-	if out.Text != "" {
-		return fmt.Errorf("onedrive refresh token: %s", out.Text)
-	}
-	if out.Error != "" {
-		if out.Description != "" {
-			return fmt.Errorf("onedrive refresh token: %s", out.Description)
+	if res.IsError() || out.Error != "" {
+		message := out.Description
+		if message == "" {
+			message = out.Error
 		}
-		return fmt.Errorf("onedrive refresh token: %s", out.Error)
+		return fmt.Errorf("onedrive refresh token: %s", message)
 	}
-	if res.IsError() {
-		return fmt.Errorf("onedrive refresh token: status=%d body=%s", res.StatusCode(), strings.TrimSpace(res.String()))
+	if out.AccessToken == "" {
+		return errors.New("onedrive refresh token: empty access token")
 	}
-	if out.AccessToken == "" || out.RefreshToken == "" {
-		return errors.New("onedrive refresh token: empty token")
+	if out.RefreshToken == "" {
+		out.RefreshToken = d.refreshToken
 	}
-	d.accessToken = out.AccessToken
-	d.refreshToken = out.RefreshToken
+	d.accessToken, d.refreshToken = out.AccessToken, out.RefreshToken
 	if d.onTokenUpdate != nil {
 		d.onTokenUpdate(out.AccessToken, out.RefreshToken)
 	}
@@ -668,7 +682,11 @@ func parseRetryAfter(res *resty.Response) time.Duration {
 
 func (d *Driver) driveBaseURL() string {
 	if d.isSharePoint {
-		return fmt.Sprintf("%s/v1.0/sites/%s/drive", d.apiBaseURL, url.PathEscape(d.siteID))
+		base := fmt.Sprintf("%s/v1.0/sites/%s", d.apiBaseURL, url.PathEscape(d.siteID))
+		if d.driveID != "" {
+			return base + "/drives/" + url.PathEscape(d.driveID)
+		}
+		return base + "/drive"
 	}
 	return d.apiBaseURL + "/v1.0/me/drive"
 }

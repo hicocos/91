@@ -17,6 +17,27 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
+func TestServeStreamUsesPublicNetworkClientForRestrictedLink(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer upstream.Close()
+	reg := NewRegistry()
+	reg.Set("local", &proxyFakeSimpleDrive{kind: "localstorage", url: upstream.URL + "/private", publicNetworkOnly: true})
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/local/file", nil)
+	rr := httptest.NewRecorder()
+	p.ServeStream(rr, req, "local", "file")
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if called {
+		t.Fatal("restricted stream reached loopback upstream")
+	}
+}
+
 func TestServeStreamLinkFailureReturnsStructuredErrorAndReportsStatus(t *testing.T) {
 	reg := NewRegistry()
 	drv := &proxyResultDrive{
@@ -710,6 +731,7 @@ type proxyFakeSimpleDrive struct {
 	url                  string
 	headers              http.Header
 	passThroughRedirects bool
+	publicNetworkOnly    bool
 	calls                int
 }
 
@@ -731,6 +753,7 @@ func (d *proxyFakeSimpleDrive) StreamURL(context.Context, string) (*drives.Strea
 		Headers:              d.headers.Clone(),
 		Expires:              time.Now().Add(10 * time.Minute),
 		PassThroughRedirects: d.passThroughRedirects,
+		PublicNetworkOnly:    d.publicNetworkOnly,
 	}, nil
 }
 func (d *proxyFakeSimpleDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {

@@ -82,7 +82,7 @@ export function checkUpdate() {
 
 export type AdminDrive = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "s3" | "localstorage";
   name: string;
   rootId: string;
   status: string;
@@ -118,6 +118,8 @@ export type AdminDrive = {
   transcodeReadyCount: number;
   transcodeFailedCount: number;
   transcodeSkippedCount: number;
+  videoCount: number;
+  audioCount: number;
 };
 
 export type DriveGenerationStatus = {
@@ -127,12 +129,38 @@ export type DriveGenerationStatus = {
   cooldownUntil?: string;
   scannedCount: number;
   addedCount: number;
+  videoScannedCount: number;
+  audioScannedCount: number;
+  videoAddedCount: number;
+  audioAddedCount: number;
   doneCount: number;
   totalCount: number;
 };
 
 export function listDrives() {
   return request<AdminDrive[]>("/drives");
+}
+
+export type StorageProviderField = { key: string; label: string; type?: string; required?: boolean; sensitive?: boolean; defaultValue?: string; help?: string };
+export type StorageProviderManifest = { kind: string; displayName: string; authMethods: string[]; rootMode: string; defaultRoot: string; fields: StorageProviderField[]; capabilities: { list: boolean; play: boolean; upload: boolean; delete: boolean }; legacy?: boolean };
+export function startStorageOAuth(provider: "onedrive" | "googledrive", id: string, credentials: Record<string, string>) {
+  return request<{ authUrl: string; nonce: string; provider: string }>(`/storage/oauth/${provider}/start`, {
+    method: "POST",
+    body: JSON.stringify({ id, credentials }),
+  });
+}
+
+export function listStorageProviders() { return request<StorageProviderManifest[]>("/storage/providers"); }
+export type StorageAccountInput = { id: string; kind: string; name: string; rootId: string; credentials: Record<string, string>; clearCredentials?: string[] };
+export function saveStorageAccount(body: StorageAccountInput, editing = false) {
+  const path = editing ? `/storage/accounts/${encodeURIComponent(body.id)}` : "/storage/accounts";
+  return request<{ ok: boolean; warning?: string }>(path, { method: editing ? "PUT" : "POST", body: JSON.stringify(body) });
+}
+export function getStorageAccount(id: string) {
+  return request<{ id: string; kind: AdminDrive["kind"]; name: string; rootId: string; credentials: Record<string, string>; configured: Record<string, boolean> }>(`/storage/accounts/${encodeURIComponent(id)}`);
+}
+export function probeStorageAccount(body: { id?: string; kind: string; name: string; rootId: string; credentials: Record<string, string> }) {
+  return request<{ ok: boolean }>("/storage/accounts/probe", { method: "POST", body: JSON.stringify(body) });
 }
 
 export function getDriveCredentials(id: string) {
@@ -159,7 +187,7 @@ export function getDriveStorage() {
 
 export type UpsertDriveInput = {
   id: string;
-  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
+  kind: "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "s3" | "localstorage";
   name: string;
   rootId: string;
   credentials: Record<string, string>;
@@ -596,6 +624,7 @@ export type AdminVideo = {
   durationSeconds: number;
   size: number;
   ext: string;
+  mediaType: "video" | "audio";
   quality: string;
   thumbnailUrl: string;
   previewStatus: string;
@@ -626,6 +655,22 @@ export function listVideos(
   if (params.keyword) qs.set("keyword", params.keyword);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return request<AdminVideoList>(`/videos${suffix}`);
+}
+
+export function listAudios(
+  params: { driveId?: string; page?: number; size?: number; keyword?: string } = {}
+) {
+  const qs = new URLSearchParams();
+  if (params.driveId) qs.set("driveId", params.driveId);
+  if (params.page) qs.set("page", String(params.page));
+  if (params.size) qs.set("size", String(params.size));
+  if (params.keyword) qs.set("keyword", params.keyword);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return request<AdminVideoList>(`/audios${suffix}`);
+}
+
+export function audioStats() {
+  return request<{ current: number }>("/audios/stats");
 }
 
 // 后台视频管理两个标签页的计数。

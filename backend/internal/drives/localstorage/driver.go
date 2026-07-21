@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -163,12 +164,16 @@ func (d *Driver) streamURLFromSTRM(ctx context.Context, strmPath string) (*drive
 	if err == nil {
 		switch strings.ToLower(u.Scheme) {
 		case "http", "https":
-			if u.Host == "" {
+			if u.Host == "" || u.User != nil {
 				return nil, fmt.Errorf("localstorage: invalid strm url %q", target)
 			}
+			if ip, err := netip.ParseAddr(u.Hostname()); err == nil && !isPublicSTRMAddr(ip) {
+				return nil, fmt.Errorf("localstorage: non-public strm url target %q", u.Hostname())
+			}
 			return &drives.StreamLink{
-				URL:     target,
-				Expires: time.Now().Add(24 * time.Hour),
+				URL:               target,
+				Expires:           time.Now().Add(24 * time.Hour),
+				PublicNetworkOnly: true,
 			}, nil
 		case "file":
 			if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
@@ -184,6 +189,13 @@ func (d *Driver) streamURLFromSTRM(ctx context.Context, strmPath string) (*drive
 		return nil, fmt.Errorf("localstorage: invalid strm url %q: %w", target, err)
 	}
 	return d.localSTRMLink(strmPath, target)
+}
+
+func isPublicSTRMAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return addr.IsValid() && addr.IsGlobalUnicast() &&
+		!addr.IsLoopback() && !addr.IsPrivate() && !addr.IsLinkLocalUnicast() &&
+		!addr.IsLinkLocalMulticast() && !addr.IsUnspecified()
 }
 
 func readSTRMTarget(path string) (string, error) {

@@ -166,6 +166,9 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Use(a.Required)
 		r.Get("/api/home", s.handleHome)
 		r.Get("/api/list", s.handleList)
+		r.Get("/api/audios", s.handleAudios)
+		r.Get("/api/audio/{id}", s.handleAudioDetail)
+		r.Post("/api/audio/{id}/view", s.handleAudioView)
 		r.Get("/api/video/{id}", s.handleVideoDetail)
 		r.Get("/api/video/{id}/subtitles", s.handleVideoSubtitles)
 		r.Post("/api/video/{id}/like", s.handleLike)
@@ -286,8 +289,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 	id := routeParam(r, "id")
 	v, err := s.Catalog.GetVideo(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, err)
+	if err != nil || v.MediaType != catalog.MediaTypeVideo {
+		writeErr(w, http.StatusNotFound, sql.ErrNoRows)
 		return
 	}
 	if v.Hidden {
@@ -524,6 +527,9 @@ func (s *Server) handleUpdateVideoTags(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
 	id := routeParam(r, "id")
+	if _, ok := s.visibleMedia(w, r, id, catalog.MediaTypeVideo); !ok {
+		return
+	}
 	likes, err := s.Catalog.IncrementLike(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -536,6 +542,9 @@ func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
 // 短视频模式中爱心按钮点击切换状态时使用。
 func (s *Server) handleUnlike(w http.ResponseWriter, r *http.Request) {
 	id := routeParam(r, "id")
+	if _, ok := s.visibleMedia(w, r, id, catalog.MediaTypeVideo); !ok {
+		return
+	}
 	likes, err := s.Catalog.DecrementLike(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -550,6 +559,9 @@ func (s *Server) handleUnlike(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	id := routeParam(r, "id")
+	if _, ok := s.visibleMedia(w, r, id, catalog.MediaTypeVideo); !ok {
+		return
+	}
 	views, err := s.Catalog.IncrementView(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -848,7 +860,7 @@ func (s *Server) handleSubtitleFile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) visibleVideo(w http.ResponseWriter, r *http.Request, id string) (*catalog.Video, bool) {
 	v, err := s.Catalog.GetVideo(r.Context(), id)
-	if err != nil || v.Hidden {
+	if err != nil || v.Hidden || v.MediaType != catalog.MediaTypeVideo {
 		writeErr(w, http.StatusNotFound, sql.ErrNoRows)
 		return nil, false
 	}

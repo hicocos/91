@@ -81,3 +81,23 @@ export type PromoItem = {
   title: string;
   meta?: string;
 };
+
+export type AudioItem = {
+  id: string;
+  href: string;
+  title: string;
+  author: string;
+  duration: string;
+  size: number;
+  ext: string;
+  sourceLabel?: string;
+  views: number;
+  publishedAt: string;
+  tags: string[];
+};
+
+export type AudioDetail = AudioItem & {
+  audioSrc: string;
+  description: string;
+  relatedAudios: AudioItem[];
+};

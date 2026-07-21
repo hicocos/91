@@ -104,7 +104,8 @@ test("admin password fields use shared PasswordInput with eye toggle", () => {
   assert.doesNotMatch(loginPageSource, /type="password"/);
   assert.match(driveFormSource, /import \{ PasswordInput \} from "\.\.\/PasswordInput"/);
   assert.match(driveFormSource, /isSecretCredential\(f\.key\) \? \(/);
-  assert.match(driveFormSource, /<PasswordInput[\s\S]*?id=\{`\$\{idPrefix\}-credential-\$\{f\.key\}`\}/);
+  assert.match(driveFormSource, /const fieldId = `\$\{idPrefix\}-credential-\$\{f\.key\}`/);
+  assert.match(driveFormSource, /<PasswordInput[\s\S]*?id=\{fieldId\}/);
   assert.doesNotMatch(usersPageSource, /type="password"/);
   assert.doesNotMatch(driveFormSource, /type="password"/);
 });

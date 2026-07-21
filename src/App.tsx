@@ -12,6 +12,8 @@ const ListingPage = lazy(() => import("@/pages/ListingPage"));
 const ShortsPage = lazy(() => import("@/pages/ShortsPage"));
 const UploadPage = lazy(() => import("@/pages/UploadPage"));
 const VideoDetailPage = lazy(() => import("@/pages/VideoDetailPage"));
+const AudioLibraryPage = lazy(() => import("@/pages/AudioLibraryPage"));
+const AudioDetailPage = lazy(() => import("@/pages/AudioDetailPage"));
 
 const LoginPage = lazy(() =>
   import("@/admin/LoginPage").then((module) => ({ default: module.LoginPage }))
@@ -27,11 +29,17 @@ const CrawlersPage = lazy(() =>
 const VideosPage = lazy(() =>
   import("@/admin/VideosPage").then((module) => ({ default: module.VideosPage }))
 );
+const AudiosPage = lazy(() =>
+  import("@/admin/AudiosPage").then((module) => ({ default: module.AudiosPage }))
+);
 const TagsPage = lazy(() =>
   import("@/admin/TagsPage").then((module) => ({ default: module.TagsPage }))
 );
 const ThemePage = lazy(() =>
   import("@/admin/ThemePage").then((module) => ({ default: module.ThemePage }))
+);
+const MountDocsPage = lazy(() =>
+  import("@/admin/MountDocsPage").then((module) => ({ default: module.MountDocsPage }))
 );
 const UsersPage = lazy(() =>
   import("@/admin/UsersPage").then((module) => ({ default: module.UsersPage }))
@@ -126,6 +134,26 @@ export default function App() {
             </RequireAuth>
           }
         />
+        <Route
+          path="/audio"
+          element={
+            <RequireAuth>
+              <PageSuspense>
+                <AudioLibraryPage />
+              </PageSuspense>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/audio/:id"
+          element={
+            <RequireAuth>
+              <PageSuspense>
+                <AudioDetailPage />
+              </PageSuspense>
+            </RequireAuth>
+          }
+        />
 
         {/* 管理后台也需要登录+管理员权限 */}
         <Route
@@ -164,6 +192,14 @@ export default function App() {
             }
           />
           <Route
+            path="audios"
+            element={
+              <PageSuspense>
+                <AudiosPage />
+              </PageSuspense>
+            }
+          />
+          <Route
             path="tags"
             element={
               <PageSuspense>
@@ -176,6 +212,14 @@ export default function App() {
             element={
               <PageSuspense>
                 <ThemePage />
+              </PageSuspense>
+            }
+          />
+          <Route
+            path="mount-docs"
+            element={
+              <PageSuspense>
+                <MountDocsPage />
               </PageSuspense>
             }
           />

@@ -238,6 +238,9 @@ func Compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config
 	if link == nil || strings.TrimSpace(link.URL) == "" {
 		return "", errors.New("fingerprint: empty stream url")
 	}
+	if link.PublicNetworkOnly {
+		hc = streamhttp.NewPublicNetworkClient(0)
+	}
 	ranges := sampleRanges(v.Size, cfg.SampleSizeBytes, cfg.FullHashMaxSize)
 	h := sha256.New()
 	writeHashHeader(h, v.Size, ranges)

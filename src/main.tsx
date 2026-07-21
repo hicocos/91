@@ -13,6 +13,7 @@ import "./styles/navigation.css";
 import "./styles/search.css";
 import "./styles/video-card.css";
 import "./styles/video-detail.css";
+import "./styles/audio.css";
 import "./styles/admin.css";
 
 // 启动时和服务端对齐一次。失败也无所谓，index.html 已经从 localStorage

@@ -228,7 +228,7 @@ func TestHandleDeleteVideoDefaultsDeleteSourceFalse(t *testing.T) {
 	}
 }
 
-func TestHandleDeleteVideoPassesDeleteSourceOption(t *testing.T) {
+func TestHandleDeleteVideoLegacySourceDeletionRequiresPreparedNonce(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/admin/api/videos/video-1", strings.NewReader(`{"deleteSource":true}`))
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "video-1")
@@ -244,16 +244,120 @@ func TestHandleDeleteVideoPassesDeleteSourceOption(t *testing.T) {
 		},
 	}).handleDeleteVideo(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
 	}
-	var got DeleteVideoResult
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode response: %v", err)
+}
+
+func TestHandleDeleteVideoRejectsSourceDeletionWithoutPreparedNonce(t *testing.T) {
+	called := false
+	req := requestWithSessionIdentity(httptest.NewRequest(http.MethodDelete, "/admin/api/videos/video-1", strings.NewReader(`{"deleteSource":true}`)), "session-a")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "video-1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{
+		OnDeleteVideo: func(context.Context, string, bool) (DeleteVideoResult, error) {
+			called = true
+			return DeleteVideoResult{OK: true, DeletedSource: true}, nil
+		},
+	}).handleDeleteVideo(rr, req)
+
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
 	}
-	if !got.DeletedSource {
-		t.Fatalf("DeletedSource = false, want true; response = %s", rr.Body.String())
+	if called {
+		t.Fatal("source deletion ran without a prepared nonce")
 	}
+}
+
+func TestHandleDeleteVideoPrepareAndConfirmNonceIsBoundAndSingleUse(t *testing.T) {
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	server := &AdminServer{
+		Now: func() time.Time { return now },
+		OnDeleteVideo: func(_ context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error) {
+			calls++
+			if videoID != "video-1" || !deleteSource {
+				t.Fatalf("delete call = %q/%v, want video-1/true", videoID, deleteSource)
+			}
+			return DeleteVideoResult{OK: true, DeletedSource: true}, nil
+		},
+	}
+
+	prepare := deleteVideoRequest(t, http.MethodPost, "/admin/api/videos/video-1/source-delete/prepare", "video-1", ``, "session-a")
+	prepareRR := httptest.NewRecorder()
+	server.handlePrepareDeleteVideoSource(prepareRR, prepare)
+	if prepareRR.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, want 200; body = %s", prepareRR.Code, prepareRR.Body.String())
+	}
+	var prepared struct {
+		Nonce     string `json:"nonce"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(prepareRR.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare: %v", err)
+	}
+	if prepared.Nonce == "" || prepared.ExpiresAt == "" {
+		t.Fatalf("prepare response = %#v", prepared)
+	}
+
+	for _, tc := range []struct {
+		name, session, videoID string
+		wantStatus             int
+	}{
+		{name: "wrong object", session: "session-a", videoID: "video-2", wantStatus: http.StatusPreconditionFailed},
+		{name: "wrong session", session: "session-b", videoID: "video-1", wantStatus: http.StatusPreconditionFailed},
+		{name: "confirmed", session: "session-a", videoID: "video-1", wantStatus: http.StatusOK},
+		{name: "replay", session: "session-a", videoID: "video-1", wantStatus: http.StatusPreconditionFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"deleteSource":true,"nonce":"` + prepared.Nonce + `"}`
+			req := deleteVideoRequest(t, http.MethodDelete, "/admin/api/videos/"+tc.videoID, tc.videoID, body, tc.session)
+			rr := httptest.NewRecorder()
+			server.handleDeleteVideo(rr, req)
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+		})
+	}
+	if calls != 1 {
+		t.Fatalf("delete calls = %d, want 1", calls)
+	}
+}
+
+func TestHandleDeleteVideoPreparedNonceExpires(t *testing.T) {
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	server := &AdminServer{Now: func() time.Time { return now }}
+	prepareRR := httptest.NewRecorder()
+	server.handlePrepareDeleteVideoSource(prepareRR, deleteVideoRequest(t, http.MethodPost, "/admin/api/videos/video-1/source-delete/prepare", "video-1", ``, "session-a"))
+	var prepared struct{ Nonce string `json:"nonce"` }
+	if err := json.Unmarshal(prepareRR.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare: %v", err)
+	}
+	now = now.Add(sourceDeleteConfirmationTTL + time.Second)
+	rr := httptest.NewRecorder()
+	server.handleDeleteVideo(rr, deleteVideoRequest(t, http.MethodDelete, "/admin/api/videos/video-1", "video-1", `{"deleteSource":true,"nonce":"`+prepared.Nonce+`"}`, "session-a"))
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func deleteVideoRequest(t *testing.T, method, path, videoID, body, session string) *http.Request {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := requestWithSessionIdentity(httptest.NewRequest(method, path, reader), session)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", videoID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func requestWithSessionIdentity(req *http.Request, session string) *http.Request {
+	return req.WithContext(auth.ContextWithSessionIdentityForTest(req.Context(), session))
 }
 
 func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
@@ -291,47 +395,24 @@ func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
 	}
 }
 
-func TestHandleStartBlacklistSourceDeleteReturnsBackgroundStatus(t *testing.T) {
+func TestHandleStartBlacklistSourceDeleteLegacyDirectAllRequiresPreparedNonce(t *testing.T) {
 	started := false
 	server := &AdminServer{
 		OnStartBlacklistSourceDelete: func(req BlacklistSourceDeleteRequest) bool {
-			if !req.DeleteAllSources || len(req.IDs) != 0 {
-				t.Fatalf("request = %#v, want all sources", req)
-			}
 			started = true
 			return true
 		},
-		GetBlacklistSourceDeleteStatus: func() BlacklistSourceDeleteStatus {
-			return BlacklistSourceDeleteStatus{
-				State: "running", Running: true, Total: 12, Processed: 3, Deleted: 2, Failed: 1,
-			}
-		},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"deleteAllSources":true}`))
+	req := requestWithSessionIdentity(httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"deleteAllSources":true}`)), "session-a")
 	rr := httptest.NewRecorder()
 
 	server.handleStartBlacklistSourceDelete(rr, req)
 
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
 	}
-	if !started {
-		t.Fatal("source delete hook was not called")
-	}
-	var got struct {
-		Accepted bool                        `json:"accepted"`
-		Status   BlacklistSourceDeleteStatus `json:"status"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if !got.Accepted ||
-		!got.Status.Running ||
-		got.Status.Total != 12 ||
-		got.Status.Processed != 3 ||
-		got.Status.Deleted != 2 ||
-		got.Status.Failed != 1 {
-		t.Fatalf("response = %#v", got)
+	if started {
+		t.Fatal("source delete hook ran without prepared nonce")
 	}
 }
 
@@ -356,24 +437,112 @@ func TestHandleStartBlacklistSourceDeleteRequiresExplicitConfirmation(t *testing
 	}
 }
 
-func TestHandleStartBlacklistSourceDeleteAcceptsExplicitIDs(t *testing.T) {
-	var got BlacklistSourceDeleteRequest
+func TestHandleStartBlacklistSourceDeleteLegacyDirectIDsRequirePreparedNonce(t *testing.T) {
+	called := false
 	server := &AdminServer{
 		OnStartBlacklistSourceDelete: func(req BlacklistSourceDeleteRequest) bool {
-			got = req
+			called = true
 			return true
 		},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"ids":[" a ","","b","a"]}`))
+	req := requestWithSessionIdentity(httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"ids":[" a ","","b","a"]}`)), "session-a")
 	rr := httptest.NewRecorder()
 
 	server.handleStartBlacklistSourceDelete(rr, req)
 
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
 	}
-	if got.DeleteAllSources || len(got.IDs) != 2 || got.IDs[0] != "a" || got.IDs[1] != "b" {
-		t.Fatalf("request = %#v", got)
+	if called {
+		t.Fatal("source delete hook ran without prepared nonce")
+	}
+}
+
+func TestHandleStartBlacklistSourceDeletePrepareBindsExactSnapshotAndConsumesOnce(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	seedDeletedVideo := func(id, fileID string) {
+		t.Helper()
+		now := time.Now()
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "drive-1", FileID: fileID, Title: id, PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		if err := cat.DeleteVideoWithTombstone(ctx, id); err != nil {
+			t.Fatalf("tombstone %s: %v", id, err)
+		}
+	}
+	seedDeletedVideo("video-1", "file-1")
+	seedDeletedVideo("video-2", "file-2")
+
+	var got BlacklistSourceDeleteRequest
+	calls := 0
+	server := &AdminServer{
+		Catalog: cat,
+		OnStartBlacklistSourceDelete: func(req BlacklistSourceDeleteRequest) bool {
+			calls++
+			got = req
+			return true
+		},
+	}
+	prepareRR := httptest.NewRecorder()
+	prepareReq := requestWithSessionIdentity(httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete/prepare", strings.NewReader(`{"deleteAllSources":true}`)), "session-a")
+	server.handlePrepareBlacklistSourceDelete(prepareRR, prepareReq)
+	if prepareRR.Code != http.StatusOK {
+		t.Fatalf("prepare status = %d, want 200; body = %s", prepareRR.Code, prepareRR.Body.String())
+	}
+	var prepared struct {
+		Nonce string   `json:"nonce"`
+		IDs   []string `json:"ids"`
+	}
+	if err := json.Unmarshal(prepareRR.Body.Bytes(), &prepared); err != nil {
+		t.Fatalf("decode prepare: %v", err)
+	}
+	if prepared.Nonce == "" || len(prepared.IDs) != 2 {
+		t.Fatalf("prepare response = %#v", prepared)
+	}
+	seedDeletedVideo("video-3", "file-3")
+
+	for _, tc := range []struct {
+		name, session, body string
+		wantStatus          int
+	}{
+		{name: "wrong session", session: "session-b", body: `{"deleteAllSources":true,"nonce":"` + prepared.Nonce + `"}`, wantStatus: http.StatusPreconditionFailed},
+		{name: "wrong action scope", session: "session-a", body: `{"ids":["video-1"],"nonce":"` + prepared.Nonce + `"}`, wantStatus: http.StatusPreconditionFailed},
+		{name: "confirmed", session: "session-a", body: `{"deleteAllSources":true,"nonce":"` + prepared.Nonce + `"}`, wantStatus: http.StatusAccepted},
+		{name: "replay", session: "session-a", body: `{"deleteAllSources":true,"nonce":"` + prepared.Nonce + `"}`, wantStatus: http.StatusPreconditionFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := requestWithSessionIdentity(httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(tc.body)), tc.session)
+			server.handleStartBlacklistSourceDelete(rr, req)
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+		})
+	}
+	if calls != 1 {
+		t.Fatalf("start calls = %d, want 1", calls)
+	}
+	if got.DeleteAllSources || len(got.IDs) != 2 || got.IDs[0] != "video-1" || got.IDs[1] != "video-2" {
+		t.Fatalf("confirmed request = %#v, want prepared two-item snapshot", got)
+	}
+}
+
+func TestHandleStartBlacklistSourceDeleteRejectsDirectConfirm(t *testing.T) {
+	called := false
+	server := &AdminServer{OnStartBlacklistSourceDelete: func(BlacklistSourceDeleteRequest) bool { called = true; return true }}
+	rr := httptest.NewRecorder()
+	req := requestWithSessionIdentity(httptest.NewRequest(http.MethodPost, "/admin/api/blacklist/source-delete", strings.NewReader(`{"deleteAllSources":true}`)), "session-a")
+	server.handleStartBlacklistSourceDelete(rr, req)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
+	}
+	if called {
+		t.Fatal("source deletion started without prepare")
 	}
 }
 
@@ -787,7 +956,7 @@ func TestHandleUpsertDrivePreservesExistingCredentialsWhenRequestCredentialsEmpt
 	}
 }
 
-func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
+func TestHandleSaveStorageAccountDefaultsEmptyRootID(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -799,7 +968,7 @@ func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
 		}
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/storage/accounts", strings.NewReader(`{
 		"id": "onedrive-main",
 		"kind": "onedrive",
 		"name": "OneDrive",
@@ -808,7 +977,7 @@ func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
 	}`))
 	rr := httptest.NewRecorder()
 
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+	(&AdminServer{Catalog: cat, ProbeStorageAccount: func(context.Context, *catalog.Drive) error { return nil }}).handleSaveStorageAccount(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
@@ -875,7 +1044,7 @@ func TestHandleUpsertDriveReplacesExistingCredentialsWhenProvided(t *testing.T) 
 	}
 }
 
-func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
+func TestHandleSaveStorageAccountGoogleDriveMergesOAuthCredentials(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -903,7 +1072,7 @@ func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
 		t.Fatalf("seed drive: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/storage/accounts", bytes.NewBufferString(`{
 		"id": "google-main",
 		"kind": "googledrive",
 		"name": "Google Drive",
@@ -916,7 +1085,7 @@ func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
 	}`))
 	rr := httptest.NewRecorder()
 
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+	(&AdminServer{Catalog: cat, ProbeStorageAccount: func(context.Context, *catalog.Drive) error { return nil }}).handleSaveStorageAccount(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
@@ -939,7 +1108,7 @@ func TestHandleUpsertGoogleDriveMergesOAuthCredentials(t *testing.T) {
 	}
 }
 
-func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
+func TestHandleSaveStorageAccountWebDAVMergesCredentials(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -966,7 +1135,7 @@ func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
 		t.Fatalf("seed drive: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", bytes.NewBufferString(`{
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/storage/accounts", bytes.NewBufferString(`{
 		"id": "webdav-main",
 		"kind": "webdav",
 		"name": "WebDAV",
@@ -978,7 +1147,7 @@ func TestHandleUpsertWebDAVMergesCredentials(t *testing.T) {
 		}
 	}`))
 	rr := httptest.NewRecorder()
-	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+	(&AdminServer{Catalog: cat, ProbeStorageAccount: func(context.Context, *catalog.Drive) error { return nil }}).handleSaveStorageAccount(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())

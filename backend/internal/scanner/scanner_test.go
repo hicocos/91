@@ -719,6 +719,26 @@ func TestRunReportsSeenVideoFileIDsAndVisitedDirectories(t *testing.T) {
 	}
 }
 
+func TestRunStopsDirectoryCyclesAtAlreadyVisitedIDs(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	drv := &scannerTreeFakeDrive{entries: map[string][]drives.Entry{
+		"root":  {{ID: "dir-a", Name: "A", IsDir: true}},
+		"dir-a": {{ID: "root", Name: "Back to root", IsDir: true}, {ID: "video", Name: "clip.mp4", Size: 10}},
+	}}
+	stats, err := New(cat, drv, []string{".mp4"}, nil, nil).Run(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.VisitedDirIDs) != 2 || stats.Scanned != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
 func TestRunSkipsConfiguredDirIDsAndDoesNotRecurse(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

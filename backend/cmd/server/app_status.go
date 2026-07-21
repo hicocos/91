@@ -156,9 +156,13 @@ func (a *App) driveGenerationStatuses() map[string]api.DriveGenerationStatuses {
 		}
 		status := out[id]
 		status.Scan = api.GenerationStatus{
-			State:        state,
-			ScannedCount: progress.Scanned,
-			AddedCount:   progress.Added,
+			State:             state,
+			ScannedCount:      progress.Scanned,
+			AddedCount:        progress.Added,
+			VideoScannedCount: progress.VideoScanned,
+			AudioScannedCount: progress.AudioScanned,
+			VideoAddedCount:   progress.VideoAdded,
+			AudioAddedCount:   progress.AudioAdded,
 		}
 		if !progress.CooldownUntil.IsZero() {
 			status.Scan.CooldownUntil = progress.CooldownUntil.Format(time.RFC3339)

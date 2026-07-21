@@ -153,7 +153,8 @@ test("crawler upload target select uses an aligned custom arrow", () => {
 test("drive form labels the optional root directory and hides it for localstorage", () => {
   assert.match(driveFormSource, /<label[^>]*>\{rootDirectoryLabel\(form\.kind\)\}<\/label>/);
   assert.match(driveFormSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
-  assert.match(constantsSource, /kind === "webdav" \? "WebDAV根目录\(可选\)" : "自定义网盘根目录\(可选\)"/);
+  assert.match(constantsSource, /if \(kind === "s3"\) return "扫描目录前缀"/);
+  assert.match(constantsSource, /return kind === "webdav" \? "WebDAV根目录\(可选\)" : "自定义网盘根目录\(可选\)"/);
   assert.match(constantsSource, /if \(kind === "webdav"\) return "可填写目录路径，留空表示根目录"/);
   assert.match(constantsSource, /return "可填写目录ID，留空表示根目录"/);
   assert.doesNotMatch(combinedSource, />根目录 ID</);
@@ -161,12 +162,15 @@ test("drive form labels the optional root directory and hides it for localstorag
     combinedSource,
     /usesRootDirectoryID\(kind:\s*Kind\):\s*boolean\s*\{\s*return kind !== "localstorage";\s*\}/
   );
-  assert.match(combinedSource, /\{usesRootDirectoryID\(form\.kind\) && \(/);
+  assert.match(combinedSource, /rootFieldPlacement\(form\.kind\)/);
+  assert.match(combinedSource, /rootPlacement === "primary"/);
+  assert.match(combinedSource, /rootPlacement === "advanced"/);
+  assert.match(combinedSource, /rootPlacement === "legacy"/);
   assert.match(combinedSource, /\{usesRootDirectoryID\(d\.kind\) && \(/);
   assert.ok(
-    driveFormSource.indexOf("{usesRootDirectoryID(form.kind) && (") >
+    driveFormSource.indexOf('rootPlacement === "legacy"') >
       driveFormSource.indexOf("{fields.length > 0 && ("),
-    "root directory should be the final form section after credential fields"
+    "legacy root directory should remain after credential fields"
   );
   assert.doesNotMatch(combinedSource, /扫描起点目录 ID/);
   assert.doesNotMatch(combinedSource, /set\("scanRootId"/);
@@ -225,13 +229,13 @@ test("webdav drive form asks for a standard endpoint and basic auth credentials"
   const fields = match[1];
 
   assert.match(fields, /key: "base_url"/);
-  assert.match(fields, /placeholder: "https:\/\/openlist\.example\.com\/dav"/);
+  assert.match(fields, /placeholder: "https:\/\/dav\.example\.com\/media"/);
   assert.match(fields, /key: "username"/);
   assert.match(fields, /key: "password"/);
   assert.doesNotMatch(fields, /encrypt|crypt|302/i);
 });
 
-test("pikpak drive form only exposes account login fields", () => {
+test("pikpak drive form supports refresh-token mounting and captcha recovery", () => {
   const match =
     /case "pikpak":\s*return \[([\s\S]*?)\];\s*case "wopan":/.exec(
       combinedSource
@@ -241,11 +245,29 @@ test("pikpak drive form only exposes account login fields", () => {
 
   assert.match(fields, /key: "username"/);
   assert.match(fields, /key: "password"/);
-  assert.doesNotMatch(fields, /key: "platform"/);
-  assert.doesNotMatch(fields, /key: "refresh_token"/);
-  assert.doesNotMatch(fields, /key: "captcha_token"/);
-  assert.doesNotMatch(fields, /key: "device_id"/);
-  assert.doesNotMatch(fields, /key: "disable_media_link"/);
+  assert.match(fields, /key: "platform"/);
+  assert.match(fields, /options: \[\{ value: "web"[\s\S]*value: "android"[\s\S]*value: "pc"/);
+  assert.match(fields, /key: "refresh_token"/);
+  assert.match(fields, /key: "captcha_token"/);
+  assert.match(fields, /key: "device_id"/);
+  assert.match(fields, /key: "disable_media_link"/);
+  assert.match(fields, /PikPak 官方网页端/);
+  assert.match(fields, /验证码页面/);
+});
+
+test("pikpak save accepts refresh token instead of forcing username and password", () => {
+  assert.match(drivesPageSource, /form\.kind === "pikpak"/);
+  assert.match(drivesPageSource, /form\.creds\.refresh_token/);
+  assert.match(drivesPageSource, /用户名和密码，或填写与平台匹配的 Refresh Token/);
+});
+
+test("pikpak captcha failures expose a safe clickable verification link", () => {
+  assert.match(drivesPageSource, /function pikpakCaptchaVerificationURL/);
+  assert.match(drivesPageSource, /url\.hostname !== "user\.mypikpak\.net"/);
+  assert.match(drivesPageSource, /url\.pathname !== "\/captcha\/v2\/txCaptcha\.html"/);
+  assert.match(drivesPageSource, /完成 PikPak 验证码/);
+  assert.match(drivesPageSource, /target="_blank"/);
+  assert.match(drivesPageSource, /rel="noreferrer"/);
 });
 
 test("wopan drive form omits the optional family space field", () => {
@@ -379,6 +401,7 @@ test("drive type selector keeps primary source order", () => {
     { value: "quark", label: "夸克网盘" },
     { value: "wopan", label: "联通网盘" },
     { value: "webdav", label: "WebDAV" },
+    { value: "s3", label: "S3 兼容存储" },
     { value: "localstorage", label: "本地存储" },
   ]);
 });

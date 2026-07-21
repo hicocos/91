@@ -61,7 +61,7 @@ func TestListEncodesRelativePathsAndStreamURLResolvesFile(t *testing.T) {
 func TestStreamURLResolvesHTTPSTRM(t *testing.T) {
 	root := t.TempDir()
 	strmPath := filepath.Join(root, "movie.strm")
-	target := "https://media.example/clip.mp4?token=abc"
+	target := "https://93.184.216.34/clip.mp4?token=abc"
 	if err := os.WriteFile(strmPath, []byte("\ufeff\n  "+target+"\n"), 0o644); err != nil {
 		t.Fatalf("write strm: %v", err)
 	}
@@ -73,6 +73,31 @@ func TestStreamURLResolvesHTTPSTRM(t *testing.T) {
 	}
 	if link.URL != target {
 		t.Fatalf("url = %q, want %q", link.URL, target)
+	}
+	if !link.PublicNetworkOnly {
+		t.Fatal("remote strm stream link must retain public-network-only policy")
+	}
+}
+
+func TestStreamURLRejectsPrivateHTTPSTRMTargets(t *testing.T) {
+	for _, target := range []string{
+		"http://127.0.0.1/video.mp4",
+		"http://10.0.0.1/video.mp4",
+		"http://172.16.0.1/video.mp4",
+		"http://192.168.1.1/video.mp4",
+		"http://169.254.169.254/latest/meta-data",
+		"http://[::1]/video.mp4",
+		"http://[fc00::1]/video.mp4",
+		"http://[fe80::1]/video.mp4",
+	} {
+		t.Run(target, func(t *testing.T) {
+			root := t.TempDir()
+			writeLocalStorageTestFile(t, filepath.Join(root, "movie.strm"), []byte(target+"\n"))
+			drv := New(Config{ID: "local", RootPath: root})
+			if _, err := drv.StreamURL(context.Background(), encodeRel("movie.strm")); err == nil || !strings.Contains(err.Error(), "non-public") {
+				t.Fatalf("error = %v, want non-public target rejection", err)
+			}
+		})
 	}
 }
 

@@ -22,6 +22,7 @@ const (
 
 type credentialsCipher struct {
 	aead cipher.AEAD
+	key  []byte
 }
 
 type credentialsEnvelope struct {
@@ -48,7 +49,7 @@ func loadCredentialsCipher(dbPath string) (*credentialsCipher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("catalog: initialize credentials AEAD: %w", err)
 	}
-	return &credentialsCipher{aead: aead}, nil
+	return &credentialsCipher{aead: aead, key: append([]byte(nil), key...)}, nil
 }
 
 func loadOrCreateCredentialsKey(path string) ([]byte, error) {

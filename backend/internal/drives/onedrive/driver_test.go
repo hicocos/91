@@ -16,21 +16,25 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
-func TestInitRefreshesTokenThroughOpenListOnlineAPIAndPersistsUpdate(t *testing.T) {
+func TestInitRefreshesTokenThroughMicrosoftOAuthAndPersistsUpdate(t *testing.T) {
 	var tokenRequestSeen bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/renewapi" {
+		if r.Method != http.MethodPost || r.URL.Path != "/token" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
 		tokenRequestSeen = true
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
 		want := map[string]string{
-			"refresh_ui": "old-refresh",
-			"server_use": "true",
-			"driver_txt": "onedrive_pr",
+			"client_id":     "client-id",
+			"client_secret": "client-secret",
+			"grant_type":    "refresh_token",
+			"refresh_token": "old-refresh",
 		}
 		for key, value := range want {
-			if got := r.URL.Query().Get(key); got != value {
-				t.Fatalf("query %s = %q, want %q", key, got, value)
+			if got := r.Form.Get(key); got != value {
+				t.Fatalf("form %s = %q, want %q", key, got, value)
 			}
 		}
 		writeJSON(t, w, map[string]any{
@@ -45,7 +49,9 @@ func TestInitRefreshesTokenThroughOpenListOnlineAPIAndPersistsUpdate(t *testing.
 	d := New(Config{
 		ID:           "od-main",
 		RefreshToken: "old-refresh",
-		RenewAPIURL:  srv.URL + "/renewapi",
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		OAuthURL:     srv.URL + "/token",
 		APIBaseURL:   srv.URL,
 		OnTokenUpdate: func(access, refresh string) {
 			persistedAccess = access
@@ -66,10 +72,18 @@ func TestInitRefreshesTokenThroughOpenListOnlineAPIAndPersistsUpdate(t *testing.
 		t.Fatalf("init: %v", err)
 	}
 	if !tokenRequestSeen {
-		t.Fatal("OpenList renew API was not called")
+		t.Fatal("Microsoft-compatible OAuth token endpoint was not called")
 	}
 	if persistedAccess != "new-access" || persistedRefresh != "new-refresh" {
 		t.Fatalf("persisted tokens = %q/%q, want new-access/new-refresh", persistedAccess, persistedRefresh)
+	}
+}
+
+func TestInitRejectsMissingMicrosoftClientID(t *testing.T) {
+	d := New(Config{ID: "od-main", RefreshToken: "refresh-token"})
+	err := d.Init(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "client_id is required") {
+		t.Fatalf("init error = %v, want missing client_id", err)
 	}
 }
 
@@ -556,7 +570,7 @@ func TestUploadLargeFileUsesUploadSessionAndReportsHash(t *testing.T) {
 	}
 }
 
-func TestUploadRefreshesExpiredTokenAndReplaysBody(t *testing.T) {
+func TestUploadRefreshesExpiredTokenThroughMicrosoftAndReplaysBodyOnce(t *testing.T) {
 	var uploadAttempts int
 	var tokenRefreshes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -587,10 +601,13 @@ func TestUploadRefreshesExpiredTokenAndReplaysBody(t *testing.T) {
 				t.Fatalf("retry authorization = %q, want new access token", got)
 			}
 			writeJSON(t, w, map[string]any{"id": "uploaded-id"})
-		case r.Method == http.MethodGet && r.URL.Path == "/renewapi":
+		case r.Method == http.MethodPost && r.URL.Path == "/token":
 			tokenRefreshes++
-			if got := r.URL.Query().Get("refresh_ui"); got != "old-refresh" {
-				t.Fatalf("refresh_ui = %q, want old-refresh", got)
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse refresh form: %v", err)
+			}
+			if got := r.Form.Get("refresh_token"); got != "old-refresh" {
+				t.Fatalf("refresh_token = %q, want old-refresh", got)
 			}
 			writeJSON(t, w, map[string]any{
 				"access_token":  "new-access",
@@ -606,7 +623,8 @@ func TestUploadRefreshesExpiredTokenAndReplaysBody(t *testing.T) {
 		ID:           "od-main",
 		AccessToken:  "expired-access",
 		RefreshToken: "old-refresh",
-		RenewAPIURL:  srv.URL + "/renewapi",
+		ClientID:     "client-id",
+		OAuthURL:     srv.URL + "/token",
 		APIBaseURL:   srv.URL,
 	})
 
@@ -625,9 +643,9 @@ func TestUploadRefreshesExpiredTokenAndReplaysBody(t *testing.T) {
 func TestSharePointUsesSiteDriveBase(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/renewapi":
-			if r.Method != http.MethodGet {
-				t.Fatalf("renew method = %s, want GET", r.Method)
+		case "/token":
+			if r.Method != http.MethodPost {
+				t.Fatalf("token method = %s, want POST", r.Method)
 			}
 			writeJSON(t, w, map[string]any{
 				"access_token":  "access-token",
@@ -644,9 +662,10 @@ func TestSharePointUsesSiteDriveBase(t *testing.T) {
 	d := New(Config{
 		ID:           "od-sp",
 		RefreshToken: "old-refresh",
+		ClientID:     "client-id",
 		IsSharePoint: true,
 		SiteID:       "site-123",
-		RenewAPIURL:  srv.URL + "/renewapi",
+		OAuthURL:     srv.URL + "/token",
 		APIBaseURL:   srv.URL,
 	})
 	if err := d.Init(context.Background()); err != nil {

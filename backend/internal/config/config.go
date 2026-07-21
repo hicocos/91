@@ -20,6 +20,7 @@ const (
 var (
 	legacyDefaultVideoExtensions = []string{".mp4", ".mkv", ".mov", ".webm", ".avi"}
 	defaultVideoExtensions       = []string{".mp4", ".mkv", ".mov", ".webm", ".avi", ".strm"}
+	defaultAudioExtensions       = []string{".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".oga", ".opus"}
 )
 
 type Config struct {
@@ -225,6 +226,7 @@ type Scanner struct {
 	IntervalSeconds int      `yaml:"interval_seconds"`
 	MaxDepth        int      `yaml:"max_depth"`
 	VideoExtensions []string `yaml:"video_extensions"`
+	AudioExtensions []string `yaml:"audio_extensions"`
 }
 
 type Preview struct {
@@ -303,6 +305,9 @@ func (c *Config) applyDefaults() {
 		c.Scanner.VideoExtensions = append([]string{}, defaultVideoExtensions...)
 	} else if isLegacyDefaultVideoExtensions(c.Scanner.VideoExtensions) {
 		c.Scanner.VideoExtensions = append(c.Scanner.VideoExtensions, ".strm")
+	}
+	if len(c.Scanner.AudioExtensions) == 0 {
+		c.Scanner.AudioExtensions = append([]string{}, defaultAudioExtensions...)
 	}
 	if c.Preview.FFmpegPath == "" {
 		c.Preview.FFmpegPath = "ffmpeg"

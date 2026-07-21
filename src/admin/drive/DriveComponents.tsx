@@ -117,6 +117,8 @@ export function StatusTag({
 export function DriveCardMetrics({ d }: { d: api.AdminDrive }) {
   return (
     <div className="admin-drive-card__info">
+      <div className="admin-drive-card__metric"><span>视频数量</span><strong>{d.videoCount ?? 0}</strong></div>
+      <div className="admin-drive-card__metric"><span>音频数量</span><strong>{d.audioCount ?? 0}</strong></div>
       <div className="admin-drive-card__metric">
         <span>封面数 (就绪/失败)</span>
         <strong>
@@ -327,7 +329,7 @@ function DriveGenCol({
   const title = generationTitle(status, detail);
   const stateLabel = label === "抓取" && state === "scanning" ? "抓取中" : generationStateLabel(state);
   const showScanProgress = !showCounts && (state === "scanning" || (status?.scannedCount ?? 0) > 0 || (status?.addedCount ?? 0) > 0);
-  const scannedLabel = label === "抓取" ? "已抓取" : "已扫描";
+
   return (
     <div className="admin-gen-col">
       <div className="admin-gen-col__head">
@@ -342,8 +344,12 @@ function DriveGenCol({
       {detail && <div className="admin-gen-col__detail">{detail}</div>}
       {showScanProgress && (
         <div className="admin-gen-col__counts admin-gen-col__counts--scan">
-          <div className="admin-gen-col__count"><span>{scannedLabel}</span><strong>{status?.scannedCount ?? 0}</strong></div>
+          <div className="admin-gen-col__count"><span>已扫描</span><strong>{status?.scannedCount ?? 0}</strong></div>
           <div className="admin-gen-col__count"><span>预计新增</span><strong>{status?.addedCount ?? 0}</strong></div>
+          <div className="admin-gen-col__count"><span>视频扫描</span><strong>{status?.videoScannedCount ?? 0}</strong></div>
+          <div className="admin-gen-col__count"><span>视频新增</span><strong>{status?.videoAddedCount ?? 0}</strong></div>
+          <div className="admin-gen-col__count"><span>音频扫描</span><strong>{status?.audioScannedCount ?? 0}</strong></div>
+          <div className="admin-gen-col__count"><span>音频新增</span><strong>{status?.audioAddedCount ?? 0}</strong></div>
         </div>
       )}
       {showCounts && (

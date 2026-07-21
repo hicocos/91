@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,12 @@ type sessionIdentityContextKey struct{}
 func SessionIdentityFromContext(ctx context.Context) (string, bool) {
 	identity, ok := ctx.Value(sessionIdentityContextKey{}).(string)
 	return identity, ok && identity != ""
+}
+
+// ContextWithSessionIdentityForTest lets API package tests exercise handlers
+// after authentication without exposing the session cookie or its raw token.
+func ContextWithSessionIdentityForTest(ctx context.Context, identity string) context.Context {
+	return context.WithValue(ctx, sessionIdentityContextKey{}, identity)
 }
 
 func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request, user, pass string) (bool, error) {
@@ -189,6 +196,10 @@ func (a *Authenticator) Required(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if !allowCookieAuthenticatedWrite(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if userID > 0 {
 			u, err := a.Catalog.GetUserByID(r.Context(), userID)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -216,6 +227,76 @@ func withSessionIdentity(r *http.Request) *http.Request {
 	digest := sha256.Sum256([]byte(cookie.Value))
 	identity := hex.EncodeToString(digest[:])
 	return r.WithContext(context.WithValue(r.Context(), sessionIdentityContextKey{}, identity))
+}
+
+func allowCookieAuthenticatedWrite(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return true
+	}
+
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Browsers expose cross-site navigation/fetch context even when an Origin
+		// header is absent. Preserve compatibility with non-browser API clients,
+		// which normally send neither header.
+		fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+		return fetchSite == "" || fetchSite == "same-origin" || fetchSite == "none"
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.User != nil || originURL.Scheme == "" || originURL.Host == "" || originURL.Path != "" || originURL.RawQuery != "" || originURL.Fragment != "" {
+		return false
+	}
+	effective := &url.URL{Scheme: effectiveRequestScheme(r), Host: effectiveRequestHost(r)}
+	return sameWebOrigin(originURL, effective)
+}
+
+func effectiveRequestScheme(r *http.Request) string {
+	if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		return strings.ToLower(proto)
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.URL != nil && r.URL.Scheme != "" {
+		return strings.ToLower(r.URL.Scheme)
+	}
+	return "http"
+}
+
+func effectiveRequestHost(r *http.Request) string {
+	if host := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); host != "" {
+		return host
+	}
+	return r.Host
+}
+
+func firstForwardedValue(value string) string {
+	if comma := strings.IndexByte(value, ','); comma >= 0 {
+		value = value[:comma]
+	}
+	return strings.TrimSpace(value)
+}
+
+func sameWebOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
+	return strings.EqualFold(canonicalOriginHost(a), canonicalOriginHost(b))
+}
+
+func canonicalOriginHost(u *url.URL) string {
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (strings.EqualFold(u.Scheme, "https") && port == "443") || (strings.EqualFold(u.Scheme, "http") && port == "80") {
+		port = ""
+	}
+	if port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func randomToken() (string, error) {
@@ -382,6 +463,10 @@ func (a *Authenticator) AdminRequired(next http.Handler) http.Handler {
 		ok, userID, err := a.ValidateRequest(w, r)
 		if err != nil || !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !allowCookieAuthenticatedWrite(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		if userID > 0 {

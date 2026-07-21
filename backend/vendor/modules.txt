@@ -1,6 +1,3 @@
-# github.com/OpenListTeam/wopan-sdk-go v0.2.0
-## explicit; go 1.20
-github.com/OpenListTeam/wopan-sdk-go
 # github.com/SheltonZhu/115driver v1.3.2
 ## explicit; go 1.23.0
 github.com/SheltonZhu/115driver/pkg/crypto

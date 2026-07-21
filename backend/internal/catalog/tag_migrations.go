@@ -15,6 +15,9 @@ import (
 )
 
 func (c *Catalog) migrate(ctx context.Context) error {
+	if err := c.addColumnIfMissing(ctx, "videos", "media_type", "TEXT NOT NULL DEFAULT 'video'"); err != nil {
+		return err
+	}
 	if err := c.addColumnIfMissing(ctx, "videos", "tags_manual", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
@@ -630,6 +633,7 @@ var currentVideoColumnNames = []string{
 	"duration_seconds",
 	"size_bytes",
 	"ext",
+	"media_type",
 	"quality",
 	"thumbnail_url",
 	"thumbnail_status",
@@ -675,6 +679,7 @@ CREATE TABLE videos_category_drop_new (
     duration_seconds   INTEGER DEFAULT 0,
     size_bytes         INTEGER DEFAULT 0,
     ext                TEXT,
+    media_type         TEXT NOT NULL DEFAULT 'video',
     quality            TEXT,
     thumbnail_url      TEXT,
     thumbnail_status   TEXT DEFAULT 'pending',

@@ -46,6 +46,7 @@ type Driver struct {
 	accessToken   string
 	clientID      string
 	clientSecret  string
+	sharedDriveID string
 	oauthURL      string
 	apiBaseURL    string
 	uploadBaseURL string
@@ -61,24 +62,31 @@ type Driver struct {
 	linkCooldownMu       sync.Mutex
 	linkCooldownUntil    time.Time
 	linkCooldownDuration time.Duration
+	shortcutMu           sync.RWMutex
+	shortcutTargets      map[string]string
 }
 
 type Config struct {
-	ID           string
-	RootID       string
-	RefreshToken string
-	AccessToken  string
-	ClientID     string
-	ClientSecret string
-	OAuthURL     string
-	APIBaseURL   string
-	UploadAPIURL string
+	ID            string
+	RootID        string
+	RefreshToken  string
+	AccessToken   string
+	ClientID      string
+	ClientSecret  string
+	SharedDriveID string
+	OAuthURL      string
+	APIBaseURL    string
+	UploadAPIURL  string
 
 	OnTokenUpdate func(access, refresh string)
 }
 
 func New(c Config) *Driver {
 	rootID := strings.TrimSpace(c.RootID)
+	sharedDriveID := strings.TrimSpace(c.SharedDriveID)
+	if sharedDriveID != "" && (rootID == "" || rootID == "root" || rootID == "/") {
+		rootID = sharedDriveID
+	}
 	if rootID == "" {
 		rootID = "root"
 	}
@@ -101,6 +109,7 @@ func New(c Config) *Driver {
 		accessToken:   strings.TrimSpace(c.AccessToken),
 		clientID:      strings.TrimSpace(c.ClientID),
 		clientSecret:  strings.TrimSpace(c.ClientSecret),
+		sharedDriveID: sharedDriveID,
 		oauthURL:      oauthURL,
 		apiBaseURL:    apiBaseURL,
 		uploadBaseURL: uploadBaseURL,
@@ -117,6 +126,7 @@ func New(c Config) *Driver {
 		listInterval:         defaultListInterval,
 		listCooldown:         defaultListCooldown,
 		linkCooldownDuration: defaultLinkCooldown,
+		shortcutTargets:      make(map[string]string),
 	}
 }
 
@@ -148,6 +158,10 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 	}
 	d.listMu.Lock()
 	defer d.listMu.Unlock()
+	resolvedDirID, err := d.resolveDirectoryShortcut(ctx, dirID)
+	if err != nil {
+		return nil, fmt.Errorf("googledrive resolve directory shortcut: %w", err)
+	}
 
 	pageToken := ""
 	out := make([]drives.Entry, 0)
@@ -158,10 +172,16 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 		var resp filesResp
 		err := d.request(ctx, d.filesURL(), http.MethodGet, func(req *resty.Request) {
 			params := map[string]string{
-				"fields":   filesListFields,
-				"pageSize": "1000",
-				"q":        fmt.Sprintf("'%s' in parents and trashed = false", strings.ReplaceAll(dirID, "'", "\\'")),
-				"orderBy":  "folder,name,modifiedTime desc",
+				"fields":                    filesListFields,
+				"pageSize":                  "1000",
+				"q":                         fmt.Sprintf("'%s' in parents and trashed = false", strings.ReplaceAll(resolvedDirID, "'", "\\'")),
+				"orderBy":                   "folder,name,modifiedTime desc",
+				"includeItemsFromAllDrives": "true",
+				"supportsAllDrives":         "true",
+			}
+			if d.sharedDriveID != "" {
+				params["corpora"] = "drive"
+				params["driveId"] = d.sharedDriveID
 			}
 			if pageToken != "" {
 				params["pageToken"] = pageToken
@@ -184,6 +204,11 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 			return nil, fmt.Errorf("googledrive shortcut metadata: %w", err)
 		}
 		for _, f := range resp.Files {
+			if f.MimeType == "application/vnd.google-apps.shortcut" && f.Shortcut.TargetID != "" {
+				d.shortcutMu.Lock()
+				d.shortcutTargets[f.ID] = f.Shortcut.TargetID
+				d.shortcutMu.Unlock()
+			}
 			out = append(out, fileToEntry(f, dirID))
 		}
 		pageToken = resp.NextPageToken
@@ -191,6 +216,31 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 			return out, nil
 		}
 	}
+}
+
+func (d *Driver) resolveDirectoryShortcut(ctx context.Context, id string) (string, error) {
+	d.shortcutMu.RLock()
+	target := d.shortcutTargets[id]
+	d.shortcutMu.RUnlock()
+	if target != "" {
+		return target, nil
+	}
+	if id == d.rootID || id == "root" {
+		return id, nil
+	}
+	var f driveFile
+	if err := d.request(ctx, d.fileURL(id), http.MethodGet, func(req *resty.Request) {
+		req.SetQueryParam("fields", "id,mimeType,shortcutDetails")
+	}, &f); err != nil {
+		return "", err
+	}
+	if f.MimeType == "application/vnd.google-apps.shortcut" && f.Shortcut.TargetID != "" {
+		d.shortcutMu.Lock()
+		d.shortcutTargets[id] = f.Shortcut.TargetID
+		d.shortcutMu.Unlock()
+		return f.Shortcut.TargetID, nil
+	}
+	return id, nil
 }
 
 func (d *Driver) waitForListSlotLocked(ctx context.Context) error {
@@ -244,13 +294,19 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	if err := d.linkCooldownError(time.Now()); err != nil {
 		return nil, err
 	}
-	if _, err := d.Stat(ctx, fileID); err != nil {
+	var f driveFile
+	if err := d.request(ctx, d.fileURL(fileID), http.MethodGet, func(req *resty.Request) {
+		req.SetQueryParam("fields", fileInfoFields)
+	}, &f); err != nil {
 		err = fmt.Errorf("googledrive stream: %w", err)
 		if wait, ok := drives.RateLimitRetryAfter(err); ok {
 			until := d.pauseLinkCooldown(wait)
 			log.Printf("[googledrive] stream link cooling down drive=%s until=%s err=%v", d.id, until.Format(time.RFC3339), err)
 		}
 		return nil, err
+	}
+	if f.Shortcut.TargetID != "" {
+		fileID = f.Shortcut.TargetID
 	}
 	u := d.fileURL(fileID) + "?alt=media&acknowledgeAbuse=true&supportsAllDrives=true"
 	return &drives.StreamLink{
@@ -815,7 +871,8 @@ func fileToEntry(f driveFile, fallbackParentID string) drives.Entry {
 	id := f.ID
 	isDir := f.MimeType == "application/vnd.google-apps.folder"
 	if f.MimeType == "application/vnd.google-apps.shortcut" && f.Shortcut.TargetID != "" {
-		id = f.Shortcut.TargetID
+		// Preserve the shortcut's own ID. Source deletion must delete the shortcut,
+		// never the file it points at.
 		isDir = f.Shortcut.TargetMimeType == "application/vnd.google-apps.folder"
 	}
 	size, _ := strconv.ParseInt(f.Size, 10, 64)

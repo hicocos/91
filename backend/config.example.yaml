@@ -33,6 +33,7 @@ scanner:
   max_depth: 5
   # 被扫描的扩展名
   video_extensions: [".mp4", ".mkv", ".mov", ".webm", ".avi", ".strm"]
+  audio_extensions: [".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".oga", ".opus"]
 
 nightly:
   # 凌晨流水线触发整点，默认 1 即每天 01:00；需要改时间直接改这个值。
@@ -54,6 +55,17 @@ preview:
 
 # 盘列表。上线后请通过管理后台添加，本文件可留空。
 # kind 支持 quark / p115 / p123 / pikpak / wopan / guangyapan / onedrive / googledrive / webdav / localstorage。
+# PikPak 示例（推荐使用与平台匹配的 Refresh Token）：
+# - id: "my-pikpak"
+#   kind: "pikpak"
+#   name: "我的 PikPak"
+#   root_id: ""
+#   params:
+#     platform: "web" # web / android / pc；必须与 token 来源一致
+#     refresh_token: "..."
+#     # 遇到交互验证码时完成验证后填写；一般留空
+#     # captcha_token: "..."
+#     disable_media_link: "true"
 # OneDrive 示例：
 # - id: "my-onedrive"
 #   kind: "onedrive"
@@ -81,14 +93,14 @@ preview:
 #     refresh_token: "..."
 #     # 可选：按路径解析扫描根目录，优先于 root_id
 #     # root_path: "影视/电影"
-# WebDAV 示例（OpenList 通常为 https://example.com/dav）：
+# 标准 WebDAV 示例：
 # - id: "my-webdav"
 #   kind: "webdav"
 #   name: "我的 WebDAV"
 #   # WebDAV 端点下的绝对路径；留空时为 /
 #   root_id: "/影视"
 #   params:
-#     base_url: "https://example.com/dav"
+#     base_url: "https://dav.example.com/media"
 #     username: "..."
 #     password: "..."
 # 本地存储示例：

@@ -2,7 +2,7 @@
 set -eu
 
 APP_DIR="/opt/video-site-91"
-DATA_DIR="${VIDEO_DATA_DIR:-$APP_DIR/data}"
+DATA_DIR="${VIDEO_DATA_DIR:-/data}"
 CONFIG="${VIDEO_CONFIG:-$DATA_DIR/config.yaml}"
 EXAMPLE="$APP_DIR/config.example.yaml"
 PORT="${VIDEO_LISTEN_PORT:-9191}"

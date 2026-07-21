@@ -36,9 +36,29 @@ import { DriveForm } from "./drive/DriveForm";
 import { DeleteDriveModal } from "./drive/DeleteDriveModal";
 import { SkipDirsPanel } from "./drive/SkipDirsPanel";
 import { AdminEmptyVisual } from "./AdminEmptyVisual";
+import {
+  defaultProviderFormOptions,
+  isGuidedProvider,
+  storageCredentialsForSave,
+  validateProviderForm,
+} from "./drive/providerFormRules";
 
 const DRIVE_BUSY_MESSAGE = "当前存储有正在进行的任务，请稍后重试";
 const NIGHTLY_BUSY_MESSAGE = "当前有全量扫描任务正在进行，请稍后重试";
+
+function pikpakCaptchaVerificationURL(error?: string): string {
+  const marker = "pikpak captcha verification required: ";
+  if (!error?.startsWith(marker)) return "";
+  try {
+    const url = new URL(error.slice(marker.length).trim());
+    if (url.protocol !== "https:" || url.hostname !== "user.mypikpak.net" || url.pathname !== "/captcha/v2/txCaptcha.html") {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
 
 function isDriveBusy(d: api.AdminDrive) {
   return [
@@ -55,6 +75,7 @@ function isDriveBusy(d: api.AdminDrive) {
 
 export function DrivesPage() {
   const [list, setList] = useState<api.AdminDrive[]>([]);
+  const [providerManifests, setProviderManifests] = useState<api.StorageProviderManifest[]>([]);
   const [storage, setStorage] = useState<api.AdminDriveStorage | null>(null);
   const [nightlyStatus, setNightlyStatus] =
     useState<api.NightlyJobStatus>(idleNightlyStatus);
@@ -67,6 +88,8 @@ export function DrivesPage() {
   const [initialForm, setInitialForm] = useState<FormState>(emptyForm);
   const [createDriveTypeSelected, setCreateDriveTypeSelected] = useState(false);
   const [saving, setSaving] = useState(false);
+  const oauthPopupRef = useRef<Window | null>(null);
+  const oauthPendingRef = useRef<{ provider: "onedrive" | "googledrive"; nonce: string } | null>(null);
   const [editingCredentialsId, setEditingCredentialsId] = useState("");
   const [deletingId, setDeletingId] = useState("");
   const [regenFailedId, setRegenFailedId] = useState("");
@@ -109,14 +132,16 @@ export function DrivesPage() {
     setLoading(true);
     setLoadError("");
     try {
-      const [data, storageData, jobStatus] = await Promise.all([
+      const [data, storageData, jobStatus, manifests] = await Promise.all([
         api.listDrives(),
         api.getDriveStorage(),
         api.getNightlyJobStatus().catch(() => null),
+        api.listStorageProviders(),
       ]);
       setList(data ?? []);
       setStorage(storageData);
       if (jobStatus) setNightlyStatus(jobStatus);
+      setProviderManifests(manifests ?? []);
     } catch (e) {
       const message = e instanceof Error ? e.message : "加载失败";
       setLoadError(message);
@@ -149,6 +174,44 @@ export function DrivesPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    async function startOAuth(event: Event) {
+      const provider = (event as CustomEvent<{ provider?: string }>).detail?.provider;
+      if (provider !== "onedrive" && provider !== "googledrive") return;
+      const popup = window.open("about:blank", `storage-oauth-${provider}`, "popup,width=620,height=760");
+      if (!popup) {
+        show("浏览器拦截了授权窗口，请允许本站弹出窗口后重试", "error");
+        return;
+      }
+      oauthPopupRef.current = popup;
+      try {
+        const started = await api.startStorageOAuth(provider, form.id, form.creds);
+        oauthPendingRef.current = { provider, nonce: started.nonce };
+        popup.location.replace(started.authUrl);
+      } catch (e) {
+        popup.close();
+        oauthPopupRef.current = null;
+        show(e instanceof Error ? e.message : "启动授权失败", "error");
+      }
+    }
+    function finishOAuth(event: MessageEvent) {
+      const pending = oauthPendingRef.current;
+      const data = event.data as { type?: string; provider?: string; nonce?: string; credentials?: Record<string, string> } | null;
+      if (!pending || event.origin !== window.location.origin || event.source !== oauthPopupRef.current || !data ||
+          data.type !== "storage-oauth-result" || data.provider !== pending.provider || data.nonce !== pending.nonce) return;
+      setForm((current) => ({ ...current, creds: { ...current.creds, ...(data.credentials ?? {}) } }));
+      oauthPendingRef.current = null;
+      oauthPopupRef.current = null;
+      show("授权成功，请继续测试并保存", "success");
+    }
+    window.addEventListener("storage-oauth-start", startOAuth);
+    window.addEventListener("message", finishOAuth);
+    return () => {
+      window.removeEventListener("storage-oauth-start", startOAuth);
+      window.removeEventListener("message", finishOAuth);
+    };
+  }, [form.creds, show]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -187,7 +250,10 @@ export function DrivesPage() {
     if (editingCredentialsId) return;
     setEditingCredentialsId(d.id);
     try {
-      const result = await api.getDriveCredentials(d.id);
+      const targetStorage = ["onedrive", "googledrive", "webdav", "s3"].includes(d.kind);
+      const result = targetStorage
+        ? await api.getStorageAccount(d.id)
+        : await api.getDriveCredentials(d.id);
       const creds = { ...(result.credentials ?? {}) };
       if (d.kind === "localstorage" && !("strm_allow_outside_root" in creds)) {
         creds.strm_allow_outside_root = (d.strmAllowOutsideRoot ?? false) ? "true" : "false";
@@ -196,8 +262,11 @@ export function DrivesPage() {
         id: d.id,
         kind: d.kind,
         name: d.name,
-        rootId: d.rootId,
+        rootId: String((result as { rootId?: string }).rootId || d.rootId || creds.root_prefix || ""),
         creds,
+        configured: "configured" in result && result.configured && typeof result.configured === "object"
+          ? result.configured as Record<string, boolean>
+          : undefined,
       };
       setForm(nextForm);
       setInitialForm(nextForm);
@@ -241,6 +310,14 @@ export function DrivesPage() {
       show("请填写网盘名称", "error");
       return;
     }
+    const providerOptions = defaultProviderFormOptions(form.kind, form.creds, Boolean(form.id), form.configured);
+    if (isGuidedProvider(form.kind)) {
+      const validationError = validateProviderForm(form.kind, form.rootId, form.creds, providerOptions);
+      if (validationError) {
+        show(validationError, "error");
+        return;
+      }
+    }
     if (!form.id) {
       if (form.kind === "p123") {
         const hasScannedToken = Boolean((form.creds.access_token ?? "").trim());
@@ -251,7 +328,16 @@ export function DrivesPage() {
           return;
         }
       }
-      const missingField = credentialFields(form.kind).find(
+      if (form.kind === "pikpak") {
+        const hasRefreshToken = Boolean((form.creds.refresh_token ?? "").trim());
+        const hasUsername = Boolean((form.creds.username ?? "").trim());
+        const hasPassword = Boolean((form.creds.password ?? "").trim());
+        if (!hasRefreshToken && (!hasUsername || !hasPassword)) {
+          show("请填写用户名和密码，或填写与平台匹配的 Refresh Token", "error");
+          return;
+        }
+      }
+      const missingField = isGuidedProvider(form.kind) ? undefined : credentialFields(form.kind).find(
         (field) =>
           field.required &&
           !((form.creds[field.key] ?? field.defaultValue ?? "").trim())
@@ -268,15 +354,30 @@ export function DrivesPage() {
     const rootId = usesRootDirectoryID(form.kind)
       ? form.rootId.trim() || defaultRootId(form.kind)
       : defaultRootId(form.kind);
+    const storageCredentials = storageCredentialsForSave(form.creds);
+    const clearCredentials = form.kind === "webdav" && providerOptions.webdavAuth === "anonymous"
+      ? ["username", "password"]
+      : form.kind === "onedrive" && providerOptions.oneDriveTarget === "personal"
+        ? ["site_id", "drive_id"]
+        : undefined;
     setSaving(true);
     try {
-      const resp = await api.upsertDrive({
-        id: driveID,
-        kind: form.kind,
-        name,
-        rootId,
-        credentials: form.creds,
-      });
+      const resp = ["onedrive", "googledrive", "webdav", "s3"].includes(form.kind)
+        ? await api.saveStorageAccount({
+            id: driveID,
+            kind: form.kind,
+            name,
+            rootId,
+            credentials: storageCredentials,
+            clearCredentials,
+          }, Boolean(existing))
+        : await api.upsertDrive({
+            id: driveID,
+            kind: form.kind,
+            name,
+            rootId,
+            credentials: form.creds,
+          });
 
       if (resp.warning) {
         show(`已保存，但 driver 初始化失败：${resp.warning}`, "error");
@@ -566,6 +667,7 @@ export function DrivesPage() {
   if (selectedDriveId && selectedDrive) {
     const d = selectedDrive;
     const driveStorage = storage?.drives[d.id];
+    const pikpakCaptchaURL = d.kind === "pikpak" ? pikpakCaptchaVerificationURL(d.lastError) : "";
 
     return (
       <section className="admin-drives-page">
@@ -605,7 +707,13 @@ export function DrivesPage() {
                   </div>
                 )}
               </div>
-              {d.lastError && (
+              {pikpakCaptchaURL ? (
+                <div className="admin-detail-error">
+                  PikPak 需要完成交互验证码。
+                  <a href={pikpakCaptchaURL} target="_blank" rel="noreferrer">完成 PikPak 验证码</a>
+                  后编辑凭证并填入 Captcha Token，或改用与平台匹配的 Refresh Token。
+                </div>
+              ) : d.lastError && (
                 <div className="admin-detail-error">{d.lastError}</div>
               )}
 
@@ -729,6 +837,7 @@ export function DrivesPage() {
             form={form}
             onChange={setForm}
             isEdit={true}
+            providerManifest={providerManifests.find((manifest) => manifest.kind === form.kind)}
           />
         </Modal>
         <DeleteDriveModal
@@ -872,7 +981,7 @@ export function DrivesPage() {
               onClick={handleSave}
               disabled={saving}
             >
-              {saving ? "保存中..." : "保存"}
+              {saving ? "正在测试连接..." : form.id ? "测试并保存" : "测试并添加"}
             </button>
           </>
         ) : undefined}
@@ -882,6 +991,7 @@ export function DrivesPage() {
           onChange={handleCreateFormChange}
           isEdit={!!list.find((x) => x.id === form.id)}
           onTypeSelected={() => setCreateDriveTypeSelected(true)}
+          providerManifest={providerManifests.find((manifest) => manifest.kind === form.kind)}
         />
       </Modal>
       <DeleteDriveModal

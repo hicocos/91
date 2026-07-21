@@ -186,7 +186,11 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) error {
 		return err
 	}
 	defer f.Close()
-	fileID, err := w.drv.Upload(ctx, dirID, transcodedName(v), f, stat.Size())
+	uploader, ok := w.drv.(drives.Uploader)
+	if !ok {
+		return fmt.Errorf("drive is a read-only source and cannot store transcoded output")
+	}
+	fileID, err := uploader.Upload(ctx, dirID, transcodedName(v), f, stat.Size())
 	if err != nil {
 		return fmt.Errorf("upload transcoded file: %w", err)
 	}
@@ -229,7 +233,11 @@ func (w *Worker) downloadTo(ctx context.Context, link *drives.StreamLink, dst st
 			req.Header.Add(k, val)
 		}
 	}
-	res, err := w.hc.Do(req)
+	client := w.hc
+	if link.PublicNetworkOnly {
+		client = streamhttp.NewPublicNetworkClient(0)
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -252,7 +260,12 @@ func (w *Worker) downloadTo(ctx context.Context, link *drives.StreamLink, dst st
 // 跳过列表（幂等），避免 scanner 把产物再当新视频收进库。
 func (w *Worker) ensureTargetDir(ctx context.Context) (string, error) {
 	w.targetDirOnce.Do(func() {
-		dirID, err := w.drv.EnsureDir(ctx, w.cfg.TargetDirName)
+		ensurer, ok := w.drv.(drives.DirectoryEnsurer)
+		if !ok {
+			w.targetDirErr = fmt.Errorf("drive is a read-only source and cannot create output directories")
+			return
+		}
+		dirID, err := ensurer.EnsureDir(ctx, w.cfg.TargetDirName)
 		if err != nil {
 			w.targetDirErr = err
 			return

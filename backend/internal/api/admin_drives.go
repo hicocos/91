@@ -30,6 +30,11 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	mediaCounts, err := a.Catalog.CountMediaByDrive(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	transcodeCounts, err := a.Catalog.CountTranscodesByDrive(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -78,6 +83,8 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		TranscodeReadyCount           int              `json:"transcodeReadyCount"`
 		TranscodeFailedCount          int              `json:"transcodeFailedCount"`
 		TranscodeSkippedCount         int              `json:"transcodeSkippedCount"`
+		VideoCount                    int              `json:"videoCount"`
+		AudioCount                    int              `json:"audioCount"`
 	}
 	list := make([]out, 0, len(drives))
 	for _, d := range drives {
@@ -87,6 +94,7 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		counts := teaserCounts[d.ID]
 		thumbCounts := thumbnailCounts[d.ID]
 		fingerprintCount := fingerprintCounts[d.ID]
+		mediaCount := mediaCounts[d.ID]
 		transcodeCount := transcodeCounts[d.ID]
 		generation := generationStatuses[d.ID]
 		if generation.Scan.State == "" {
@@ -152,6 +160,8 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 			TranscodeReadyCount:           transcodeCount.Ready,
 			TranscodeFailedCount:          transcodeCount.Failed,
 			TranscodeSkippedCount:         transcodeCount.Skipped,
+			VideoCount:                    mediaCount.Video,
+			AudioCount:                    mediaCount.Audio,
 		})
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -194,6 +204,10 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "unsupported drive kind", http.StatusBadRequest)
 		return
 	}
+	if targetStorageKinds[body.Kind] {
+		a.saveStorageAccount(w, r, probeAccountRequest{ID: body.ID, Kind: body.Kind, Name: body.Name, RootID: body.RootID, Credentials: body.Credentials})
+		return
+	}
 	if body.Kind == scriptcrawler.Kind {
 		credentials, err := mergeScriptCrawlerCredentials(existing, body.Credentials)
 		if err != nil {
@@ -203,7 +217,7 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 		body.Credentials = credentials
 	} else if body.Kind == "googledrive" {
 		body.Credentials = mergeGoogleDriveCredentials(existing, body.Credentials)
-	} else if body.Kind == "localstorage" || body.Kind == "guangyapan" || body.Kind == "webdav" {
+	} else if body.Kind == "localstorage" || body.Kind == "guangyapan" || body.Kind == "webdav" || body.Kind == "onedrive" || body.Kind == "s3" {
 		// 按键合并、空值沿用旧值：这些网盘的编辑表单允许只改某几个字段，
 		// 其它 token / 路径 / 开关字段应保留旧值。
 		body.Credentials = mergeNonEmptyCredentials(existing, body.Credentials)

@@ -16,6 +16,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/video-site/backend/internal/storageproviders"
 	"github.com/video-site/backend/internal/tagging"
 )
 
@@ -31,6 +32,10 @@ type Catalog struct {
 	matcherMu      sync.Mutex
 	matcherVersion int64
 	matcher        *tagging.Matcher
+
+	// driveCredentialsMu serializes full drive saves with field-level credential
+	// refreshes so a late token callback cannot restore an older config snapshot.
+	driveCredentialsMu sync.Mutex
 }
 
 type CrawlerAssetCounts struct {
@@ -68,7 +73,52 @@ func Open(path string) (*Catalog, error) {
 
 func (c *Catalog) Close() error { return c.db.Close() }
 
+func (c *Catalog) OAuthFlowKey() []byte {
+	return append([]byte(nil), c.credentialsCipher.key...)
+}
+
+func (c *Catalog) PutOAuthFlow(record storageproviders.OAuthFlowRecord) error {
+	_, err := c.db.Exec(`INSERT INTO oauth_pending_flows
+		(state_hash, session_hash, provider, redirect_uri, nonce, pending_config, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(state_hash) DO UPDATE SET session_hash=excluded.session_hash,
+		provider=excluded.provider, redirect_uri=excluded.redirect_uri, nonce=excluded.nonce,
+		pending_config=excluded.pending_config, expires_at=excluded.expires_at`,
+		record.StateHash, record.SessionHash, record.Provider, record.RedirectURI,
+		record.Nonce, record.Pending, record.ExpiresAt.UnixMilli())
+	return err
+}
+
+func (c *Catalog) TakeOAuthFlow(stateHash, sessionHash, provider, redirectURI string) (storageproviders.OAuthFlowRecord, bool, error) {
+	var record storageproviders.OAuthFlowRecord
+	var expires int64
+	err := c.db.QueryRow(`DELETE FROM oauth_pending_flows
+		WHERE state_hash = ? AND session_hash = ? AND provider = ? AND redirect_uri = ?
+		RETURNING state_hash, session_hash, provider, redirect_uri, nonce, pending_config, expires_at`,
+		stateHash, sessionHash, provider, redirectURI).Scan(
+		&record.StateHash, &record.SessionHash, &record.Provider, &record.RedirectURI,
+		&record.Nonce, &record.Pending, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storageproviders.OAuthFlowRecord{}, false, nil
+	}
+	if err != nil {
+		return storageproviders.OAuthFlowRecord{}, false, err
+	}
+	record.ExpiresAt = time.UnixMilli(expires)
+	return record, true, nil
+}
+
+func (c *Catalog) DeleteOAuthFlow(stateHash string) error {
+	_, err := c.db.Exec(`DELETE FROM oauth_pending_flows WHERE state_hash = ?`, stateHash)
+	return err
+}
+
 // ---------- Video ----------
+
+const (
+	MediaTypeVideo = "video"
+	MediaTypeAudio = "audio"
+)
 
 type Video struct {
 	ID                string   `json:"id"`
@@ -87,6 +137,7 @@ type Video struct {
 	DurationSeconds   int      `json:"durationSeconds"`
 	Size              int64    `json:"size"`
 	Ext               string   `json:"ext"`
+	MediaType         string   `json:"mediaType"`
 	Quality           string   `json:"quality"`
 	ThumbnailURL      string   `json:"thumbnailUrl"`
 	PreviewFileID     string   `json:"previewFileId"`
@@ -115,6 +166,7 @@ type Video struct {
 
 func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
 	existed := c.videoExists(ctx, v.ID)
+	v.MediaType = normalizeMediaType(v.MediaType)
 	v.ContentHash = normalizeContentHash(v.ContentHash)
 	v.SampledSHA256 = normalizeContentHash(v.SampledSHA256)
 	fingerprintStatus := nullableStatus(v.FingerprintStatus)
@@ -133,13 +185,13 @@ func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
 	_, err := c.db.ExecContext(ctx, `
 INSERT INTO videos (
   id, drive_id, file_id, file_name, content_hash, sampled_sha256, fingerprint_status, fingerprint_error, parent_id, dir_name, title, author, tags,
-  duration_seconds, size_bytes, ext, quality, thumbnail_url, thumbnail_status,
+  duration_seconds, size_bytes, ext, media_type, quality, thumbnail_url, thumbnail_status,
 	  preview_file_id, preview_local, preview_status,
 	  views, last_viewed_at, favorites, comments, likes, dislikes,
 	  hidden, badges, description, published_at, created_at, updated_at
 	) VALUES (
 	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	  ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
+	  ?, ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
 	  ?, ?, ?,
 	  ?, ?, ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?, ?
@@ -181,6 +233,7 @@ ON CONFLICT(id) DO UPDATE SET
   duration_seconds= excluded.duration_seconds,
   size_bytes      = excluded.size_bytes,
   ext             = excluded.ext,
+  media_type      = excluded.media_type,
   quality         = excluded.quality,
   thumbnail_url   = excluded.thumbnail_url,
   -- thumbnail_url 写非空就意味着文件已就绪（要么 worker 抽帧填的本地 /p/thumb/<id>，
@@ -196,7 +249,7 @@ ON CONFLICT(id) DO UPDATE SET
   updated_at      = excluded.updated_at
 `,
 		v.ID, v.DriveID, v.FileID, v.FileName, v.ContentHash, v.SampledSHA256, fingerprintStatus, v.FingerprintError, v.ParentID, v.DirName, v.Title, v.Author, string(tagsJSON),
-		v.DurationSeconds, v.Size, v.Ext, v.Quality, v.ThumbnailURL, v.ThumbnailURL,
+		v.DurationSeconds, v.Size, v.Ext, v.MediaType, v.Quality, v.ThumbnailURL, v.ThumbnailURL,
 		v.PreviewFileID, v.PreviewLocal, nullableStatus(v.PreviewStatus),
 		v.Views, unixMilliOrZero(v.LastViewedAt), v.Favorites, v.Comments, v.Likes, v.Dislikes,
 		boolToInt(v.Hidden), string(badgesJSON), v.Description,
@@ -239,7 +292,8 @@ func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status st
 // mp4/webm/m4v 默认浏览器可播不进候选；strm 是远程引用没有本体。
 // 其余扩展名都先入候选，由转码 worker probe 实际编码后决定转码还是跳过
 // （skipped）。failed 也保留在候选里，重新点开始转码时会自动重试。
-const transcodeCandidateWhereSQL = `COALESCE(ext, '') NOT IN ('mp4', 'webm', 'm4v', 'strm')
+const transcodeCandidateWhereSQL = `COALESCE(media_type, 'video') = 'video'
+	AND COALESCE(ext, '') NOT IN ('mp4', 'webm', 'm4v', 'strm')
 	AND COALESCE(transcode_status, '') IN ('', 'pending', 'failed')`
 
 // ListTranscodeCandidates 列出某盘所有转码候选视频。limit<=0 表示不限制。
@@ -296,6 +350,7 @@ func (c *Catalog) CountTranscodesByDrive(ctx context.Context) (map[string]DriveT
 		        COUNT(CASE WHEN COALESCE(transcode_status, '') = 'failed' THEN 1 END) AS failed_count,
 		        COUNT(CASE WHEN COALESCE(transcode_status, '') = 'skipped' THEN 1 END) AS skipped_count
 		  FROM videos
+		 WHERE COALESCE(media_type, 'video') = 'video'
 		 GROUP BY drive_id`)
 	if err != nil {
 		return nil, err
@@ -643,6 +698,7 @@ func (c *Catalog) ListVideosByPreviewStatus(ctx context.Context, driveID, status
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ? AND preview_status = ?
+		   AND COALESCE(media_type, 'video') = 'video'
 		   AND COALESCE(hidden, 0) = 0
 		   AND `+uniqueVideoWhereSQL+`
 		 ORDER BY created_at ASC LIMIT ?`,
@@ -674,6 +730,7 @@ func (c *Catalog) ListVideosByThumbnailStatus(ctx context.Context, driveID, stat
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ? AND COALESCE(thumbnail_status, 'pending') = ?
+		   AND COALESCE(media_type, 'video') = 'video'
 		   AND COALESCE(hidden, 0) = 0
 		   AND `+uniqueVideoWhereSQL+`
 		 ORDER BY created_at ASC LIMIT ?`,
@@ -708,6 +765,7 @@ func (c *Catalog) ListVideosNeedingThumbnail(ctx context.Context, driveID string
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
+		   AND COALESCE(media_type, 'video') = 'video'
 		   AND (
 		        COALESCE(thumbnail_url, '') = ''
 		        OR COALESCE(duration_seconds, 0) <= 0
@@ -1470,7 +1528,7 @@ DELETE FROM deleted_videos
 // current=当前可见（与「当前视频」页一致的去重+在线盘+hidden=0 口径），
 // blacklisted=仍有源文件待管理的黑名单墓碑数。
 func (c *Catalog) VideoManagementCounts(ctx context.Context) (current, blacklisted int, err error) {
-	currentSQL := `SELECT COUNT(*) FROM videos WHERE COALESCE(hidden, 0) = 0 AND ` + activeDriveWhereSQL + ` AND ` + uniqueVideoWhereSQL
+	currentSQL := `SELECT COUNT(*) FROM videos WHERE COALESCE(hidden, 0) = 0 AND COALESCE(media_type, 'video') = 'video' AND ` + activeDriveWhereSQL + ` AND ` + uniqueVideoWhereSQL
 	if err = c.db.QueryRowContext(ctx, currentSQL).Scan(&current); err != nil {
 		return 0, 0, err
 	}
@@ -1727,6 +1785,7 @@ func (c *Catalog) ListVideosNeedingFingerprint(ctx context.Context, driveID stri
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
+		   AND COALESCE(media_type, 'video') = 'video'
 		   AND size_bytes > 0
 		   AND COALESCE(sampled_sha256, '') = ''
 		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
@@ -1759,6 +1818,7 @@ func (c *Catalog) ListVideosByFingerprintStatus(ctx context.Context, driveID, st
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
+		   AND COALESCE(media_type, 'video') = 'video'
 		   AND COALESCE(sampled_sha256, '') = ''
 		   AND COALESCE(fingerprint_status, 'pending') = ?
 		   AND COALESCE(hidden, 0) = 0
@@ -1809,6 +1869,7 @@ type ListParams struct {
 	Keyword               string
 	DriveID               string
 	Tag                   string
+	MediaType             string
 	Sort                  string // latest | hot | recent
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
@@ -1828,6 +1889,8 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 
 	var where []string
 	var args []any
+	where = append(where, "COALESCE(media_type, 'video') = ?")
+	args = append(args, normalizeMediaType(p.MediaType))
 	if p.Keyword != "" {
 		where = append(where, "(title LIKE ? OR author LIKE ? OR file_name LIKE ?)")
 		like := "%" + p.Keyword + "%"
@@ -1900,6 +1963,7 @@ func (c *Catalog) CountVisibleVideos(ctx context.Context) (int, error) {
 	err := c.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM videos
 		  WHERE COALESCE(hidden, 0) = 0
+		    AND COALESCE(media_type, 'video') = 'video'
 		    AND `+activeDriveWhereSQL+`
 		    AND `+uniqueVideoWhereSQL,
 	).Scan(&total)
@@ -1916,6 +1980,7 @@ func (c *Catalog) ListVisibleVideoIDs(ctx context.Context) ([]string, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT videos.id FROM videos
 		  WHERE COALESCE(videos.hidden, 0) = 0
+		    AND COALESCE(videos.media_type, 'video') = 'video'
 		    AND `+activeDriveWhereSQL+`
 		    AND `+uniqueVideoWhereSQL+`
 		  ORDER BY videos.id ASC`)
@@ -1947,6 +2012,7 @@ func (c *Catalog) ListVisibleVideoIDsByThumbnailReadiness(ctx context.Context) (
 		        CASE WHEN COALESCE(videos.thumbnail_url, '') != '' THEN 1 ELSE 0 END
 		   FROM videos
 		  WHERE COALESCE(videos.hidden, 0) = 0
+		    AND COALESCE(videos.media_type, 'video') = 'video'
 		    AND `+activeDriveWhereSQL+`
 		    AND `+uniqueVideoWhereSQL+`
 		  ORDER BY videos.id ASC`)
@@ -2192,6 +2258,7 @@ func (c *Catalog) CountFingerprintsByDrive(ctx context.Context) (map[string]Driv
 		                     AND COALESCE(fingerprint_status, 'pending') = 'failed' THEN 1 END) AS failed_count
 		   FROM videos
 		  WHERE COALESCE(hidden, 0) = 0
+		    AND COALESCE(media_type, 'video') = 'video'
 		  GROUP BY drive_id`)
 	if err != nil {
 		return nil, err
@@ -2513,6 +2580,12 @@ type Drive struct {
 }
 
 func (c *Catalog) UpsertDrive(ctx context.Context, d *Drive) error {
+	c.driveCredentialsMu.Lock()
+	defer c.driveCredentialsMu.Unlock()
+	return c.upsertDriveLocked(ctx, d)
+}
+
+func (c *Catalog) upsertDriveLocked(ctx context.Context, d *Drive) error {
 	normalizeDriveRootFields(d)
 	cred, err := c.credentialsCipher.encrypt(d.ID, d.Credentials)
 	if err != nil {
@@ -2545,6 +2618,58 @@ ON CONFLICT(id) DO UPDATE SET
 `, d.ID, d.Kind, d.Name, d.RootID, d.ScanRootID, cred, d.Status, d.LastError, boolToInt(d.TeaserEnabled), string(skipDirsJSON),
 		d.CreatedAt.UnixMilli(), d.UpdatedAt.UnixMilli())
 	return err
+}
+
+func (c *Catalog) ReplaceDriveIfCurrent(ctx context.Context, current, replacement *Drive) (bool, error) {
+	if current == nil || replacement == nil || strings.TrimSpace(current.ID) == "" || current.ID != replacement.ID {
+		return false, errors.New("catalog: conditional drive replacement requires matching drives")
+	}
+	c.driveCredentialsMu.Lock()
+	defer c.driveCredentialsMu.Unlock()
+	now := time.Now().UnixMilli()
+	if current.UpdatedAt.IsZero() {
+		return false, errors.New("catalog: conditional drive replacement requires current revision")
+	}
+	normalizeDriveRootFields(replacement)
+	cred, err := c.credentialsCipher.encrypt(replacement.ID, replacement.Credentials)
+	if err != nil {
+		return false, fmt.Errorf("catalog: encrypt drive %q credentials: %w", replacement.ID, err)
+	}
+	skipDirs := replacement.SkipDirIDs
+	if skipDirs == nil {
+		skipDirs = []string{}
+	}
+	skipDirsJSON, _ := json.Marshal(skipDirs)
+	res, err := c.db.ExecContext(ctx, `UPDATE drives SET
+	kind = ?, name = ?, root_id = ?, scan_root_id = ?, credentials = ?, status = ?, last_error = ?, teaser_enabled = ?, skip_dir_ids = ?, updated_at = ?
+	WHERE id = ? AND updated_at = ?`, replacement.Kind, replacement.Name, replacement.RootID, replacement.ScanRootID, cred,
+		replacement.Status, replacement.LastError, boolToInt(replacement.TeaserEnabled), string(skipDirsJSON), now,
+		current.ID, current.UpdatedAt.UnixMilli())
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	return rows == 1, err
+}
+
+// MergeDriveCredentials reloads the current row, changes only the requested
+// credential keys, and persists it while holding the same lock as UpsertDrive.
+// This prevents a late provider token callback from overwriting a concurrent
+// administrator edit with the driver's old in-memory Drive snapshot.
+func (c *Catalog) MergeDriveCredentials(ctx context.Context, id string, updates map[string]string) error {
+	c.driveCredentialsMu.Lock()
+	defer c.driveCredentialsMu.Unlock()
+	d, err := c.GetDrive(ctx, id)
+	if err != nil {
+		return err
+	}
+	if d.Credentials == nil {
+		d.Credentials = make(map[string]string)
+	}
+	for key, value := range updates {
+		d.Credentials[key] = value
+	}
+	return c.upsertDriveLocked(ctx, d)
 }
 
 func normalizeDriveRootFields(d *Drive) {
@@ -2674,6 +2799,8 @@ func (c *Catalog) GetDrive(ctx context.Context, id string) (*Drive, error) {
 }
 
 func (c *Catalog) DeleteDrive(ctx context.Context, id string) error {
+	c.driveCredentialsMu.Lock()
+	defer c.driveCredentialsMu.Unlock()
 	_, err := c.db.ExecContext(ctx, `DELETE FROM drives WHERE id = ?`, id)
 	return err
 }
@@ -2692,13 +2819,24 @@ func (c *Catalog) SetDriveRuntimeStatus(ctx context.Context, id, status, lastErr
 	}
 	// Avoid touching updated_at when retries report a state already persisted.
 	// This keeps admin polling useful and prevents needless SQLite writes.
-	_, err := c.db.ExecContext(ctx, `
+	res, err := c.db.ExecContext(ctx, `
 UPDATE drives
    SET status = ?, last_error = ?, updated_at = ?
  WHERE id = ?
    AND (COALESCE(status, '') != ? OR COALESCE(last_error, '') != ?)`,
 		status, lastError, time.Now().UnixMilli(), id, status, lastError)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		var exists int
+		if err := c.db.QueryRowContext(ctx, `SELECT 1 FROM drives WHERE id = ?`, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return sql.ErrNoRows
+		} else if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetDriveTeaserEnabled 切换某盘的预览视频生成开关。
@@ -2893,7 +3031,7 @@ const allVideoCols = `
 id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''),
 COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(fingerprint_error, ''),
 COALESCE(parent_id, ''), COALESCE(dir_name, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
-duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
+duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(media_type, 'video'), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_status, 'pending'),
 	COALESCE(transcode_status, ''), COALESCE(transcode_error, ''), COALESCE(transcoded_file_id, ''), COALESCE(transcoded_size, 0),
 	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
@@ -2917,6 +3055,7 @@ const uniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 			SELECT 1
 			FROM videos AS dup
 			WHERE dup.content_hash = videos.content_hash
+			  AND COALESCE(dup.media_type, 'video') = COALESCE(videos.media_type, 'video')
 			  AND COALESCE(dup.content_hash, '') != ''
 			  AND (
 				dup.created_at < videos.created_at
@@ -2929,6 +3068,7 @@ const uniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 			SELECT 1
 			FROM videos AS dup
 			WHERE dup.sampled_sha256 = videos.sampled_sha256
+			  AND COALESCE(dup.media_type, 'video') = COALESCE(videos.media_type, 'video')
 			  AND dup.size_bytes = videos.size_bytes
 			  AND COALESCE(dup.sampled_sha256, '') != ''
 			  AND dup.size_bytes > 0
@@ -2943,6 +3083,7 @@ const uniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 			SELECT 1
 			FROM videos AS dup
 			WHERE dup.file_name = videos.file_name
+			  AND COALESCE(dup.media_type, 'video') = COALESCE(videos.media_type, 'video')
 			  AND dup.size_bytes = videos.size_bytes
 			  AND COALESCE(dup.file_name, '') != ''
 			  AND dup.size_bytes > 0
@@ -2965,7 +3106,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash,
 		&v.SampledSHA256, &v.FingerprintStatus, &v.FingerprintError,
 		&v.ParentID, &v.DirName, &v.Title, &v.Author, &tagsJSON,
-		&v.DurationSeconds, &v.Size, &v.Ext, &v.Quality, &v.ThumbnailURL,
+		&v.DurationSeconds, &v.Size, &v.Ext, &v.MediaType, &v.Quality, &v.ThumbnailURL,
 		&v.PreviewFileID, &v.PreviewLocal, &v.PreviewStatus,
 		&v.TranscodeStatus, &v.TranscodeError, &v.TranscodedFileID, &v.TranscodedSize,
 		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &lastLikedAt, &v.Dislikes,
@@ -2992,6 +3133,13 @@ func scanVideo(row rowScanner) (*Video, error) {
 
 func normalizeContentHash(hash string) string {
 	return strings.ToLower(strings.TrimSpace(hash))
+}
+
+func normalizeMediaType(mediaType string) string {
+	if strings.EqualFold(strings.TrimSpace(mediaType), MediaTypeAudio) {
+		return MediaTypeAudio
+	}
+	return MediaTypeVideo
 }
 
 func normalizeDeletedVideoReason(reason string) string {

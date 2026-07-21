@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/storageproviders"
 )
 
 const (
@@ -47,6 +48,10 @@ type Config struct {
 	Username string
 	Password string
 	RootID   string
+	// ValidateEndpoint is called before each request. Server composition wires
+	// the shared DNS/IP policy so rebinding is checked at actual dial time.
+	ValidateEndpoint func(string) error
+	HTTPClient       *http.Client
 }
 
 type Driver struct {
@@ -55,27 +60,35 @@ type Driver struct {
 	username string
 	password string
 
-	baseURL   *url.URL
-	basePath  string
-	configErr error
-	metadata  *http.Client
-	transfer  *http.Client
+	baseURL          *url.URL
+	basePath         string
+	configErr        error
+	metadata         *http.Client
+	transfer         *http.Client
+	validateEndpoint func(string) error
 }
 
 func New(c Config) *Driver {
 	rootID, rootErr := normalizeRemotePath(c.RootID)
 	baseURL, basePath, baseErr := parseBaseURL(c.BaseURL)
 	configErr := errors.Join(rootErr, baseErr)
+	metadataClient := c.HTTPClient
+	transferClient := c.HTTPClient
+	if metadataClient == nil {
+		metadataClient = storageproviders.NewEndpointHTTPClient(metadataTimeout)
+		transferClient = storageproviders.NewEndpointHTTPClient(0)
+	}
 	return &Driver{
-		id:        strings.TrimSpace(c.ID),
-		rootID:    rootID,
-		username:  strings.TrimSpace(c.Username),
-		password:  c.Password,
-		baseURL:   baseURL,
-		basePath:  basePath,
-		configErr: configErr,
-		metadata:  newHTTPClient(metadataTimeout),
-		transfer:  newHTTPClient(0),
+		id:               strings.TrimSpace(c.ID),
+		rootID:           rootID,
+		username:         strings.TrimSpace(c.Username),
+		password:         c.Password,
+		baseURL:          baseURL,
+		basePath:         basePath,
+		configErr:        configErr,
+		metadata:         metadataClient,
+		transfer:         transferClient,
+		validateEndpoint: c.ValidateEndpoint,
 	}
 }
 
@@ -446,6 +459,11 @@ func (d *Driver) newRequest(ctx context.Context, method, remotePath string, dire
 	u, err := d.urlFor(remotePath, directoryHint)
 	if err != nil {
 		return nil, err
+	}
+	if d.validateEndpoint != nil {
+		if err := d.validateEndpoint(u); err != nil {
+			return nil, fmt.Errorf("webdav endpoint policy: %w", err)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {

@@ -12,7 +12,7 @@ import (
 
 // Drive 是多家网盘统一抽象。上层不区分盘，只区分 Kind。
 type Drive interface {
-	// Kind 返回驱动代号："quark" / "p115" / "p123" / "pikpak" / "wopan" / "guangyapan" / "onedrive" / "googledrive" / "webdav" / "localstorage"
+	// Kind 返回驱动代号，包括 onedrive / googledrive / webdav / s3 等。
 	Kind() string
 
 	// ID 返回该盘在 catalog 中的唯一标识
@@ -31,15 +31,18 @@ type Drive interface {
 	// 代理层据此回源，透传 Range
 	StreamURL(ctx context.Context, fileID string) (*StreamLink, error)
 
-	// Upload 把本地流写入指定目录，返回新文件 fileID。
-	// 当前预览视频和封面只保存在本地，不再通过该方法写回网盘。
-	Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error)
-
-	// EnsureDir 保证指定路径存在（相对根目录），返回最终目录 fileID。
-	EnsureDir(ctx context.Context, pathFromRoot string) (string, error)
-
 	// RootID 返回根目录 fileID
 	RootID() string
+}
+
+// Uploader and DirectoryEnsurer preserve the project's existing upload paths
+// while allowing newly added providers such as S3 to remain read-only.
+type Uploader interface {
+	Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error)
+}
+
+type DirectoryEnsurer interface {
+	EnsureDir(ctx context.Context, pathFromRoot string) (string, error)
 }
 
 // Remover is an optional drive capability. It mirrors OpenList's optional
@@ -82,6 +85,11 @@ type StreamLink struct {
 	URL     string
 	Headers http.Header
 	Expires time.Time
+
+	// PublicNetworkOnly marks an untrusted HTTP(S) URL (currently emitted only
+	// by localstorage .strm files). Consumers must resolve and dial only public
+	// addresses on every request/redirect hop.
+	PublicNetworkOnly bool
 
 	// PassThroughRedirects tells the online playback proxy to make the first
 	// authenticated request itself, but relay an upstream 3xx Location to the

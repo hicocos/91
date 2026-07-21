@@ -14,10 +14,11 @@ services:
       - "127.0.0.1:9191:9191"
 
     volumes:
-      - ./data:/opt/video-site-91/data
+      - ./data:/data
 
     environment:
       VIDEO_GITHUB_REPO: hicocos/91
+      VIDEO_PUBLIC_ORIGIN: ${VIDEO_PUBLIC_ORIGIN:-https://91s.lolicc.cc}
 
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9191/healthz"]

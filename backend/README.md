@@ -19,9 +19,9 @@ internal/
     quark/                  夸克（自己实现，参考 OpenList quark_uc）
     p115/                   115（壳子 + SheltonZhu/115driver）
     pikpak/                 PikPak（自己实现，参考 OpenList pikpak）
-    wopan/                  联通网盘（壳子 + OpenListTeam/wopan-sdk-go）
+    wopan/                  联通网盘（内置 Apache-2.0 客户端）
     guangyapan/             光鸭网盘（参考 AList GuangYaPan）
-    onedrive/               OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
+    onedrive/               OneDrive（Microsoft OAuth 续期 + Graph 文件接口）
     googledrive/            Google Drive（自建 OAuth 续期 + Google Drive API；播放走后端代理）
     webdav/                 标准 WebDAV（扫描、代理播放、上传、移动和删除）
     localstorage/           本地目录扫描（服务器已有视频目录）
@@ -128,25 +128,27 @@ location / {
 |--------|---------------------------------------------------------------|
 | quark  | `cookie`                                                      |
 | p115   | `cookie`（形如 `UID=...; CID=...; SEID=...; KID=...`）         |
-| pikpak | `username`、`password`（token、验证码和设备 ID 由服务端自动处理并保存） |
+| pikpak | 推荐 `refresh_token` + 匹配的 `platform`；也可用 `username`、`password` 首次登录。验证码风控时可填写 `captcha_token`，`device_id` 可选 |
 | wopan  | `access_token`、`refresh_token`                               |
 | guangyapan | 推荐后台扫码登录自动写入 `access_token`、`refresh_token`；也可手工填写 token |
-| onedrive | `refresh_token` |
+| onedrive | `refresh_token`、`client_id`，机密客户端另填 `client_secret` |
 | googledrive | `refresh_token`、`client_id`、`client_secret` |
-| webdav | `base_url`、`username`、`password`（例如 OpenList 的 `https://example.com/dav`） |
+| webdav | `base_url`、`username`、`password`（任意标准 WebDAV 服务） |
 | localstorage | `path`（服务器上的已有视频目录，如 `/mnt/videos`） |
 
 ### PikPak 速度说明
+
+PikPak 推荐使用 Refresh Token 挂载：Web 端取得的 Token 必须选择 `web`，官方 Android 客户端取得的 Token 必须选择 `android`。账号密码方式会先向 PikPak 申请 Captcha Token，再登录并保存 Refresh Token 与 Device ID；如果服务端返回验证 URL，需要先完成验证码并把取得的 `captcha_token` 填回后台。遇到“操作频繁”时不要连续重试，它通常是账号或出口 IP 的临时风控。
 
 `disable_media_link` 默认按 `true` 处理，会使用 PikPak 的 `web_content_link` 原始下载链接；在当前服务器实测，单连接通常只有约 2.8-3 MiB/s。把该字段设置为 `false` 后，驱动会请求 `usage=CACHE` 并优先使用 `medias[].link.url`，当前服务器实测 `/p/stream` 64 MiB Range 可到约 8.9 MiB/s。
 
 当前服务器同时存在 sing-box TUN 透明代理，PikPak 默认出站会被 `tun0` 接管；但强制直连物理网卡并没有更快，慢速的主要差异来自 PikPak 取链方式。media/cache CDN 节点仍有波动，偶尔可能遇到慢节点；如果播放变慢，可重新获取直链或重新挂载 PikPak 后再测。
 
-OneDrive 按 OpenList 默认应用方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token，不需要配置 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。后台新建 OneDrive 时只需要填 OpenList 代刷得到的 `refresh_token`；服务端会默认挂载根目录并自动回写新 token。
+OneDrive 使用你自己的 Microsoft Entra OAuth 应用直接向 Microsoft token endpoint 续期，不会把 refresh token 发送给第三方代刷新服务。后台可通过 OAuth 授权连接，也可手工填写同一应用签发的 `refresh_token` 与 `client_id`；机密客户端再填写 `client_secret`。服务端会默认挂载根目录并自动回写轮换后的 token。
 
 Google Drive 仅支持自建 OAuth 客户端认证。后台新建时需填写同一个 Google OAuth 客户端授权得到的 `refresh_token`、`client_id`、`client_secret`，服务端会直接请求 Google OAuth token 接口续期，不依赖 OpenList 在线 API。Google Drive 下载地址必须携带 `Authorization` 头，浏览器不能直接 302 使用，所以本站会由后端代理 `/p/stream` 播放，不加入零带宽 302 白名单。
 
-WebDAV 使用标准 HTTP/WebDAV 方法：`PROPFIND` 扫描，`GET` / `HEAD`（含 `Range`）播放，`PUT` 上传，`MKCOL` 建目录，`MOVE` 重命名，`DELETE` 删除原文件。`rootId` 是 WebDAV 端点下的绝对路径，留空时为 `/`。播放先经 `/p/stream` 完成 WebDAV 认证：上游返回 `200/206` 时由后端代理数据，返回 `3xx` 时则将不含 WebDAV 凭据的直链交给浏览器，因此 OpenList 的 WebDAV 302 策略会保持直连。服务端本身不处理加解密；如果连接 OpenList 的 Crypt 存储，加解密由 OpenList 透明完成。扫描和播放至少需要读取权限，爬虫上传、重命名及“删除原文件”还需要 WebDAV 账号具备对应写入/管理权限。
+WebDAV 使用标准 HTTP/WebDAV 方法：`PROPFIND` 扫描，`GET` / `HEAD`（含 `Range`）播放，`PUT` 上传，`MKCOL` 建目录，`MOVE` 重命名，`DELETE` 删除原文件。`rootId` 是 WebDAV 端点下的绝对路径，留空时为 `/`。播放先经 `/p/stream` 完成 WebDAV 认证：上游返回 `200/206` 时由后端代理数据，返回 `3xx` 时则将不含 WebDAV 凭据的直链交给浏览器。91 不安装或依赖任何特定 WebDAV 服务端；扫描和播放至少需要读取权限，爬虫上传、重命名及“删除原文件”还需要账号具备对应写入/管理权限。
 
 ## 文件名约定
 

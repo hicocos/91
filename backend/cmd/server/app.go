@@ -95,6 +95,10 @@ type App struct {
 type driveScanProgress struct {
 	Scanned       int
 	Added         int
+	VideoScanned  int
+	AudioScanned  int
+	VideoAdded    int
+	AudioAdded    int
 	CooldownUntil time.Time
 }
 

@@ -20,7 +20,7 @@
 ## 功能特性
 
 - **多后端支持** — 兼容 115 云盘、PikPak 云盘、123网盘、联通网盘、光鸭网盘、OneDrive、Google Drive、标准 WebDAV 和本地存储
-- **低带宽播放** — 115 云盘、PikPak 云盘、123网盘、联通网盘、光鸭网盘、OneDrive 支持302模式，在线播放视频时，不占用服务器带宽；WebDAV 会遵循上游响应，返回3xx时由浏览器直连，返回200/206（例如 OpenList Crypt）时由服务器中转；Google Drive 走服务器中转
+- **低带宽播放** — 115 云盘、PikPak 云盘、123网盘、联通网盘、光鸭网盘、OneDrive 支持302模式，在线播放视频时，不占用服务器带宽；WebDAV 会遵循上游响应，返回3xx时由浏览器直连，返回200/206时由服务器中转；Google Drive 走服务器中转
 - **封面 & 预览片段** — 自动为每个视频生成封面图和预览片段，首页快速选片
 - **爬虫脚本** — 项目支持导入自定义脚本，但是有一些规范，具体可以参考 [SpiderFor91](https://github.com/Just-Spider/SpiderFor91)，项目不再内置任何爬虫脚本
 - **短视频模式** — 一键切换抖音风格，沉浸刷片
@@ -114,6 +114,7 @@ services:
     ports:
       - "9191:9191"
     volumes:
+      # 上游 ghcr.io/nianzhibai/91:stable 镜像仍使用其声明的数据目录
       - ./data:/opt/video-site-91/data
     restart: unless-stopped
 ```
@@ -169,7 +170,7 @@ curl -fsS http://127.0.0.1:9191/healthz
 ```
 
 > 如果使用 GHCR 正式镜像而不是仓库内的本地 `build:` 配置，更新命令才是 `docker compose pull && docker compose up -d`。
-> Compose 数据卷目标必须是 `/opt/video-site-91/data`。不要改成 `/www/91/data` 等其它容器路径，否则镜像声明的 `VOLUME` 会生成匿名卷，宿主机 `./data` 将不会保存真实数据库。
+> 仓库当前的本地构建镜像使用容器内 `/data`，对应仓库内 Compose 的 `./data:/data`。上面的上游 GHCR 示例仍使用上游镜像声明的 `/opt/video-site-91/data`，两者不要混用。
 
 
 ## 数据存放位置

@@ -21,12 +21,14 @@ import (
 	"github.com/video-site/backend/internal/drives/p123"
 	"github.com/video-site/backend/internal/drives/pikpak"
 	"github.com/video-site/backend/internal/drives/quark"
+	"github.com/video-site/backend/internal/drives/s3"
 	"github.com/video-site/backend/internal/drives/scriptcrawler"
 	"github.com/video-site/backend/internal/drives/webdav"
 	"github.com/video-site/backend/internal/drives/wopan"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/scanner"
+	"github.com/video-site/backend/internal/storageproviders"
 )
 
 // guangYaPanLegacyRootPath keeps existing path-based mounts working until the
@@ -38,10 +40,46 @@ func guangYaPanLegacyRootPath(rootID string, credentials map[string]string) stri
 	return strings.TrimSpace(credentials["root_path"])
 }
 
+func s3RootPrefix(d *catalog.Drive) string {
+	if d == nil {
+		return ""
+	}
+	if root := strings.TrimSpace(d.RootID); root != "" {
+		return root
+	}
+	return strings.TrimSpace(d.Credentials["root_prefix"])
+}
+
 func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 	a.driveAttachMu.Lock()
 	defer a.driveAttachMu.Unlock()
 	return a.attachDriveUnlocked(ctx, d)
+}
+
+// probeDrive initializes a temporary read-only source and verifies its root can
+// be listed. It never creates files or directories remotely.
+func (a *App) probeDrive(ctx context.Context, d *catalog.Drive) error {
+	if d == nil {
+		return errors.New("nil drive")
+	}
+	var drv drives.Drive
+	switch d.Kind {
+	case s3.Kind:
+		drv = s3.New(s3.Config{ID: d.ID, Endpoint: d.Credentials["endpoint"], Region: d.Credentials["region"], Bucket: d.Credentials["bucket"], AccessKey: d.Credentials["access_key_id"], SecretKey: d.Credentials["secret_access_key"], SessionToken: d.Credentials["session_token"], ForcePathStyle: parseBoolDefault(d.Credentials["force_path_style"], false), RootPrefix: s3RootPrefix(d)})
+	case webdav.Kind:
+		drv = webdav.New(webdav.Config{ID: d.ID, BaseURL: d.Credentials["base_url"], Username: d.Credentials["username"], Password: d.Credentials["password"], RootID: d.RootID, ValidateEndpoint: func(raw string) error { return storageproviders.ValidateEndpoint(raw, nil) }})
+	case googledrive.Kind:
+		drv = googledrive.New(googledrive.Config{ID: d.ID, RootID: d.RootID, SharedDriveID: d.Credentials["shared_drive_id"], AccessToken: d.Credentials["access_token"], RefreshToken: d.Credentials["refresh_token"], ClientID: d.Credentials["client_id"], ClientSecret: d.Credentials["client_secret"]})
+	case "onedrive":
+		drv = onedrive.New(onedrive.Config{ID: d.ID, RootID: d.RootID, AccessToken: d.Credentials["access_token"], RefreshToken: d.Credentials["refresh_token"], ClientID: d.Credentials["client_id"], ClientSecret: d.Credentials["client_secret"], TenantID: d.Credentials["tenant"], Region: d.Credentials["region"], IsSharePoint: parseBoolDefault(d.Credentials["is_sharepoint"], false), SiteID: d.Credentials["site_id"], DriveID: d.Credentials["drive_id"]})
+	default:
+		return fmt.Errorf("probe unsupported for provider %s", d.Kind)
+	}
+	if err := drv.Init(ctx); err != nil {
+		return err
+	}
+	_, err := drv.List(ctx, drv.RootID())
+	return err
 }
 
 func (a *App) ensureDriveAttached(ctx context.Context, driveID string) error {
@@ -106,8 +144,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			Cookie: d.Credentials["cookie"],
 			RootID: d.RootID,
 			OnCookieUpdate: func(cookie string) {
-				d.Credentials["cookie"] = cookie
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{"cookie": cookie})
 			},
 		})
 	case "p115":
@@ -127,11 +164,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RootID:        d.RootID,
 			UploadTempDir: a.uploadWorkDir(p123.Kind),
 			OnTokenUpdate: func(access string) {
-				if d.Credentials == nil {
-					d.Credentials = make(map[string]string)
-				}
-				d.Credentials["access_token"] = access
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{"access_token": access})
 			},
 		})
 	case "pikpak":
@@ -148,11 +181,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			DisableMediaLink: pikpak.ParseBoolDefault(d.Credentials["disable_media_link"], true),
 			UploadTempDir:    a.uploadWorkDir("pikpak"),
 			OnTokenUpdate: func(access, refresh, captcha, deviceID string) {
-				d.Credentials["access_token"] = access
-				d.Credentials["refresh_token"] = refresh
-				d.Credentials["captcha_token"] = captcha
-				d.Credentials["device_id"] = deviceID
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{"access_token": access, "refresh_token": refresh, "captcha_token": captcha, "device_id": deviceID})
 			},
 		})
 	case "wopan":
@@ -164,9 +193,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RootID:        d.RootID,
 			UploadTempDir: a.uploadWorkDir("wopan"),
 			OnTokenUpdate: func(access, refresh string) {
-				d.Credentials["access_token"] = access
-				d.Credentials["refresh_token"] = refresh
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{"access_token": access, "refresh_token": refresh})
 			},
 		})
 	case guangyapan.Kind:
@@ -189,13 +216,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			AccountBaseURL: d.Credentials["account_base_url"],
 			APIBaseURL:     d.Credentials["api_base_url"],
 			OnCredentialsUpdate: func(updated map[string]string) {
-				if d.Credentials == nil {
-					d.Credentials = make(map[string]string)
-				}
-				for k, v := range updated {
-					d.Credentials[k] = v
-				}
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, updated)
 			},
 		})
 	case "onedrive":
@@ -205,45 +226,48 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			Region:       d.Credentials["region"],
 			AccessToken:  d.Credentials["access_token"],
 			RefreshToken: d.Credentials["refresh_token"],
+			ClientID:     d.Credentials["client_id"],
+			ClientSecret: d.Credentials["client_secret"],
+			TenantID:     d.Credentials["tenant"],
 			IsSharePoint: parseBoolDefault(d.Credentials["is_sharepoint"], false),
 			SiteID:       d.Credentials["site_id"],
-			RenewAPIURL:  d.Credentials["api_url_address"],
+			DriveID:      d.Credentials["drive_id"],
 			OnTokenUpdate: func(access, refresh string) {
-				if d.Credentials == nil {
-					d.Credentials = make(map[string]string)
-				}
-				d.Credentials["access_token"] = access
-				d.Credentials["refresh_token"] = refresh
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{
+					"access_token":  access,
+					"refresh_token": refresh,
+				})
 			},
 		})
 	case googledrive.Kind:
 		drv = googledrive.New(googledrive.Config{
-			ID:           d.ID,
-			RootID:       d.RootID,
-			AccessToken:  d.Credentials["access_token"],
-			RefreshToken: d.Credentials["refresh_token"],
-			ClientID:     d.Credentials["client_id"],
-			ClientSecret: d.Credentials["client_secret"],
-			OAuthURL:     d.Credentials["oauth_url"],
-			APIBaseURL:   d.Credentials["api_base_url"],
+			ID:            d.ID,
+			RootID:        d.RootID,
+			SharedDriveID: d.Credentials["shared_drive_id"],
+			AccessToken:   d.Credentials["access_token"],
+			RefreshToken:  d.Credentials["refresh_token"],
+			ClientID:      d.Credentials["client_id"],
+			ClientSecret:  d.Credentials["client_secret"],
+			OAuthURL:      d.Credentials["oauth_url"],
+			APIBaseURL:    d.Credentials["api_base_url"],
 			OnTokenUpdate: func(access, refresh string) {
-				if d.Credentials == nil {
-					d.Credentials = make(map[string]string)
-				}
-				d.Credentials["access_token"] = access
-				d.Credentials["refresh_token"] = refresh
-				_ = a.cat.UpsertDrive(ctx, d)
+				_ = a.cat.MergeDriveCredentials(ctx, d.ID, map[string]string{
+					"access_token":  access,
+					"refresh_token": refresh,
+				})
 			},
 		})
 	case webdav.Kind:
 		drv = webdav.New(webdav.Config{
-			ID:       d.ID,
-			BaseURL:  d.Credentials["base_url"],
-			Username: d.Credentials["username"],
-			Password: d.Credentials["password"],
-			RootID:   d.RootID,
+			ID:               d.ID,
+			BaseURL:          d.Credentials["base_url"],
+			Username:         d.Credentials["username"],
+			Password:         d.Credentials["password"],
+			RootID:           d.RootID,
+			ValidateEndpoint: func(raw string) error { return storageproviders.ValidateEndpoint(raw, nil) },
 		})
+	case s3.Kind:
+		drv = s3.New(s3.Config{ID: d.ID, Endpoint: d.Credentials["endpoint"], Region: d.Credentials["region"], Bucket: d.Credentials["bucket"], AccessKey: d.Credentials["access_key_id"], SecretKey: d.Credentials["secret_access_key"], SessionToken: d.Credentials["session_token"], ForcePathStyle: parseBoolDefault(d.Credentials["force_path_style"], false), RootPrefix: s3RootPrefix(d)})
 	case localstorage.Kind:
 		drv = localstorage.New(localstorage.Config{
 			ID:                   d.ID,
@@ -264,15 +288,13 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			a.proxy.InvalidateDrive(d.ID)
 			a.proxy.SetDriveInitError(d.ID, d.Kind, err)
 		}
-		d.Status = "error"
-		d.LastError = err.Error()
-		_ = a.cat.UpsertDrive(ctx, d)
+		_ = a.cat.SetDriveRuntimeStatus(ctx, d.ID, "error", err.Error())
 		return err
 	}
 
-	d.Status = "ok"
-	d.LastError = ""
-	_ = a.cat.UpsertDrive(ctx, d)
+	if err := a.cat.SetDriveRuntimeStatus(ctx, d.ID, "ok", ""); err != nil {
+		return err
+	}
 	if a.proxy != nil {
 		a.proxy.InvalidateDrive(d.ID)
 	}
@@ -1030,6 +1052,12 @@ func (a *App) enqueueFingerprints(ctx context.Context, driveID string, w *finger
 }
 
 func (a *App) detachDrive(id string) {
+	a.driveAttachMu.Lock()
+	defer a.driveAttachMu.Unlock()
+	a.detachDriveUnlocked(id)
+}
+
+func (a *App) detachDriveUnlocked(id string) {
 	a.cancelDriveTaskContexts(id)
 	a.clearQueuedDriveTask(id)
 	a.clearFingerprintQueueing(id)
@@ -1078,7 +1106,13 @@ func (a *App) listDriveDirChildren(ctx context.Context, driveID, parentID string
 
 	drv, ok := a.registry.Get(driveID)
 	if !ok {
-		return nil, fmt.Errorf("drive %s not attached", driveID)
+		if err := a.ensureDriveAttached(ctx, driveID); err != nil {
+			return nil, fmt.Errorf("attach drive %s: %w", driveID, err)
+		}
+		drv, ok = a.registry.Get(driveID)
+		if !ok {
+			return nil, fmt.Errorf("drive %s not attached after successful initialization", driveID)
+		}
 	}
 	if parentID == "" {
 		parentID = drv.RootID()
@@ -1185,9 +1219,9 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) {
 		log.Printf("[scan] get drive %s: %v", driveID, err)
 		return
 	}
-	sc := scanner.New(a.cat, drv, a.cfg.Scanner.VideoExtensions, d.SkipDirIDs, onNew)
+	sc := scanner.NewWithAudio(a.cat, drv, a.cfg.Scanner.VideoExtensions, a.cfg.Scanner.AudioExtensions, d.SkipDirIDs, onNew)
 	sc.OnProgress = func(stats scanner.Stats) {
-		a.updateDriveScanProgress(driveID, stats.Scanned, stats.Added)
+		a.updateDriveMediaScanProgress(driveID, stats)
 	}
 
 	startID := d.RootID
@@ -1208,7 +1242,8 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) {
 		log.Printf("[scan] drive=%s canceled after scan: %v", driveID, err)
 		return
 	}
-	log.Printf("[scan] drive=%s done scanned=%d added=%d errors=%d", driveID, stats.Scanned, stats.Added, stats.Errors)
+	log.Printf("[scan] drive=%s done scanned=%d added=%d video_scanned=%d video_added=%d audio_scanned=%d audio_added=%d errors=%d",
+		driveID, stats.Scanned, stats.Added, stats.VideoScanned, stats.VideoAdded, stats.AudioScanned, stats.AudioAdded, stats.Errors)
 	// 删除检测：扫描到的 file_ids 是当前云盘上的真实存在；catalog 里这个 drive
 	// 名下、且其 parent_id 处在本次扫描走过的目录内（或本次是从根扫的）、却
 	// 不在 SeenFileIDs 中的视频 → 视为已被删除。

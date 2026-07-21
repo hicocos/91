@@ -205,6 +205,7 @@
 }
 
 .admin-sidebar__home,
+.admin-sidebar__mount-docs,
 .admin-sidebar__check-update,
 .admin-sidebar__logout {
   display: inline-flex;
@@ -221,6 +222,7 @@
 }
 
 .admin-sidebar__home:hover,
+.admin-sidebar__mount-docs:hover,
 .admin-sidebar__check-update:hover:not(:disabled),
 .admin-sidebar__logout:hover {
   color: var(--text-strong);
@@ -373,6 +375,248 @@
 
   .admin-detail-actions__danger {
     margin-left: 0;
+  }
+}
+
+/* =========================================================
+ * Mount documentation
+ * ========================================================= */
+.admin-mount-docs {
+  display: grid;
+  gap: var(--space-5);
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  overflow-wrap: anywhere;
+}
+
+.admin-mount-docs__hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: clamp(24px, 4vw, 44px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, var(--accent-soft), transparent 58%),
+    var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-mount-docs__hero > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+.admin-mount-docs__eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--accent);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.12em;
+}
+
+.admin-mount-docs__hero h1 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: -0.03em;
+}
+
+.admin-mount-docs__hero p {
+  max-width: 720px;
+  margin: var(--space-3) 0 0;
+  color: var(--text-muted);
+  line-height: var(--line-relaxed);
+}
+
+.admin-mount-docs__layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.admin-mount-docs__toc {
+  position: sticky;
+  top: var(--space-5);
+  display: grid;
+  gap: 4px;
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.admin-mount-docs__toc strong {
+  margin-bottom: 6px;
+  color: var(--text-strong);
+  font-size: var(--font-sm);
+}
+
+.admin-mount-docs__toc a {
+  padding: 7px 8px;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.admin-mount-docs__toc a:hover {
+  color: var(--text-strong);
+  background: var(--bg-elevated);
+}
+
+.admin-mount-docs__content {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.admin-mount-docs__section {
+  scroll-margin-top: var(--space-5);
+  padding: clamp(20px, 3vw, 30px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-mount-docs__section h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 var(--space-4);
+  color: var(--text-strong);
+  font-size: var(--font-2xl);
+}
+
+.admin-mount-docs__section h3 {
+  margin: var(--space-5) 0 var(--space-2);
+  color: var(--text-default);
+  font-size: var(--font-md);
+}
+
+.admin-mount-docs__section p,
+.admin-mount-docs__section li {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  line-height: 1.75;
+}
+
+.admin-mount-docs__section ol,
+.admin-mount-docs__section ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.admin-mount-docs__section a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+}
+
+.admin-mount-docs__section code {
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-sunken);
+  color: var(--text-default);
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", monospace;
+  font-size: 0.9em;
+}
+
+.admin-mount-docs__callback,
+.admin-mount-docs__section pre {
+  display: block;
+  width: 100%;
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-strong);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.admin-mount-docs__section pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  white-space: pre;
+  word-break: normal;
+}
+
+.admin-mount-docs__notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.admin-mount-docs__notice p {
+  margin: 0;
+}
+
+.admin-mount-docs__notice.is-info > svg {
+  color: var(--success);
+}
+
+.admin-mount-docs__notice.is-warning {
+  border-color: rgba(255, 174, 67, 0.35);
+  background: rgba(255, 174, 67, 0.08);
+}
+
+.admin-mount-docs__notice.is-warning > svg {
+  color: var(--warning);
+}
+
+@media (max-width: 767px) {
+  .admin-mount-docs__hero {
+    align-items: flex-start;
+  }
+
+  .admin-mount-docs__hero > svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  .admin-mount-docs__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-mount-docs__toc {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-mount-docs__toc strong {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 420px) {
+  .admin-mount-docs__hero > svg {
+    display: none;
+  }
+
+  .admin-mount-docs__toc {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-mount-docs__notice {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1179,6 +1423,80 @@
   font-size: var(--font-sm);
   font-weight: var(--weight-medium);
   color: var(--text-default);
+}
+
+.admin-provider-guided-controls,
+.admin-provider-advanced__body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.admin-provider-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.admin-provider-mode button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.admin-provider-mode button:hover,
+.admin-provider-mode button.is-active {
+  color: var(--text-strong);
+  border-color: var(--border-default);
+  background: var(--bg-elevated);
+}
+
+.admin-provider-mode button.is-active {
+  box-shadow: var(--shadow-inset);
+}
+
+.admin-provider-oauth {
+  width: 100%;
+  min-height: 40px;
+}
+
+.admin-provider-advanced {
+  display: grid;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.admin-provider-advanced__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 4px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  text-align: left;
+}
+
+.admin-provider-advanced__toggle svg {
+  transition: transform var(--transition-fast);
+}
+
+.admin-provider-advanced__toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.admin-provider-advanced__body {
+  padding-top: var(--space-3);
 }
 
 .admin-form__row input,
@@ -2915,6 +3233,7 @@
   }
 
   .admin-sidebar__mobile-panel .admin-sidebar__home,
+  .admin-sidebar__mobile-panel .admin-sidebar__mount-docs,
   .admin-sidebar__mobile-panel .admin-sidebar__check-update,
   .admin-sidebar__mobile-panel .admin-sidebar__logout {
     position: relative;
@@ -2928,12 +3247,14 @@
     text-align: center;
   }
 
+  .admin-sidebar__mobile-panel .admin-sidebar__mount-docs,
   .admin-sidebar__mobile-panel .admin-sidebar__check-update,
   .admin-sidebar__mobile-panel .admin-sidebar__logout {
     margin-top: 4px;
     padding-top: 12px;
   }
 
+  .admin-sidebar__mobile-panel .admin-sidebar__mount-docs::before,
   .admin-sidebar__mobile-panel .admin-sidebar__check-update::before,
   .admin-sidebar__mobile-panel .admin-sidebar__logout::before {
     content: "";

@@ -200,6 +200,101 @@ func TestSessionCookieIsSecureForForwardedHTTPS(t *testing.T) {
 	}
 }
 
+func TestRequiredRejectsCrossOriginCookieAuthenticatedWrite(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	const token = "csrf-token"
+	if err := cat.CreateSession(ctx, token, time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://app.example/api/video/1/like", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	res := httptest.NewRecorder()
+	called := false
+	(&Authenticator{Catalog: cat}).Required(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", res.Code)
+	}
+	if called {
+		t.Fatal("cross-origin write reached protected handler")
+	}
+}
+
+func TestCookieAuthenticatedWriteOriginPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		target      string
+		origin      string
+		fetchSite   string
+		forwarded   http.Header
+		wantAllowed bool
+	}{
+		{name: "same origin post", method: http.MethodPost, target: "https://app.example/api", origin: "https://app.example", wantAllowed: true},
+		{name: "same origin default https port", method: http.MethodPut, target: "https://app.example/api", origin: "https://app.example:443", wantAllowed: true},
+		{name: "cross origin patch", method: http.MethodPatch, target: "https://app.example/api", origin: "https://evil.example", wantAllowed: false},
+		{name: "cross scheme delete", method: http.MethodDelete, target: "https://app.example/api", origin: "http://app.example", wantAllowed: false},
+		{name: "proxy effective origin", method: http.MethodPost, target: "http://backend:9191/api", origin: "https://public.example", forwarded: http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"public.example"}}, wantAllowed: true},
+		{name: "proxy effective port mismatch", method: http.MethodPost, target: "http://backend:9191/api", origin: "https://public.example:8443", forwarded: http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"public.example"}}, wantAllowed: false},
+		{name: "missing origin same-origin fetch metadata", method: http.MethodPost, target: "https://app.example/api", fetchSite: "same-origin", wantAllowed: true},
+		{name: "missing origin same-site fetch metadata", method: http.MethodPost, target: "https://app.example/api", fetchSite: "same-site", wantAllowed: false},
+		{name: "missing origin cross-site fetch metadata", method: http.MethodDelete, target: "https://app.example/api", fetchSite: "cross-site", wantAllowed: false},
+		{name: "missing origin non-browser client", method: http.MethodPut, target: "https://app.example/api", wantAllowed: true},
+		{name: "safe method ignores cross origin", method: http.MethodGet, target: "https://app.example/api", origin: "https://evil.example", fetchSite: "cross-site", wantAllowed: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, nil)
+			req.Header.Set("Origin", tt.origin)
+			req.Header.Set("Sec-Fetch-Site", tt.fetchSite)
+			for name, values := range tt.forwarded {
+				for _, value := range values {
+					req.Header.Add(name, value)
+				}
+			}
+			if got := allowCookieAuthenticatedWrite(req); got != tt.wantAllowed {
+				t.Fatalf("allowCookieAuthenticatedWrite = %v, want %v", got, tt.wantAllowed)
+			}
+		})
+	}
+}
+
+func TestAdminRequiredRejectsCrossOriginCookieAuthenticatedWrite(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	const token = "admin-csrf-token"
+	if err := cat.CreateSession(ctx, token, time.Hour, 0); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "https://app.example/admin/api/users/1", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	res := httptest.NewRecorder()
+	called := false
+	(&Authenticator{Catalog: cat}).AdminRequired(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden || called {
+		t.Fatalf("status = %d called = %v, want 403 and handler not called", res.Code, called)
+	}
+}
+
 func TestRequiredDoesNotRenewSessionWhenMoreThanHalfRemaining(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

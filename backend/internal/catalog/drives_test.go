@@ -2,9 +2,110 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/video-site/backend/internal/storageproviders"
 )
+
+func TestOAuthFlowTakeIsAtomicAcrossCatalogConnections(t *testing.T) {
+	path := t.TempDir() + "/catalog.db"
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	record := storageproviders.OAuthFlowRecord{StateHash: "state", SessionHash: "session", Provider: "onedrive", RedirectURI: "https://app/callback", Nonce: "nonce", Pending: []byte{1}, ExpiresAt: time.Now().Add(time.Minute)}
+	if err := first.PutOAuthFlow(record); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	for _, cat := range []*Catalog{first, second} {
+		go func(c *Catalog) {
+			<-start
+			_, ok, err := c.TakeOAuthFlow("state", "session", "onedrive", "https://app/callback")
+			results <- ok && err == nil
+		}(cat)
+	}
+	close(start)
+	if a, b := <-results, <-results; a == b {
+		t.Fatalf("take winners=%v,%v want exactly one", a, b)
+	}
+}
+
+func TestCatalogPersistsOAuthFlowRecords(t *testing.T) {
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	record := storageproviders.OAuthFlowRecord{StateHash: "state", SessionHash: "session", Provider: "onedrive", RedirectURI: "https://app/callback", Nonce: "nonce", Pending: []byte{1, 2, 3}, ExpiresAt: time.Unix(3000, 0)}
+	if err := cat.PutOAuthFlow(record); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := cat.TakeOAuthFlow("state", "session", "onedrive", "https://app/callback")
+	if err != nil || !ok {
+		t.Fatalf("get ok=%v err=%v", ok, err)
+	}
+	if got.Provider != record.Provider || string(got.Pending) != string(record.Pending) || !got.ExpiresAt.Equal(record.ExpiresAt) {
+		t.Fatalf("got=%#v", got)
+	}
+	if _, ok, err := cat.TakeOAuthFlow("state", "session", "onedrive", "https://app/callback"); err != nil || ok {
+		t.Fatalf("after delete ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDeleteDriveSharesCredentialMergeLock(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	if err := cat.UpsertDrive(ctx, &Drive{ID: "g", Kind: "googledrive", Name: "g", Credentials: map[string]string{"refresh_token": "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.DeleteDrive(ctx, "g"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.MergeDriveCredentials(ctx, "g", map[string]string{"refresh_token": "late"}); err == nil {
+		t.Fatal("late token merge recreated deleted drive")
+	}
+	if _, err := cat.GetDrive(ctx, "g"); err == nil {
+		t.Fatal("deleted drive exists")
+	}
+}
+
+func TestMergeDriveCredentialsPreservesConcurrentConfiguration(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	if err := cat.UpsertDrive(ctx, &Drive{ID: "g", Kind: "googledrive", Name: "new name", RootID: "new-root", Credentials: map[string]string{"client_secret": "new-secret", "refresh_token": "old-token"}, TeaserEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.MergeDriveCredentials(ctx, "g", map[string]string{"access_token": "fresh-access", "refresh_token": "fresh-refresh"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cat.GetDrive(ctx, "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new name" || got.RootID != "new-root" || got.Credentials["client_secret"] != "new-secret" || got.Credentials["access_token"] != "fresh-access" || got.Credentials["refresh_token"] != "fresh-refresh" {
+		t.Fatalf("merged drive = %#v", got)
+	}
+}
 
 func TestUpsertDriveUsesRootIDAsScanRootID(t *testing.T) {
 	ctx := context.Background()
@@ -172,6 +273,17 @@ func TestSetDriveRuntimeStatusTracksPlaybackFailureAndRecovery(t *testing.T) {
 	}
 	if got.Status != "ok" || got.LastError != "" {
 		t.Fatalf("status=%q lastError=%q, want recovered drive", got.Status, got.LastError)
+	}
+}
+
+func TestSetDriveRuntimeStatusRejectsMissingDrive(t *testing.T) {
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.SetDriveRuntimeStatus(context.Background(), "missing", "ok", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing drive status error = %v, want sql.ErrNoRows", err)
 	}
 }
 

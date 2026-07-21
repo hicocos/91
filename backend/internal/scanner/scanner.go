@@ -14,9 +14,10 @@ import (
 )
 
 type Scanner struct {
-	Catalog *catalog.Catalog
-	Drive   drives.Drive
-	Exts    map[string]bool
+	Catalog   *catalog.Catalog
+	Drive     drives.Drive
+	Exts      map[string]bool
+	AudioExts map[string]bool
 	// SkipDirIDs 是用户在 admin 后台配置的"扫描跳过目录"集合（drive 侧的目录 fileID）。
 	// 命中其中任意一个时 scanner 直接 continue —— 不递归、不收集文件、不计入
 	// SeenFileIDs / VisitedDirIDs，自然也不会被后续 cleanupMissingDriveVideos 当
@@ -42,9 +43,17 @@ const defaultScanProgressInterval = 30 * time.Second
 // skipDirIDs 是用户为该 drive 配置的"扫描跳过目录"集合（可空）；nil / 空集合
 // 表示不跳过任何目录。被跳过的目录及其全部子目录都不递归。
 func New(cat *catalog.Catalog, drv drives.Drive, exts []string, skipDirIDs []string, onNew func(v *catalog.Video)) *Scanner {
-	m := make(map[string]bool, len(exts))
-	for _, e := range exts {
+	return NewWithAudio(cat, drv, exts, nil, skipDirIDs, onNew)
+}
+
+func NewWithAudio(cat *catalog.Catalog, drv drives.Drive, videoExts, audioExts []string, skipDirIDs []string, onNew func(v *catalog.Video)) *Scanner {
+	m := make(map[string]bool, len(videoExts))
+	for _, e := range videoExts {
 		m[strings.ToLower(e)] = true
+	}
+	audio := make(map[string]bool, len(audioExts))
+	for _, e := range audioExts {
+		audio[strings.ToLower(e)] = true
 	}
 	skip := make(map[string]struct{}, len(skipDirIDs))
 	for _, id := range skipDirIDs {
@@ -58,6 +67,7 @@ func New(cat *catalog.Catalog, drv drives.Drive, exts []string, skipDirIDs []str
 		Catalog:    cat,
 		Drive:      drv,
 		Exts:       m,
+		AudioExts:  audio,
 		SkipDirIDs: skip,
 		OnNewVideo: onNew,
 	}
@@ -66,6 +76,10 @@ func New(cat *catalog.Catalog, drv drives.Drive, exts []string, skipDirIDs []str
 type Stats struct {
 	Scanned       int
 	Added         int
+	VideoScanned  int
+	AudioScanned  int
+	VideoAdded    int
+	AudioAdded    int
 	Errors        int
 	SeenFileIDs   map[string]struct{}
 	VisitedDirIDs map[string]struct{}
@@ -124,6 +138,9 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if _, visited := stats.VisitedDirIDs[dirID]; visited {
+		return nil
+	}
 	stats.VisitedDirIDs[dirID] = struct{}{}
 	progress(dirName) // 心跳：进入新目录前后是天然的节流点
 
@@ -156,13 +173,21 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 		}
 
 		ext := strings.ToLower(path.Ext(e.Name))
-		if !s.Exts[ext] {
+		mediaType := catalog.MediaTypeVideo
+		if s.AudioExts[ext] {
+			mediaType = catalog.MediaTypeAudio
+		} else if !s.Exts[ext] {
 			continue
 		}
 		if e.Size <= 0 {
 			continue
 		}
 		stats.Scanned++
+		if mediaType == catalog.MediaTypeAudio {
+			stats.AudioScanned++
+		} else {
+			stats.VideoScanned++
+		}
 		progress(dirName)
 		stats.SeenFileIDs[e.ID] = struct{}{}
 
@@ -256,12 +281,18 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			Title:         parsed.Title,
 			Author:        parsed.Author,
 			Ext:           strings.TrimPrefix(ext, "."),
-			Quality:       "HD",
+			MediaType:     mediaType,
 			Size:          e.Size,
 			PreviewStatus: "pending",
 			PublishedAt:   now,
 			CreatedAt:     now,
 			UpdatedAt:     now,
+		}
+		if mediaType == catalog.MediaTypeVideo {
+			v.Quality = "HD"
+		} else {
+			v.PreviewStatus = "skipped"
+			v.TranscodeStatus = "skipped"
 		}
 		if err := s.Catalog.UpsertVideo(ctx, v); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -283,8 +314,13 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats,
 			return err
 		}
 		stats.Added++
+		if mediaType == catalog.MediaTypeAudio {
+			stats.AudioAdded++
+		} else {
+			stats.VideoAdded++
+		}
 		progress(dirName)
-		if s.OnNewVideo != nil {
+		if s.OnNewVideo != nil && mediaType == catalog.MediaTypeVideo {
 			s.OnNewVideo(v)
 		}
 		// 兜底：如果某个目录里挤了几千个文件，仅靠"进目录心跳"会很久不响一下；

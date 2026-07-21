@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
+  AudioLines,
   Bot,
+  BookOpen,
   Film,
   HardDrive,
   Home,
@@ -129,6 +131,15 @@ export function AdminLayout() {
               </span>
             </NavLink>
             <NavLink
+              to="/admin/audios"
+              className={({ isActive }) =>
+                `admin-nav__link ${isActive ? "is-active" : ""}`
+              }
+            >
+              <span className="admin-nav__icon" aria-hidden="true"><AudioLines size={15} /></span>
+              <span className="admin-nav__text"><span className="admin-nav__title">音频管理</span></span>
+            </NavLink>
+            <NavLink
               to="/admin/tags"
               className={({ isActive }) =>
                 `admin-nav__link ${isActive ? "is-active" : ""}`
@@ -170,6 +181,19 @@ export function AdminLayout() {
                 <span className="admin-nav__title">主题外观</span>
               </span>
             </NavLink>
+            <NavLink
+              to="/admin/mount-docs"
+              className={({ isActive }) =>
+                `admin-nav__link ${isActive ? "is-active" : ""}`
+              }
+            >
+              <span className="admin-nav__icon" aria-hidden="true">
+                <BookOpen size={15} />
+              </span>
+              <span className="admin-nav__text">
+                <span className="admin-nav__title">挂载文档</span>
+              </span>
+            </NavLink>
             <button
               type="button"
               className="admin-nav__link admin-nav__action"
@@ -207,6 +231,9 @@ export function AdminLayout() {
       <div className={`admin-sidebar__mobile-panel${mobileMenuOpen ? " is-open" : ""}`}>
         <NavLink to="/" className="admin-sidebar__home" onClick={() => setMobileMenuOpen(false)}>
           返回主站
+        </NavLink>
+        <NavLink to="/admin/mount-docs" className="admin-sidebar__mount-docs" onClick={() => setMobileMenuOpen(false)}>
+          挂载文档
         </NavLink>
         <button
           className="admin-sidebar__check-update"

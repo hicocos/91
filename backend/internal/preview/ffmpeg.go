@@ -828,6 +828,9 @@ func shouldProxyFFmpegLink(link *drives.StreamLink) bool {
 	// FFmpeg forwards custom Authorization/Cookie headers to redirect targets.
 	// Keep protected first-hop links behind our loopback proxy so redirects are
 	// followed with the shared cross-origin credential policy instead.
+	if link.PublicNetworkOnly {
+		return true
+	}
 	if link.PassThroughRedirects {
 		return true
 	}
@@ -843,7 +846,9 @@ func startLocalFFmpegProxy(ctx context.Context, link *drives.StreamLink) (*drive
 		return nil, nil, err
 	}
 	client := &http.Client{Timeout: 0}
-	if link.PassThroughRedirects {
+	if link.PublicNetworkOnly {
+		client = streamhttp.NewPublicNetworkClient(0)
+	} else if link.PassThroughRedirects {
 		client = streamhttp.NewClient(0)
 	}
 	srv := &http.Server{

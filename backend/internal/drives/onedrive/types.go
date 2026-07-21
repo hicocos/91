@@ -32,7 +32,6 @@ type tokenResp struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	Error        string `json:"error"`
 	Description  string `json:"error_description"`
-	Text         string `json:"text"`
 }
 
 type graphErrorResp struct {

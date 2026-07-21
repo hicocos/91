@@ -26,11 +26,20 @@ test("compose keeps the local hicocos image and repository overrides", () => {
   assert.match(compose, /^\s*VERSION:\s*\$\{VERSION:-dev\}\s*$/m);
 });
 
-test("compose binds only to loopback and mounts the persistent data target", () => {
+test("runtime and compose use /data as the persistent container path", () => {
   assert.match(compose, /127\.0\.0\.1:9191:9191/);
-  assert.match(compose, /\.\/data:\/opt\/video-site-91\/data/);
-  assert.doesNotMatch(compose, /:\/www\/91\/data/);
+  assert.match(compose, /\.\/data:\/data/);
+  assert.doesNotMatch(compose, /:\/(?:www\/91|opt\/video-site-91)\/data/);
   assert.match(compose, /healthcheck:[\s\S]*\/healthz/);
+
+  assert.match(dockerfile, /VIDEO_DATA_DIR=\/data/);
+  assert.match(dockerfile, /VIDEO_CONFIG=\/data\/config\.yaml/);
+  assert.match(dockerfile, /VIDEO_VERSION_FILE=\/data\/\.version/);
+  assert.match(dockerfile, /VOLUME \["\/data"\]/);
+  assert.doesNotMatch(dockerfile, /\/(?:www\/91|opt\/video-site-91)\/data/);
+
+  assert.match(entrypoint, /VIDEO_DATA_DIR:-\/data/);
+  assert.doesNotMatch(entrypoint, /(?:\$APP_DIR|\/www\/91)\/data/);
 });
 
 test("compose constrains filesystem privileges and process privileges", () => {

@@ -30,7 +30,7 @@ func isCrawlerDriveKind(kind string) bool {
 
 func isSupportedDriveKind(kind string) bool {
 	switch kind {
-	case "quark", "p115", "p123", "pikpak", "wopan", "guangyapan", "onedrive", "googledrive", "webdav", "localstorage", scriptcrawler.Kind:
+	case "quark", "p115", "p123", "pikpak", "wopan", "guangyapan", "onedrive", "googledrive", "webdav", "s3", "localstorage", scriptcrawler.Kind:
 		return true
 	default:
 		return false

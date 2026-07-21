@@ -66,6 +66,28 @@ func TestGuangYaPanLegacyRootPath(t *testing.T) {
 	}
 }
 
+func TestDetachDriveSerializesWithAttachLifecycle(t *testing.T) {
+	app := &App{registry: proxy.NewRegistry()}
+	app.driveAttachMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		app.detachDrive("drive-id")
+		close(done)
+	}()
+	select {
+	case <-done:
+		app.driveAttachMu.Unlock()
+		t.Fatal("detach completed while attach lifecycle lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	app.driveAttachMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("detach did not complete after attach lifecycle lock released")
+	}
+}
+
 func TestListDriveDirChildrenPersistsFailureAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
@@ -124,6 +146,39 @@ func TestListDriveDirChildrenPersistsFailureAndRecovery(t *testing.T) {
 	}
 }
 
+func TestListDriveDirChildrenReattachesMissingDriveAndPreservesProviderError(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:     "pikpak",
+		Kind:   "pikpak",
+		Name:   "PikPak",
+		RootID: "",
+		Credentials: map[string]string{
+			"username": "user@example.com",
+			"password": "secret",
+		},
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	app := &App{cat: cat, registry: proxy.NewRegistry()}
+	_, err = app.listDriveDirChildren(ctx, "pikpak", "")
+	if err == nil {
+		t.Fatal("list directory succeeded, want PikPak initialization error")
+	}
+	if strings.Contains(err.Error(), "drive pikpak not attached") {
+		t.Fatalf("error lost provider diagnosis: %v", err)
+	}
+	if !strings.Contains(err.Error(), "pikpak") {
+		t.Fatalf("error = %v, want PikPak provider diagnosis", err)
+	}
+}
+
 func TestEnsureConfigAdminUserMigratesCustomConfigAdmin(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -158,6 +213,53 @@ func TestEnsureConfigAdminUserMigratesCustomConfigAdmin(t *testing.T) {
 	}
 	if role != "admin" {
 		t.Fatalf("role = %q, want admin", role)
+	}
+}
+
+func TestMigrateConfigAdminUserClearsConfigPasswordAfterUsersTablePersistence(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cat, err := catalog.Open(filepath.Join(dir, "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`
+server:
+  listen: "127.0.0.1:9192"
+  admin:
+    username: "owner"
+    password: "secret123"
+storage:
+  db_path: "./catalog.db"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.RequiresAdminSetup(cfg) {
+		t.Fatal("custom legacy admin unexpectedly requires setup before migration")
+	}
+
+	if err := migrateConfigAdminUser(ctx, cat, cfgPath, cfg); err != nil {
+		t.Fatalf("migrate config admin: %v", err)
+	}
+	if _, err := cat.GetUserByUsername(ctx, "owner"); err != nil {
+		t.Fatalf("migrated user missing: %v", err)
+	}
+	stored, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read cleaned config: %v", err)
+	}
+	if strings.Contains(string(stored), "secret123") {
+		t.Fatalf("config still contains plaintext password: %s", stored)
+	}
+	if cfg.Server.Admin.Username != "" || cfg.Server.Admin.Password != "" {
+		t.Fatalf("in-memory config still contains credentials: %#v", cfg.Server.Admin)
 	}
 }
 

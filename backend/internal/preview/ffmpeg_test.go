@@ -15,6 +15,33 @@ import (
 	"github.com/video-site/backend/internal/drives"
 )
 
+func TestPrepareRestrictedFFmpegLinkUsesProtectedProxy(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxied, cleanup, err := prepareFFmpegLink(ctx, &drives.StreamLink{URL: upstream.URL + "/video", PublicNetworkOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if proxied.URL == upstream.URL+"/video" {
+		t.Fatal("restricted ffmpeg link was passed directly to ffmpeg")
+	}
+	resp, err := http.Get(proxied.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || called {
+		t.Fatalf("status=%d called=%v", resp.StatusCode, called)
+	}
+}
+
 func TestNewDefaultsToThreeSecondTeaserSegments(t *testing.T) {
 	gen := New(Config{})
 	if gen.cfg.DurationSeconds != 3 {

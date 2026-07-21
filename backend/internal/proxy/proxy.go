@@ -67,8 +67,9 @@ type Proxy struct {
 	// linkCache key: driveID + "/" + fileID (+ User-Agent for UA-bound links)
 	cacheMu sync.Mutex
 	cache   map[string]cachedLink
-	http    *http.Client
-	relay   *http.Client
+	http       *http.Client
+	relay      *http.Client
+	publicHTTP *http.Client
 
 	statusMu       sync.Mutex
 	statusReporter StreamStatusReporter
@@ -99,6 +100,7 @@ func New(r *Registry) *Proxy {
 		initErrors:     make(map[string]driveInitError),
 		http:           streamhttp.NewClient(0), // 流式不设超时
 		relay:          streamhttp.NewNoRedirectClient(0),
+		publicHTTP:     streamhttp.NewPublicNetworkClient(0),
 	}
 }
 
@@ -320,7 +322,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 	}
 
 	client := p.http
-	if link.PassThroughRedirects {
+	if link.PublicNetworkOnly {
+		client = p.publicHTTP
+	} else if link.PassThroughRedirects {
 		client = p.relay
 	}
 	resp, err := client.Do(req)

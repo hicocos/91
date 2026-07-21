@@ -1,11 +1,34 @@
 package transcode
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/drives"
 )
+
+func TestDownloadRestrictedSourceRejectsLoopback(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer srv.Close()
+	w := &Worker{hc: http.DefaultClient}
+	err := w.downloadTo(context.Background(), &drives.StreamLink{URL: srv.URL + "/video", PublicNetworkOnly: true, Expires: time.Now().Add(time.Minute)}, filepath.Join(t.TempDir(), "video.tmp"))
+	if err == nil {
+		t.Fatal("restricted transcode download reached loopback")
+	}
+	if called {
+		t.Fatal("restricted transcode download sent request to loopback")
+	}
+}
 
 func TestNeedsTranscode(t *testing.T) {
 	cases := []struct {

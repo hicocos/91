@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS videos (
     duration_seconds INTEGER DEFAULT 0,
     size_bytes       INTEGER DEFAULT 0,
     ext              TEXT,
+    media_type       TEXT NOT NULL DEFAULT 'video', -- video / audio
     quality          TEXT,                      -- HD / SD
     thumbnail_url    TEXT,
     thumbnail_status TEXT DEFAULT 'pending',    -- pending / ready / failed / skipped
@@ -156,6 +157,19 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+
+-- OAuth pending state. Raw state/session and provider secrets are never stored:
+-- hashes bind the request and pending_config is AES-GCM ciphertext.
+CREATE TABLE IF NOT EXISTS oauth_pending_flows (
+    state_hash     TEXT PRIMARY KEY,
+    session_hash   TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    redirect_uri   TEXT NOT NULL,
+    nonce          TEXT NOT NULL,
+    pending_config BLOB NOT NULL,
+    expires_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_pending_flows_expiry ON oauth_pending_flows(expires_at);
 
 -- 管理后台登录永久封禁 IP
 CREATE TABLE IF NOT EXISTS banned_login_ips (

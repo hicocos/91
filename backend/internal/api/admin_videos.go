@@ -43,6 +43,7 @@ type adminVideoDTO struct {
 	DurationSeconds   int               `json:"durationSeconds"`
 	Size              int64             `json:"size"`
 	Ext               string            `json:"ext"`
+	MediaType         string            `json:"mediaType"`
 	Quality           string            `json:"quality"`
 	ThumbnailURL      string            `json:"thumbnailUrl"`
 	PreviewFileID     string            `json:"previewFileId"`
@@ -86,6 +87,7 @@ func mapAdminVideo(v *catalog.Video) adminVideoDTO {
 		DurationSeconds:   v.DurationSeconds,
 		Size:              v.Size,
 		Ext:               v.Ext,
+		MediaType:         v.MediaType,
 		Quality:           v.Quality,
 		ThumbnailURL:      v.ThumbnailURL,
 		PreviewFileID:     v.PreviewFileID,
@@ -185,6 +187,12 @@ func (a *AdminServer) handleDeleteVideo(w http.ResponseWriter, r *http.Request) 
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if body.DeleteSource {
+		if _, ok := a.consumeDestructiveConfirmation(r, body.Nonce, deleteVideoSourceAction, id); !ok {
+			writeErr(w, http.StatusPreconditionFailed, errors.New("source deletion confirmation is invalid or expired"))
 			return
 		}
 	}

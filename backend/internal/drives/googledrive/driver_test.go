@@ -104,6 +104,69 @@ func TestListMapsGoogleDriveFiles(t *testing.T) {
 	}
 }
 
+func TestShortcutEntryPreservesOwnIDAndRemoveDeletesShortcut(t *testing.T) {
+	var deleted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	f := driveFile{ID: "shortcut-1", Name: "clip.mp4", MimeType: "application/vnd.google-apps.shortcut"}
+	f.Shortcut.TargetID = "real-file-1"
+	f.Shortcut.TargetMimeType = "video/mp4"
+	entry := fileToEntry(f, "root")
+	if entry.ID != "shortcut-1" {
+		t.Fatalf("entry ID = %q, want shortcut ID", entry.ID)
+	}
+	d := New(Config{APIBaseURL: srv.URL + "/drive/v3"})
+	d.accessToken = "access"
+	if err := d.Remove(context.Background(), entry.ID); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != "/drive/v3/files/shortcut-1" {
+		t.Fatalf("deleted path = %q", deleted)
+	}
+}
+
+func TestShortcutStreamResolvesTargetButRemoveUsesShortcut(t *testing.T) {
+	var deleted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/drive/v3/files/shortcut-1" {
+				t.Fatalf("metadata path=%s", r.URL.Path)
+			}
+			f := driveFile{ID: "shortcut-1", Name: "clip.mp4", MimeType: "application/vnd.google-apps.shortcut"}
+			f.Shortcut.TargetID = "real-file-1"
+			f.Shortcut.TargetMimeType = "video/mp4"
+			writeTestJSON(w, f)
+		case http.MethodDelete:
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	d := New(Config{APIBaseURL: srv.URL + "/drive/v3"})
+	d.accessToken = "access"
+	link, err := d.StreamURL(context.Background(), "shortcut-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(link.URL, "/files/real-file-1?") {
+		t.Fatalf("stream URL=%s", link.URL)
+	}
+	if err := d.Remove(context.Background(), "shortcut-1"); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != "/drive/v3/files/shortcut-1" {
+		t.Fatalf("deleted=%s", deleted)
+	}
+}
+
 func TestStreamURLReturnsAuthenticatedMediaLinkWithoutRedirectRequirement(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer access" {

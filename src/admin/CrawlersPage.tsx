@@ -484,6 +484,10 @@ function crawlerUploadDisplayStatus(crawler: api.AdminCrawler): {
     cooldownUntil: live?.cooldownUntil,
     scannedCount: live?.scannedCount ?? 0,
     addedCount: live?.addedCount ?? 0,
+    videoScannedCount: live?.videoScannedCount ?? 0,
+    audioScannedCount: live?.audioScannedCount ?? 0,
+    videoAddedCount: live?.videoAddedCount ?? 0,
+    audioAddedCount: live?.audioAddedCount ?? 0,
     doneCount: live?.doneCount ?? 0,
     totalCount: live?.totalCount ?? 0,
   };

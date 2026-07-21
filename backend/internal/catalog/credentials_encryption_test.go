@@ -196,3 +196,40 @@ func TestOpenUsesExplicitCredentialsKeyFileAndReopensEncryptedData(t *testing.T)
 		t.Fatalf("credentials after reopen = %#v", got.Credentials)
 	}
 }
+
+func TestOpenRejectsInvalidCredentialsKeyLength(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "bad.key")
+	if err := os.WriteFile(keyPath, []byte("too-short"), 0o600); err != nil {
+		t.Fatalf("write bad key: %v", err)
+	}
+	withCredentialsKeyFile(t, keyPath)
+
+	if cat, err := Open(filepath.Join(dir, "catalog.db")); err == nil {
+		_ = cat.Close()
+		t.Fatal("catalog opened with an invalid credentials key")
+	}
+}
+
+func TestGetDriveFailsClosedForTamperedEncryptedCredentials(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.UpsertDrive(ctx, &Drive{ID: "drive", Kind: "p115", Credentials: map[string]string{"token": "secret"}}); err != nil {
+		t.Fatalf("upsert drive: %v", err)
+	}
+	if _, err := cat.db.ExecContext(ctx,
+		`UPDATE drives SET credentials = json_set(credentials, '$.ciphertext', 'AAAA') WHERE id = 'drive'`); err != nil {
+		t.Fatalf("tamper credentials: %v", err)
+	}
+
+	if got, err := cat.GetDrive(ctx, "drive"); err == nil {
+		t.Fatalf("tampered credentials returned %#v instead of an error", got.Credentials)
+	}
+	if got, err := cat.ListDrives(ctx); err == nil {
+		t.Fatalf("list returned %d drives despite tampered credentials", len(got))
+	}
+}
